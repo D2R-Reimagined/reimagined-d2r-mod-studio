@@ -98,3 +98,5 @@ dotnet run --project src/ModStudio.Cli -- compare /native/build/output /node/bui
 PowerShell 7 packaging: `./scripts/publish.ps1 -Runtime win-x64`. Supported packaging RIDs also include `win-arm64`, `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`; packaging a RID is not evidence that it has been run. Use `-Dotnet /path/to/dotnet` or `-PackageCache /path/to/cache` when needed. CI runs the same regression and headless UI checks on three hosts and creates self-contained archives. Local environment-specific paths are not part of the project configuration.
 
 Own code is MIT licensed. See [third-party notices](THIRD_PARTY_NOTICES.md); game and mod assets retain their own ownership and are not covered by this project's license.
+
+Installer releases and automatic updates: see [docs/releases.md](docs/releases.md).

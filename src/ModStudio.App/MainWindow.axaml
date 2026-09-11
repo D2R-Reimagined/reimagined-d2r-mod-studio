@@ -48,6 +48,6 @@
    <TabItem><TabItem.Header><TextBlock Text="Build / Game output" FontSize="13" /></TabItem.Header><TextBox x:Name="Output" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" /></TabItem>
    <TabItem><TabItem.Header><TextBlock Text="Changes" FontSize="13" /></TabItem.Header><DockPanel><Button DockPanel.Dock="Top" Content="Compare active table with disk…" Click="CompareClicked" HorizontalAlignment="Left" /><ListBox x:Name="Changes" /></DockPanel></TabItem>
   </TabControl>
-  <Border Grid.Row="4" Background="#292727" Padding="12,6"><DockPanel><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
+  <Border Grid.Row="4" Background="#292727" Padding="12,6"><DockPanel><Button x:Name="UpdateButton" DockPanel.Dock="Right" Height="22" MinHeight="0" Padding="6,0" Margin="8,0,0,0" Content="Check for updates" Click="UpdateClicked" ToolTip.Tip="Check GitHub for a Studio update" /><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
  </Grid>
 </Window>

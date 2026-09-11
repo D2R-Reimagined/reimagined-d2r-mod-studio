@@ -1,0 +1,103 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version (for example 0.2.1; must be new)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: studio-release
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-22.04
+            rid: linux-x64
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VERSION: ${{ inputs.version }}
+      RID: ${{ matrix.rid }}
+      REPOSITORY_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Validate version and reject existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') { throw 'Expected major.minor.patch' }
+          $tags = gh api "repos/$env:GITHUB_REPOSITORY/git/matching-refs/tags/v$env:VERSION" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check existing tags' }
+          if ($tags | Where-Object ref -eq "refs/tags/v$env:VERSION") { throw 'Version tag already exists' }
+      - name: Build and test
+        run: |
+          dotnet restore ModStudio.slnx --configfile NuGet.Config
+          if ($LASTEXITCODE) { throw 'Restore failed' }
+          dotnet build ModStudio.slnx --no-restore -c Release --warnaserror
+          if ($LASTEXITCODE) { throw 'Build failed' }
+          dotnet run --project tests/ModStudio.Tests -c Release --no-build
+          if ($LASTEXITCODE) { throw 'Tests failed' }
+          dotnet run --project tests/ModStudio.Tests -c Release --no-build -- --create-ui-fixture artifacts/example-project
+          if ($LASTEXITCODE) { throw 'UI fixture failed' }
+          dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/example-project artifacts/ui-smoke
+          if ($LASTEXITCODE) { throw 'UI checks failed' }
+      - name: Package Windows / Linux updates
+        if: matrix.rid != 'osx-arm64'
+        run: ./scripts/package-release.ps1 -Runtime $env:RID -Version $env:VERSION -RepositoryUrl $env:REPOSITORY_URL
+      - name: Package macOS portable bundle
+        if: matrix.rid == 'osx-arm64'
+        run: ./scripts/publish.ps1 -Runtime $env:RID -Version $env:VERSION -UpdateRepositoryUrl $env:REPOSITORY_URL -OutputDirectory "artifacts/release/$env:VERSION/$env:RID/publish"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rid }}
+          if-no-files-found: error
+          path: |
+            artifacts/release/**/velopack/*
+            artifacts/release/**/publish.zip
+            artifacts/release/**/publish.tar.gz
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory release-assets | Out-Null
+          foreach ($rid in @('win-x64','linux-x64','osx-arm64')) {
+            Get-ChildItem "artifacts/release-$rid" -Recurse -File | ForEach-Object {
+              $name = if ($_.Name -like 'publish.*') { "Reimagined-Mod-Studio-$env:VERSION-$rid" + $_.Name.Substring(7) } else { $_.Name }
+              $target = Join-Path release-assets $name
+              if (Test-Path $target) { throw "Duplicate release asset: $name" }
+              Copy-Item -LiteralPath $_.FullName -Destination $target
+            }
+          }
+      - name: Publish complete release
+        shell: bash
+        run: |
+          gh release create "v$VERSION" release-assets/* --target "$GITHUB_SHA" --title "Reimagined D2R Mod Studio $VERSION" --generate-notes --draft
+          gh release edit "v$VERSION" --draft=false --latest

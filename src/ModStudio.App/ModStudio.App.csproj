@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>WinExe</OutputType><AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault><ApplicationIcon>Assets/ReimaginedModStudio.ico</ApplicationIcon></PropertyGroup>
+  <PropertyGroup><VelopackVersion>1.2.0</VelopackVersion><UpdateRepositoryUrl Condition="'$(UpdateRepositoryUrl)' == ''">https://github.com/D2R-Reimagined/reimagined-d2r-mod-studio</UpdateRepositoryUrl><OutputType>WinExe</OutputType><AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault><ApplicationIcon>Assets/ReimaginedModStudio.ico</ApplicationIcon></PropertyGroup>
   <ItemGroup><AvaloniaResource Include="Assets/ReimaginedModStudio.ico" /><AvaloniaResource Include="Assets/ReimaginedModStudio.png" /></ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../ModStudio.Core/ModStudio.Core.csproj" />
+    <AssemblyMetadata Include="UpdateRepositoryUrl" Value="$(UpdateRepositoryUrl)" /><PackageReference Include="Velopack" Version="$(VelopackVersion)" /><ProjectReference Include="../ModStudio.Core/ModStudio.Core.csproj" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
     <PackageReference Include="Avalonia.Controls.DataGrid" Version="12.1.2" />

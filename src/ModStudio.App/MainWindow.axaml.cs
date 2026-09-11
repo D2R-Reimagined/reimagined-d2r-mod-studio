@@ -75,6 +75,7 @@ public partial class MainWindow : Window
             try
             {
                 if (Program.Arguments.Contains("--smoke")) { await SmokeAsync(); return; }
+                _ = CheckStudioUpdateAsync(false);
                 var arg = Program.Arguments.FirstOrDefault(a => !a.StartsWith('-'));
                 var previous = arg ?? StudioPreferences.Load(StudioPreferences.DefaultFile).LastProject;
                 if (previous != null)
@@ -511,6 +512,9 @@ public partial class MainWindow : Window
         try
         {
             recoveryTimer.Stop();
+            await CheckStudioUpdateAsync(false);
+            Require(!updateBusy && UpdateButton.IsEnabled && studioUpdate == null,
+                "Portable update check must finish without offering an install.");
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await LoadProjectAsync(root); var results = new List<object>();
             RefreshRunControls(); Require(!StopButton.IsVisible, "Idle Stop button is visible.");

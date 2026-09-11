@@ -2,11 +2,16 @@ param(
     [ValidateSet('win-x64', 'win-arm64', 'linux-x64', 'linux-arm64', 'osx-x64', 'osx-arm64')]
     [string] $Runtime = 'win-x64',
     [string] $Dotnet = 'dotnet',
-    [string] $PackageCache = ''
+    [string] $PackageCache = '',
+    [string] $Version = '0.2.0',
+    [string] $UpdateRepositoryUrl = 'https://github.com/D2R-Reimagined/reimagined-d2r-mod-studio',
+    [string] $OutputDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must be a stable major.minor.patch version.' }
 $output = Join-Path $projectRoot "artifacts/packages/$Runtime/$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+if ($OutputDirectory) { $output = [IO.Path]::GetFullPath($OutputDirectory) }
 if (Test-Path -LiteralPath $output) { throw "Package destination already exists: $output" }
 New-Item -ItemType Directory -Path $output | Out-Null
 $runtimeNoticeCount = 0
@@ -17,7 +22,7 @@ foreach ($project in @('ModStudio.App', 'ModStudio.Cli')) {
     & $Dotnet @restoreArgs
     if ($LASTEXITCODE -ne 0) { throw "Restore failed: $project" }
     $appOutput = Join-Path $output $(if ($project -eq 'ModStudio.App') { 'app' } else { 'cli' })
-    & $Dotnet publish $projectFile -c Release -r $Runtime --self-contained true --no-restore -o $appOutput -p:PublishTrimmed=false -p:PublishSingleFile=false
+    & $Dotnet publish $projectFile -c Release -r $Runtime --self-contained true --no-restore -o $appOutput -p:PublishTrimmed=false -p:PublishSingleFile=false "-p:Version=$Version" "-p:UpdateRepositoryUrl=$UpdateRepositoryUrl"
     if ($LASTEXITCODE -ne 0) { throw "Publish failed: $project" }
     $assets = Get-Content -LiteralPath (Join-Path $projectRoot "src/$project/obj/project.assets.json") -Raw | ConvertFrom-Json -AsHashtable
     foreach ($entry in $assets.libraries.GetEnumerator()) {
@@ -67,7 +72,7 @@ if ($Runtime.StartsWith('osx-')) {
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 '@
-    [IO.File]::WriteAllText((Join-Path $bundle 'Info.plist'), $plist)
+    [IO.File]::WriteAllText((Join-Path $bundle 'Info.plist'), $plist.Replace('<string>0.2.0</string>', "<string>$Version</string>").Replace('<string>1</string>', "<string>$Version</string>"))
 }
 foreach ($file in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $output

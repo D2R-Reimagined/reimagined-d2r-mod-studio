@@ -8,6 +8,7 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        Velopack.VelopackApp.Build().Run();
         Arguments = args;
         var app = AppBuilder.Configure<StudioApplication>().UsePlatformDetect().LogToTrace();
         if (args.Contains("--smoke")) app = app.UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).UseSkia();

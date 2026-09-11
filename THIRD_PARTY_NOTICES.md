@@ -4,6 +4,7 @@ Mod Studio's own MIT license does not replace upstream licenses. The distributab
 
 | Component | Source / license |
 | --- | --- |
+| Velopack 1.2.0 installer and update framework | [Velopack](https://github.com/velopack/velopack), MIT; `licenses/Velopack.txt` |
 | Avalonia 12.1.2, desktop backends, Fluent theme, DataGrid, Headless and Inter integration | [Avalonia](https://github.com/AvaloniaUI/Avalonia), MIT; `licenses/Avalonia.txt` |
 | AvaloniaEdit 12.0.0 | [AvaloniaEdit](https://github.com/AvaloniaUI/AvaloniaEdit), MIT; `licenses/AvaloniaEdit.txt` |
 | Markdown.Avalonia.Tight 12.0.0-a1 and its ColorTextBlock/ColorDocument controls | [Markdown.Avalonia](https://github.com/whistyun/Markdown.Avalonia), MIT; `licenses/Markdown.Avalonia.txt` |

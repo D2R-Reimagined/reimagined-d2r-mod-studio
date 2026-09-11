@@ -20,3 +20,5 @@ Select the final `Reimagined` folder, not the installation directory, `mods`, `.
 Select `D2R.exe` for the game executable, or the appropriate loader for your profile. Play requires the deployment folder under `mods/<mod-name>` beside that executable. Selecting an executable suggests that deployment path when the destination is blank. Wine/Proton users can specify a separate runner executable.
 
 Settings displays path warnings as you edit. Incomplete settings can be saved; Build works without game paths. Deployment and Play perform their own checks, including source separation, ownership and existing files, before copying or launching.
+
+Migration copies and fingerprints files using at most four workers, with file counts, processed MiB and current paths. Convert existing leaves old generated `.studio/builds/` only in the complete original backup; recovery files and Git metadata are preserved. Source conversion and profile validation remain ordered. Cancellation is checked between file chunks; cleanup can take additional time.

@@ -40,7 +40,15 @@ internal static class FeatureTests
         var nestedCandidate = LegacyMigration.Detect(nestedRoot).Single();
         check(nestedCandidate.Root == nestedRoot && nestedCandidate.DataRoot.EndsWith("Nested.mpq" + Path.DirectorySeparatorChar + "data"), "Migration finds deeply nested data and preserves selected project root");
         var backupRoot = nestedRoot + ".backup";
-        var inPlace = LegacyMigration.MigrateInPlace(nestedCandidate, "Nested", backupRoot);
+        write(Path.Combine(nestedRoot, ".studio/builds/old/data/cache.bin"), "old generated build");
+        write(Path.Combine(nestedRoot, ".studio/recovery/unsaved.json"), "keep recovery");
+        for (int i = 0; i < 24; i++) write(Path.Combine(nestedRoot, $"scripts/extra/{i}.txt"), new string((char)('a' + i), 300000));
+        var stages = new List<string>();
+        var inPlace = LegacyMigration.MigrateInPlace(nestedCandidate, "Nested", backupRoot, progress: stages.Add);
+        check(!Directory.Exists(Path.Combine(nestedRoot, ".studio/builds")) && File.Exists(Path.Combine(backupRoot, ".studio/builds/old/data/cache.bin")), "In-place migration leaves generated build caches in backup only");
+        check(File.ReadAllText(Path.Combine(nestedRoot, ".studio/recovery/unsaved.json")) == "keep recovery", "Cache exclusion preserves unsaved recovery files");
+        check(Enumerable.Range(0, 24).All(i => File.ReadAllText(Path.Combine(nestedRoot, $"scripts/extra/{i}.txt")) == new string((char)('a' + i), 300000)), "Parallel preservation copies every file without mixing buffers");
+        check(stages.Any(s => s.StartsWith("Preserving repository") && s.Contains("MiB") && s.Contains("workers")), "Preservation reports file counts bytes and bounded workers");
         check(inPlace.Project.Root == nestedRoot && File.Exists(Path.Combine(nestedRoot, "source/tables/example/records.json")), "In-place migration publishes converted source at the original root");
         check(File.ReadAllText(Path.Combine(nestedRoot, "scripts/build.js")) == "original script" && File.ReadAllText(Path.Combine(nestedRoot, ".git/config")) == "original git metadata", "In-place migration preserves scripts and Git metadata");
         check(File.Exists(Path.Combine(backupRoot, "content/mods/Nested/Nested.mpq/data/global/excel/example.txt")), "In-place migration retains the original nested files in backup");
@@ -48,6 +56,18 @@ internal static class FeatureTests
         var directRoot = Path.Combine(root, "direct-native"); write(Path.Combine(directRoot, "global/excel/example.txt"), "name\nExample\n");
         write(Path.Combine(directRoot, ".git/config"), "direct metadata");
         var directCandidate = LegacyMigration.Detect(directRoot).Single();
+        using (var midway = new CancellationTokenSource())
+        {
+            throws(() => LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup", midway.Token,
+                step => { if (step.StartsWith("Preserving repository metadata")) midway.Cancel(); }), "Cancellation during preservation aborts in-place conversion");
+            check(File.Exists(Path.Combine(directRoot, "global/excel/example.txt")) && !Directory.Exists(directRoot + ".backup") && !Directory.GetDirectories(root, "direct-native.converted-*").Any(), "Canceled preservation cleans staging and leaves original intact");
+        }
+        bool changedGit = false;
+        throws(() => LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup", progress: step =>
+        {
+            if (!changedGit && step.StartsWith("Verifying preserved project profile")) { changedGit = true; write(Path.Combine(directRoot, ".git/config"), "externally changed metadata"); }
+        }), "Parallel fingerprint verification rejects changed Git metadata");
+        check(!Directory.Exists(directRoot + ".backup"), "Changed metadata prevents the final folder swap");
         using (var stop = new CancellationTokenSource())
         {
             stop.Cancel(); throws(() => LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup", stop.Token), "Canceled in-place conversion does not swap the project");

@@ -124,8 +124,8 @@ public partial class MainWindow : Window
             var legacy = await Task.Run(() => LegacyMigration.Detect(root));
             if (legacy.Any(p => p.SplitRecords) || !Directory.Exists(System.IO.Path.Combine(root, "source/tables")) && legacy.Count > 0)
             {
-                var choice = await ChooseAsync("Legacy project detected", "Create a migrated copy with table JSON and recovery/build support? Your original project will stay unchanged.", "Migrate a copy", "Open existing", "Cancel");
-                if (choice == "Migrate a copy") { await MigrateAsync(root); return; }
+                var choice = await ChooseAsync("Legacy project detected", "Migrate to table JSON with recovery/build support? Next, choose to convert this folder with a backup or create a separate copy.", "Migration options…", "Open existing", "Cancel");
+                if (choice == "Migration options…") { await MigrateAsync(root); return; }
                 if (choice != "Open existing") return;
             }
             await LoadProjectAsync(root);
@@ -163,7 +163,7 @@ public partial class MainWindow : Window
             var parent = await PickFolderAsync("Choose the PARENT folder; Studio creates a new " + name + " subfolder here"); if (parent == null) return;
             destination = System.IO.Path.Combine(parent, name);
         }
-        if (await ChooseAsync("Review migration", $"Mode: {mode}\nProject root: {candidate.Root}\nData folder: {candidate.DataRoot}\nDestination: {destination}" + (backup == null ? "\n\nOriginal unchanged. Additional project files go under legacy/; Git history and caches are excluded from the copy." : $"\nBackup: {backup}\n\nThe converted project keeps its original path, Git metadata and supporting files. Do not edit the project in other tools during conversion.") + "\n\nConversion and profile builds are verified before publishing.", "Migrate", "Cancel") != "Migrate") return;
+        if (await ChooseAsync("Review migration", $"Mode: {mode}\nProject root: {candidate.Root}\nData folder: {candidate.DataRoot}\nDestination: {destination}" + (backup == null ? "\n\nOriginal unchanged. Additional project files go under legacy/; Git history and caches are excluded from the copy." : $"\nBackup: {backup}\n\nThe converted project keeps its original path, Git metadata and supporting files. Old .studio/builds caches stay in the backup and can be rebuilt. Do not edit the project in other tools during conversion.") + "\n\nConversion and profile builds are verified before publishing.", "Migrate", "Cancel") != "Migrate") return;
         operation = new(); RefreshRunControls(); ImportReport? report;
         try { report = await new MigrationProgressWindow(candidate, destination, name, operation, Log, backup).ShowDialog<ImportReport?>(this); }
         finally { operation.Dispose(); operation = null; RefreshRunControls(); }
@@ -726,3 +726,4 @@ public partial class MainWindow : Window
         closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(exit);
     }
 }
+

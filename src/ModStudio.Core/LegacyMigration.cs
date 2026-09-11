@@ -50,31 +50,32 @@ public static class LegacyMigration
         NoLinks(root); NoLinks(backup);
         var prepared = root + ".converted-" + Guid.NewGuid().ToString("N");
         progress?.Invoke("Scanning the original project and repository metadata…");
-        var originals = new Dictionary<string, string>();
-        foreach (var file in Files(root)) { token.ThrowIfCancellationRequested(); originals[Relative(root, file)] = Hash(File.ReadAllBytes(file)); }
+        var originals = MigrationFiles.Fingerprint(MigrationFiles.Enumerate(root, token, skipBuildCache: true), root, "Scanning original project (old .studio/builds stay in backup)", token, progress);
         try
         {
             var result = Migrate(legacy, prepared, name, token, progress);
             progress?.Invoke("Preserving repository metadata and supporting project files…");
-            foreach (var relative in originals.Keys)
+            MigrationFiles.Run(originals.Keys, root, "Preserving repository metadata and supporting project files", token, progress, (original, reportBytes) =>
             {
+                var relative = Relative(root, original);
                 token.ThrowIfCancellationRequested();
-                var original = Inside(root, relative);
-                if (legacy.SplitRecords && (relative.StartsWith("source/tables/", StringComparison.Ordinal) || relative.StartsWith("source/strings/", StringComparison.Ordinal))) continue;
+                NoLinks(original);
+                if (legacy.SplitRecords && (relative.StartsWith("source/tables/", StringComparison.Ordinal) || relative.StartsWith("source/strings/", StringComparison.Ordinal))) return;
                 bool nativeData = Contains(legacy.DataRoot, original) && (legacy.DataRoot != root || new[] { "global/", "hd/", "local/" }.Any(p => relative.StartsWith(p, StringComparison.OrdinalIgnoreCase)));
-                if (nativeData || relative is "modinfo.json" or "mod-project.json" or "migration-report.json") continue;
+                if (nativeData || relative is "modinfo.json" or "mod-project.json" or "migration-report.json") return;
                 var target = Inside(prepared, relative);
-                if ((relative.StartsWith("source/", StringComparison.Ordinal) || relative.StartsWith("compatibility/", StringComparison.Ordinal)) && File.Exists(target)) continue;
-                if (relative == ".gitignore" && File.Exists(target)) { File.WriteAllText(target, File.ReadAllText(original) + "\n.studio/\n"); continue; }
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(original, target, true);
-            }
+                if ((relative.StartsWith("source/", StringComparison.Ordinal) || relative.StartsWith("compatibility/", StringComparison.Ordinal)) && File.Exists(target)) return;
+                if (relative == ".gitignore" && File.Exists(target)) { File.WriteAllText(target, File.ReadAllText(original) + "\n.studio/\n"); return; }
+                MigrationFiles.Copy(original, target, token, reportBytes);
+            });
             var migrationReport = Read(Inside(prepared, "migration-report.json"));
             migrationReport["mode"] = "convert-existing"; migrationReport["backupDirectory"] = backup;
-            migrationReport["note"] = "Converted at the original project path. Original files retained in backup. Git metadata and supporting project files preserved in the converted project.";
+            migrationReport["note"] = "Converted at the original project path. Original files retained in backup, including old .studio/builds caches (not copied into the converted project). Git metadata and supporting project files preserved in the converted project.";
             WriteJson(Inside(prepared, "migration-report.json"), migrationReport);
-            foreach (var profile in result.Project.Profiles) { token.ThrowIfCancellationRequested(); BuildService.Build(result.Project, profile, token); }
+            foreach (var profile in result.Project.Profiles) { token.ThrowIfCancellationRequested(); progress?.Invoke("Verifying preserved project profile: " + profile); BuildService.Build(result.Project, profile, token, message => progress?.Invoke(profile + ": " + message)); }
+            var cache = Inside(prepared, ".studio/builds"); if (Directory.Exists(cache)) Directory.Delete(cache, true);
             // A second fingerprint check also covers Git metadata and files excluded from migration input.
-            Require(Files(root).Count() == originals.Count && originals.All(p => File.Exists(Inside(root, p.Key)) && Hash(File.ReadAllBytes(Inside(root, p.Key))) == p.Value), "Project changed during conversion. Retry when other tools have finished writing.");
+            MigrationFiles.Verify(originals, MigrationFiles.Enumerate(root, token, skipBuildCache: true), root, token, progress, "Project changed during conversion. Retry when other tools have finished writing.");
             token.ThrowIfCancellationRequested();
             progress?.Invoke("Keeping original project at " + backup);
             Directory.Move(root, backup);
@@ -105,9 +106,7 @@ public static class LegacyMigration
         Require(!Directory.Exists(destination) || !Directory.EnumerateFileSystemEntries(destination).Any(), "Migration destination must be new or empty.");
         var stage = destination + ".migration-" + Guid.NewGuid().ToString("N");
         Directory.CreateDirectory(Path.GetDirectoryName(stage)!);
-        var inputs = new Dictionary<string, string>();
-        progress?.Invoke("Scanning and fingerprinting original files…");
-        foreach (var file in Inputs(legacy.Root)) { token.ThrowIfCancellationRequested(); inputs[file] = Hash(File.ReadAllBytes(file)); }
+        var inputs = MigrationFiles.Fingerprint(Inputs(legacy.Root), legacy.Root, "Scanning migration inputs", token, progress);
         int tables = 0, catalogs = 0, assets = 0, verified = 0, retained = 0;
         try
         {
@@ -117,21 +116,21 @@ public static class LegacyMigration
                 var imported = ProjectImporter.Import(legacy.DataRoot, stage, name, token, progress);
                 tables = imported.Tables; catalogs = imported.Catalogs; assets = imported.Assets; verified = imported.VerifiedTables;
                 progress?.Invoke("Preserving additional project files…");
-                foreach (var file in inputs.Keys.Where(f => !Contains(legacy.DataRoot, f)))
+                MigrationFiles.Run(inputs.Keys.Where(f => !Contains(legacy.DataRoot, f)), legacy.Root, "Preserving additional project files", token, progress, (file, reportBytes) =>
                 {
                     token.ThrowIfCancellationRequested(); var target = Inside(stage, "legacy/" + Relative(legacy.Root, file));
-                    Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(file, target); retained++;
-                }
+                    MigrationFiles.Copy(file, target, token, reportBytes); Interlocked.Increment(ref retained);
+                });
             }
             else
             {
                 progress?.Invoke("Copying legacy project files…");
                 Directory.CreateDirectory(stage);
-                foreach (var file in inputs.Keys)
+                MigrationFiles.Run(inputs.Keys, legacy.Root, "Copying legacy project files", token, progress, (file, reportBytes) =>
                 {
                     token.ThrowIfCancellationRequested(); var target = Inside(stage, Relative(legacy.Root, file));
-                    Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(file, target);
-                }
+                    MigrationFiles.Copy(file, target, token, reportBytes);
+                });
                 foreach (var kind in new[] { "tables", "strings" })
                 {
                     var source = Path.Combine(stage, "source", kind); if (!Directory.Exists(source)) continue;
@@ -190,12 +189,12 @@ public static class LegacyMigration
             }
             WriteJson(Inside(stage, "migration-report.json"), new JsonObject { ["schemaVersion"] = 1, ["tables"] = tables, ["catalogs"] = catalogs, ["verifiedTxtFiles"] = verified, ["retainedLegacyFiles"] = retained, ["note"] = "Original project unchanged. Files under legacy/ are preserved for review and are not deployed automatically. Git history and local build/cache folders are excluded.", ["files"] = new JsonArray(inputs.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(legacy.Root, p.Key), ["sha256"] = p.Value }).ToArray()) });
             var stagedProject = ModProject.Open(stage);
-            foreach (var profile in stagedProject.Profiles) { progress?.Invoke("Verifying migrated profile: " + profile); BuildService.Build(stagedProject, profile, token); }
+            foreach (var profile in stagedProject.Profiles) { progress?.Invoke("Verifying migrated profile: " + profile); BuildService.Build(stagedProject, profile, token, message => progress?.Invoke(profile + ": " + message)); }
             // These are only the verification builds created above in this new staging folder.
             var validationCache = Inside(stage, ".studio"); if (Directory.Exists(validationCache)) Directory.Delete(validationCache, true);
             token.ThrowIfCancellationRequested();
             progress?.Invoke("Checking original files and finalizing the new project…");
-            Require(Inputs(legacy.Root).Count() == inputs.Count && inputs.All(p => File.Exists(p.Key) && Hash(File.ReadAllBytes(p.Key)) == p.Value), "Legacy source changed during migration. Retry from a consistent copy.");
+            MigrationFiles.Verify(inputs, Inputs(legacy.Root), legacy.Root, token, progress, "Legacy source changed during migration. Retry from a consistent copy.");
             if (Directory.Exists(destination)) Directory.Delete(destination); Directory.Move(stage, destination);
             return new(ModProject.Open(destination), tables, catalogs, assets, verified);
         }

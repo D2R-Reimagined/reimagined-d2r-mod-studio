@@ -23,7 +23,7 @@ public sealed class MigrationProgressWindow : Window
         var stage = new TextBlock { Text = "Preparing migration…", FontSize = 16, TextWrapping = TextWrapping.Wrap };
         panel.Children.Add(stage);
         var elapsed = new TextBlock(); panel.Children.Add(elapsed);
-        var detail = new TextBlock { Text = "Converting files and verifying the new project. Your original files stay unchanged.", TextWrapping = TextWrapping.Wrap };
+        var detail = new TextBlock { Text = "Copying and hashing use up to four workers. Table conversion and profile validation remain ordered. Your original files stay unchanged until verification completes.", TextWrapping = TextWrapping.Wrap };
         panel.Children.Add(detail);
         var action = new Button { Content = "Cancel migration", HorizontalAlignment = HorizontalAlignment.Right };
         panel.Children.Add(action); Content = new ScrollViewer { Content = panel, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };

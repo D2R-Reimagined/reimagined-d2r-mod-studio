@@ -49,6 +49,7 @@ internal static class FeatureTests
         check(File.ReadAllText(Path.Combine(nestedRoot, ".studio/recovery/unsaved.json")) == "keep recovery", "Cache exclusion preserves unsaved recovery files");
         check(Enumerable.Range(0, 24).All(i => File.ReadAllText(Path.Combine(nestedRoot, $"scripts/extra/{i}.txt")) == new string((char)('a' + i), 300000)), "Parallel preservation copies every file without mixing buffers");
         check(stages.Any(s => s.StartsWith("Preserving repository") && s.Contains("MiB") && s.Contains("workers")), "Preservation reports file counts bytes and bounded workers");
+        check(stages.Count(s => s.StartsWith("Verifying preserved project profile:")) == 2 && !stages.Any(s => s.StartsWith("Verifying migrated profile:")), "In-place migration verifies each profile once after preservation");
         check(inPlace.Project.Root == nestedRoot && File.Exists(Path.Combine(nestedRoot, "source/tables/example/records.json")), "In-place migration publishes converted source at the original root");
         check(File.ReadAllText(Path.Combine(nestedRoot, "scripts/build.js")) == "original script" && File.ReadAllText(Path.Combine(nestedRoot, ".git/config")) == "original git metadata", "In-place migration preserves scripts and Git metadata");
         check(File.Exists(Path.Combine(backupRoot, "content/mods/Nested/Nested.mpq/data/global/excel/example.txt")), "In-place migration retains the original nested files in backup");

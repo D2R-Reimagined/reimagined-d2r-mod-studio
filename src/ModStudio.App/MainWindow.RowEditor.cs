@@ -1,52 +1,120 @@
+using System.ComponentModel;
 using System.Text.Json.Nodes;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
+using Avalonia.Data;
 using Avalonia.Media;
+using Avalonia.Threading;
+using ModStudio.Core;
 
 namespace ModStudio.App;
 
 public partial class MainWindow
 {
-    private void RefreshRowEditor(EditorPane pane)
+    private bool rowEditorRefreshQueued;
+    private EditorPane? rowEditorPane;
+    private int rowEditorRow = -1, rowEditorRevision = -1;
+    private TableData? rowEditorTable;
+    private string rowEditorLocks = "";
+    private int rowEditorRefreshCount;
+
+    private void InitializeRowEditor()
     {
-        RowEditorFields.Children.Clear();
-        var document = pane.Document;
-        var table = document.Table;
-        int row = pane.SelectedRow;
-        if (table == null || document.PendingSource || row < 0 || row >= table.Records.Count)
+        RowEditorFields.ItemTemplate = new FuncDataTemplate<RowEditorField>((field, _) =>
         {
-            RowEditorLabel.Text = document.PendingSource ? "Apply valid source before editing rows." : "Select a table row";
+            if (field == null) return new Border();
+            var panel = new StackPanel { Spacing = 3, Margin = new(0, 0, 24, 10) };
+            panel.Children.Add(new TextBlock { Text = field.Label, TextWrapping = TextWrapping.Wrap });
+            var input = new TextBox { IsReadOnly = field.ReadOnly, AcceptsReturn = field.Multiline,
+                TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
+            Avalonia.Automation.AutomationProperties.SetName(input, field.Column);
+            input.Bind(TextBox.TextProperty, new Binding(nameof(RowEditorField.Value)) { Source = field, Mode = BindingMode.TwoWay });
+            panel.Children.Add(input);
+            return panel;
+        });
+        InspectorTabs.SelectionChanged += (_, e) =>
+        {
+            if (e.Source != InspectorTabs) return;
+            RefreshRowEditor(Active);
+            _ = RefreshSemanticInspectorAsync();
+        };
+    }
+
+    private void RefreshRowEditor(EditorPane? pane)
+    {
+        // SelectionChanged and CurrentCellChanged often arrive together. Work on the latest active row.
+        if (rowEditorRefreshQueued || InspectorTabs?.SelectedIndex != 1) return;
+        rowEditorRefreshQueued = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            rowEditorRefreshQueued = false;
+            if (InspectorTabs.SelectedIndex != 1) return;
+            UpdateRowEditor();
+        }, DispatcherPriority.Background);
+    }
+
+    private void UpdateRowEditor()
+    {
+        var pane = Active;
+        var document = pane?.Document;
+        var table = document?.Table;
+        int row = pane?.SelectedRow ?? -1;
+        if (pane == null || table == null || document!.PendingSource || row < 0 || row >= table.Records.Count)
+        {
+            RowEditorFields.ItemsSource = null;
+            rowEditorPane = null; rowEditorTable = null;
+            RowEditorLabel.Text = document?.PendingSource == true ? "Apply valid source before editing rows." : "Select a table row";
             return;
         }
+        var locks = string.Join('\n', document.LockedColumns.Order()) + "|" + document.LockedRows.Contains(row);
+        if (rowEditorPane == pane && rowEditorRow == row && rowEditorRevision == document.Revision &&
+            rowEditorTable == table && rowEditorLocks == locks) return;
+        rowEditorPane = pane; rowEditorRow = row; rowEditorRevision = document.Revision;
+        rowEditorTable = table; rowEditorLocks = locks; rowEditorRefreshCount++;
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";
         RowEditorStatus.Text = "Edits apply immediately to the shared source. Save to write to disk.";
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
-        foreach (var column in table.Columns)
+        RowEditorFields.ItemsSource = table.Columns.Select(column =>
         {
             bool identity = table.IsCatalog ? column is "id" or "Key" : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
-            var field = new StackPanel { Spacing = 3 };
-            field.Children.Add(new TextBlock { Text = column + (identity ? " · identity (read-only)" : locked ? " · locked" : ""), TextWrapping = TextWrapping.Wrap });
-            var input = new TextBox { Text = table.Cell(row, column), IsReadOnly = identity || locked,
-                AcceptsReturn = table.IsCatalog, TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
-            Avalonia.Automation.AutomationProperties.SetName(input, column);
-            bool updating = false;
-            input.TextChanged += (_, _) =>
-            {
-                if (updating || input.IsReadOnly || Active != pane || pane.SelectedRow != row || document.PendingSource) return;
-                try
+            return new RowEditorField(column, column + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
+                table.Cell(row, column), identity || locked, table.IsCatalog, field =>
                 {
-                    document.SetCells([(row, column, input.Text ?? "")]);
-                    pane.RefreshRowValues(row);
-                    if (FieldPicker.SelectedItem as string == column) CellValue.Text = input.Text;
-                    RowEditorStatus.Text = "Edits applied · Save to write to disk. Undo is available in the table toolbar.";
-                }
-                catch (Exception ex)
-                {
-                    RowEditorStatus.Text = ex.Message;
-                    updating = true; input.Text = document.Table!.Cell(row, column); updating = false;
-                }
-            };
-            field.Children.Add(input); RowEditorFields.Children.Add(field);
+                    // Detached controls and queued binding updates must never edit a newly selected row/document.
+                    if (Active != pane || pane.SelectedRow != row || document.PendingSource || field.ReadOnly ||
+                        RowEditorFields.ItemsSource is not RowEditorField[] current || !current.Contains(field)) return;
+                    if (document.Table!.Cell(row, column) == field.Value) return;
+                    try
+                    {
+                        document.SetCells([(row, column, field.Value)]);
+                        rowEditorRevision = document.Revision;
+                        pane.RefreshRowValues(row);
+                        if (FieldPicker.SelectedItem as string == column) CellValue.Text = field.Value;
+                        RowEditorStatus.Text = "Edits applied · Save to write to disk. Undo is available in the table toolbar.";
+                    }
+                    catch (Exception ex)
+                    {
+                        RowEditorStatus.Text = ex.Message;
+                        field.Reset(document.Table!.Cell(row, column));
+                    }
+                });
+        }).ToArray();
+    }
+
+    private sealed class RowEditorField(string column, string label, string value, bool readOnly, bool multiline, Action<RowEditorField> edit) : INotifyPropertyChanged
+    {
+        public string Column { get; } = column;
+        public string Label { get; } = label;
+        public bool ReadOnly { get; } = readOnly;
+        public bool Multiline { get; } = multiline;
+        private string current = value;
+        public string Value
+        {
+            get => current;
+            set { if (current == value) return; current = value; edit(this); PropertyChanged?.Invoke(this, new(nameof(Value))); }
         }
+        public void Reset(string value) { current = value; PropertyChanged?.Invoke(this, new(nameof(Value))); }
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 }

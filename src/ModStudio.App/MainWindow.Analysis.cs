@@ -20,6 +20,7 @@ public partial class MainWindow
     private async Task RefreshSemanticInspectorAsync()
     {
         int generation = ++inspectionGeneration;
+        if (InspectorTabs.SelectedIndex != 0) return;
         if (ProfileValue == null || ReferenceList == null) return;
         ReferenceList.ItemsSource = null; EditProfileButton.IsVisible = false; ProfileValue.Text = ""; ReferenceStatus.Text = "";
         if (project == null || Active is not { } pane || pane.Document.Table is not { IsCatalog: false } table || pane.Document.PendingSource || pane.SelectedRow < 0 || pane.SelectedRow >= table.Records.Count || FieldPicker.SelectedItem is not string column) return;

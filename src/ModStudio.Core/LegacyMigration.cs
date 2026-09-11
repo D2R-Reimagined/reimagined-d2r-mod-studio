@@ -53,7 +53,8 @@ public static class LegacyMigration
         var originals = MigrationFiles.Fingerprint(MigrationFiles.Enumerate(root, token, skipBuildCache: true), root, "Scanning original project (old .studio/builds stay in backup)", token, progress);
         try
         {
-            var result = Migrate(legacy, prepared, name, token, progress);
+            // Validate once, after supporting files have been preserved and before replacing the root.
+            var result = MigrateCore(legacy, prepared, name, token, progress, verifyProfiles: false);
             progress?.Invoke("Preserving repository metadata and supporting project files…");
             MigrationFiles.Run(originals.Keys, root, "Preserving repository metadata and supporting project files", token, progress, (original, reportBytes) =>
             {
@@ -100,6 +101,9 @@ public static class LegacyMigration
             if (!(projectRoot && Excluded.Contains(Path.GetFileName(dir))) && !Path.GetFileName(dir).Equals(".git", StringComparison.OrdinalIgnoreCase)) foreach (var file in Inputs(dir, false)) yield return file;
     }
     public static ImportReport Migrate(LegacyProject legacy, string destination, string name, CancellationToken token = default, Action<string>? progress = null)
+        => MigrateCore(legacy, destination, name, token, progress, verifyProfiles: true);
+
+    private static ImportReport MigrateCore(LegacyProject legacy, string destination, string name, CancellationToken token, Action<string>? progress, bool verifyProfiles)
     {
         destination = Path.GetFullPath(destination); NoLinks(destination); ModProject.ValidateName(name);
         Require(!Contains(legacy.Root, destination) && !Contains(destination, legacy.Root), "Migration must use a separate destination.");
@@ -189,7 +193,8 @@ public static class LegacyMigration
             }
             WriteJson(Inside(stage, "migration-report.json"), new JsonObject { ["schemaVersion"] = 1, ["tables"] = tables, ["catalogs"] = catalogs, ["verifiedTxtFiles"] = verified, ["retainedLegacyFiles"] = retained, ["note"] = "Original project unchanged. Files under legacy/ are preserved for review and are not deployed automatically. Git history and local build/cache folders are excluded.", ["files"] = new JsonArray(inputs.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(legacy.Root, p.Key), ["sha256"] = p.Value }).ToArray()) });
             var stagedProject = ModProject.Open(stage);
-            foreach (var profile in stagedProject.Profiles) { progress?.Invoke("Verifying migrated profile: " + profile); BuildService.Build(stagedProject, profile, token, message => progress?.Invoke(profile + ": " + message)); }
+            if (verifyProfiles)
+                foreach (var profile in stagedProject.Profiles) { progress?.Invoke("Verifying migrated profile: " + profile); BuildService.Build(stagedProject, profile, token, message => progress?.Invoke(profile + ": " + message)); }
             // These are only the verification builds created above in this new staging folder.
             var validationCache = Inside(stage, ".studio"); if (Directory.Exists(validationCache)) Directory.Delete(validationCache, true);
             token.ThrowIfCancellationRequested();

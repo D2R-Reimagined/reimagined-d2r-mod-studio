@@ -42,7 +42,8 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeRowEditor(); Problems.ItemsSource = diagnostics;
+        if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
@@ -389,7 +390,7 @@ public partial class MainWindow : Window
         }
         Changes.ItemsSource = changes;
     }
-    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); }
+    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else RefreshRowEditor(null); }
     private void UpdateInspector(EditorPane pane)
     {
         if (Active != pane) return; inspectorUpdating = true;
@@ -615,8 +616,9 @@ public partial class MainWindow : Window
                 var cellPoint = clickableCell.TranslatePoint(new Point(clickableCell.Bounds.Width / 2, 15), this)!.Value;
                 this.MouseDown(cellPoint, MouseButton.Left, RawInputModifiers.None); this.MouseUp(cellPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
                 Require(pane.SelectedRow == ((RowView)clickableRow.DataContext!).Row && pane.SelectedColumn == field, "Mouse cell selection failed to update the inspector selection.");
-                Require(RowEditorFields.Children.Count == pane.Document.Table.Columns.Length, "Row editor omitted columns outside the table window.");
-                var rowInput = RowEditorFields.Children.OfType<StackPanel>().SelectMany(p => p.Children.OfType<TextBox>()).First(t => !t.IsReadOnly);
+                InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
+                Require(RowEditorFields.ItemCount == pane.Document.Table.Columns.Length, "Row editor omitted columns outside the table window.");
+                var rowInput = RowEditorFields.GetVisualDescendants().OfType<TextBox>().First(t => !t.IsReadOnly);
                 var rowField = Avalonia.Automation.AutomationProperties.GetName(rowInput)!;
                 var rowBefore = pane.Document.Table.Cell(pane.SelectedRow, rowField);
                 rowInput.Text = rowBefore + " row-editor"; await Task.Delay(60);
@@ -635,12 +637,47 @@ public partial class MainWindow : Window
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
                 results.Add(new { table = name, elapsedMs = timer.Elapsed.TotalMilliseconds, rows = pane.Document.Table!.Records.Count, displayedColumns = pane.TableGrid.Columns.Count, realizedRows, editingAndUndo = true });
             }
+            InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
+            var widePane = Active!;
+            var realizedFields = RowEditorFields.GetVisualDescendants().OfType<TextBox>().Count();
+            Require(RowEditorFields.ItemCount == 322 && realizedFields > 0 && realizedFields < 40, "Wide row editor did not virtualize its inputs.");
+            var previousFields = (RowEditorField[])RowEditorFields.ItemsSource!;
+            var previousRow = widePane.SelectedRow;
+            var previousValue = widePane.Document.Table!.Cell(previousRow, previousFields[0].Column);
+            var refreshCount = rowEditorRefreshCount;
+            for (int i = 0; i < 20; i++) RefreshRowEditor(widePane);
+            await Task.Delay(80);
+            Require(rowEditorRefreshCount == refreshCount && ReferenceEquals(previousFields, RowEditorFields.ItemsSource), "Unchanged row rebuilt the field list.");
+            var switchWatch = Stopwatch.StartNew();
+            widePane.Jump(201, widePane.SelectedColumn); widePane.Jump(202, widePane.SelectedColumn); widePane.Jump(203, widePane.SelectedColumn);
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+            switchWatch.Stop(); await Task.Delay(80);
+            Require(rowEditorRow == 203 && rowEditorRefreshCount == refreshCount + 1, "Rapid row changes were not coalesced to the latest row.");
+            previousFields[0].Value = previousValue + " stale";
+            Require(widePane.Document.Table.Cell(previousRow, previousFields[0].Column) == previousValue, "Detached row input changed a previous row.");
+            var lastField = ((RowEditorField[])RowEditorFields.ItemsSource!)[^1];
+            RowEditorFields.ScrollIntoView(lastField); await Task.Delay(150);
+            var lastInput = RowEditorFields.GetVisualDescendants().OfType<TextBox>().Single(t => Avalonia.Automation.AutomationProperties.GetName(t) == lastField.Column);
+            var lastBefore = widePane.Document.Table.Cell(203, lastField.Column);
+            Require(lastInput.Text == lastBefore, "Virtualized last field shows stale content.");
+            lastInput.Text = lastBefore + " virtualized edit"; await Task.Delay(60);
+            Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore + " virtualized edit", "Last virtualized column did not save its edit.");
+            widePane.Document.Undo(); widePane.Refresh(); await Task.Delay(100);
+            Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore, "Virtualized row edit undo failed.");
+            InspectorTabs.SelectedIndex = 0; var hiddenFields = RowEditorFields.ItemsSource;
+            widePane.Jump(204, widePane.SelectedColumn); await Task.Delay(80);
+            Require(ReferenceEquals(hiddenFields, RowEditorFields.ItemsSource), "Hidden Row Editor rebuilt its fields.");
+            InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
+            Require(rowEditorRow == 204, "Reopened Row Editor missed the latest selection.");
+            RowEditorFields.ScrollIntoView(RowEditorFields.Items[0]!); await Task.Delay(100);
+            results.Add(new { rowEditorColumns = 322, realizedFields, rapidSwitchMs = switchWatch.Elapsed.TotalMilliseconds, virtualizationAndStaleEventChecks = true });
             await Task.Delay(500); var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)); bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "studio.png"), PngBitmapEncoderOptions.Default); bitmap.Dispose();
             var markdownFile = System.IO.Path.Combine(output, "preview.md");
             InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
-            var rowScrollbar = RowEditorScroll.GetVisualDescendants().OfType<ScrollBar>().First(b => b.Orientation == Orientation.Vertical && b.TemplatedParent == RowEditorScroll);
-            var rowInputRight = RowEditorFields.Children.OfType<StackPanel>().SelectMany(p => p.Children.OfType<TextBox>()).First();
-            Require(rowInputRight.TranslatePoint(new Point(rowInputRight.Bounds.Width, 0), RowEditorScroll)!.Value.X <= rowScrollbar.TranslatePoint(new Point(0,0), RowEditorScroll)!.Value.X, "Row editor scrollbar overlaps input fields.");
+            var rowEditorScroll = RowEditorFields.GetVisualDescendants().OfType<ScrollViewer>().First();
+            var rowScrollbar = rowEditorScroll.GetVisualDescendants().OfType<ScrollBar>().First(b => b.Orientation == Orientation.Vertical && b.TemplatedParent == rowEditorScroll);
+            var rowInputRight = RowEditorFields.GetVisualDescendants().OfType<TextBox>().First();
+            Require(rowInputRight.TranslatePoint(new Point(rowInputRight.Bounds.Width, 0), rowEditorScroll)!.Value.X <= rowScrollbar.TranslatePoint(new Point(0,0), rowEditorScroll)!.Value.X, "Row editor scrollbar overlaps input fields.");
             InspectorTabs.SelectedIndex = 0;
             var tutorial = new QuickStartWindow(); var tutorialDialog = tutorial.ShowDialog(this); await Task.Delay(100);
             using (var tutorialBitmap = new RenderTargetBitmap(new PixelSize(720,640), new Vector(96,96)))
@@ -726,4 +763,3 @@ public partial class MainWindow : Window
         closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(exit);
     }
 }
-

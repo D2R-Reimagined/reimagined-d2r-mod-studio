@@ -38,7 +38,7 @@
    <TabItem Header="Row Editor"><Grid RowDefinitions="Auto,Auto,*" Margin="12">
     <TextBlock x:Name="RowEditorLabel" Text="Select a table row" TextWrapping="Wrap" Margin="0,0,0,8" />
     <TextBlock x:Name="RowEditorStatus" Grid.Row="1" Text="Edits apply immediately to the shared source. Save to write to disk." TextWrapping="Wrap" Classes="muted" Margin="0,0,0,10" />
-    <ScrollViewer x:Name="RowEditorScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Visible" AllowAutoHide="False"><StackPanel x:Name="RowEditorFields" Spacing="10" Margin="0,0,24,0" /></ScrollViewer>
+    <ListBox x:Name="RowEditorFields" Grid.Row="2" Background="Transparent" BorderThickness="0" Padding="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Visible" ScrollViewer.AllowAutoHide="False"><ListBox.Styles><Style Selector="ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /></Style></ListBox.Styles></ListBox>
    </Grid></TabItem>
    </TabControl>
   </Grid>

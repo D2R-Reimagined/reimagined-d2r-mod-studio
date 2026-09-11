@@ -112,8 +112,10 @@ public sealed class ItemPreviewResolver
             return template + suffix;
         }
         var item = Effective(table, record); bool set = table == "setitems";
-        var name = Localize(item.S("index")); var code = item.S(set ? "item" : "code");
-        var bases = code.Length == 0 ? [] : new[] { "weapons", "armor", "misc" }.Select(t => (Table: t, Row: Find(t, "code", code, false))).Where(x => x.Row != null).ToArray();
+        var rawName = item.S("index"); var code = item.S(set ? "item" : "code");
+        if (code.Length == 0) return new(rawName.Length == 0 ? "Inactive row" : rawName, set, ["Inactive/header row · no base item code"], []);
+        var name = Localize(rawName);
+        var bases = new[] { "weapons", "armor", "misc" }.Select(t => (Table: t, Row: Find(t, "code", code, false))).Where(x => x.Row != null).ToArray();
         Require(bases.Length <= 1, "Ambiguous base item code: " + code);
         JsonObject? baseItem = bases.FirstOrDefault().Row;
         if (baseItem == null) issues.Add("Missing base item: " + code + " (weapons/armor/misc).");
@@ -130,7 +132,7 @@ public sealed class ItemPreviewResolver
         void Property(string prop, string min, string max, string parameter, bool main)
         {
             if (prop.Length == 0) return;
-            var definition = Find("properties", "code", prop);
+            var definition = Find("properties", "code", prop, false);
             void Unsupported(string why) { lines.Add($"{prop}: min={min}, max={max}, param={parameter}"); issues.Add($"{prop}: {why}"); if (main) calculable = false; }
             if (definition == null) { Unsupported("property definition unavailable."); return; }
             try
@@ -144,6 +146,7 @@ public sealed class ItemPreviewResolver
                 // These functions need special generation-time encoding, but their authored tooltip
                 // is deterministic from min/max/param and can be previewed without claiming a stat total.
                 var displayFunctions = new HashSet<string> { "8", "9", "10", "11", "12", "13", "14", "15", "16", "18", "19", "20", "21", "22", "24", "25", "36" };
+                Require(functionIds.Any(displayFunctions.Contains) || authoredMin <= authoredMax || authoredMin < 0 && authoredMax < 0, "Minimum exceeds maximum.");
                 if (functionIds.Any(displayFunctions.Contains) && authoredTooltip.Length > 0)
                 {
                     IEnumerable<string> replacements = functionIds.Contains("11")
@@ -160,6 +163,7 @@ public sealed class ItemPreviewResolver
                     lines.Add(parameter.Length > 0 ? $"{prop}: {parameter}" : $"{prop}: {InlineRange(low, high)}");
                     return;
                 }
+                decimal tooltipLow = low, tooltipHigh = high;
                 foreach (var entry in functions.SelectMany(slot => definition.S("func" + slot) == "7" ? new[] { (Slot: slot, Minimum: true), (Slot: slot, Minimum: false) } : new[] { (Slot: slot, Minimum: false) }))
                 {
                     int slot = entry.Slot;
@@ -176,9 +180,15 @@ public sealed class ItemPreviewResolver
                         }
                         var scaling = Find("itemstatcost", "Stat", stat);
                         Require(scaling != null, "Missing level-scaling stat metadata.");
-                        var shift = scaling!.S("op param").Length > 0 ? Number(scaling, "op param") : 3;
-                        Require(shift is >= 0 and <= 16, "Unsupported level-scaling divisor.");
-                        a = b = Math.Floor(decimal.Parse(parameter, CultureInfo.InvariantCulture) * level / (decimal)Math.Pow(2, (double)shift));
+                        a = b = decimal.Parse(parameter, CultureInfo.InvariantCulture);
+                        if (scaling!.S("op") is "2" or "4" or "5" && scaling.S("op base") == "level")
+                        {
+                            var shift = scaling.S("op param").Length > 0 ? Number(scaling!, "op param") : 0;
+                            Require(shift is >= 0 and <= 16, "Unsupported level-scaling divisor.");
+                            a = b = Math.Floor(a * level / (decimal)Math.Pow(2, (double)shift));
+                        }
+                        tooltipLow = a; tooltipHigh = b;
+                        if (scaling.S("descfunc") == "11" && a != 0) tooltipLow = tooltipHigh = Math.Ceiling(100 / a);
                     }
                     else Require(function is "1" or "2" or "3" or "5" or "6" or "7" or "23", "Unsupported property function " + function + ".");
                     if (function == "23") { Require(prop == "ethereal", "Unsupported special property."); lines.Add("Ethereal"); if (main) totals["ethereal"] = (1, 1); continue; }
@@ -205,7 +215,8 @@ public sealed class ItemPreviewResolver
                     {
                         var desc = cost!.S("descfunc");
                         Require(!(a < 0 && b > 0), "Mixed-sign ranges need separate positive and negative descriptions.");
-                        string label = Localize(cost.S(b < 0 ? "descstrneg" : "descstrpos"));
+                        var labelKey = cost.S(b < 0 ? "descstrneg" : "descstrpos");
+                        string label = labelKey.Length == 0 ? stat : Localize(labelKey);
                         string value = Range(a, b), plus = a >= 0 ? "+" : "";
                         if (desc == "19")
                         {
@@ -223,7 +234,7 @@ public sealed class ItemPreviewResolver
                         lines.Add(label + (function == "17" ? $" (at level {level})" : ""));
                     }
                 }
-                if (authoredTooltip.Length > 0) lines.Add(FillPropertyTemplate(authoredTooltip, [InlineRange(low, high)], parameter, functionIds.Contains("17") ? $" (at level {level})" : ""));
+                if (authoredTooltip.Length > 0) lines.Add(FillPropertyTemplate(authoredTooltip, [InlineRange(tooltipLow, tooltipHigh)], parameter, functionIds.Contains("17") ? $" (at level {level})" : ""));
             }
             catch (Exception e) when (e is FormatException or InvalidOperationException or InvalidDataException or OverflowException) { Unsupported(e.Message); }
         }

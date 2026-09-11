@@ -22,6 +22,8 @@ This is a supported subset of Diablo II property interpretation, not a complete 
 
 Unknown effects stay visible with their code and min/max/parameter arguments. Derived totals are withheld when unsupported properties could make them misleading. Subtotals exclude character bonuses, automods/staffmods, socket contents, upgrades and activated set bonuses. Displayed granted skills, charges/procs and socket counts are authored values and do not attempt to simulate their runtime effects. Monster health/experience calculations remain future work. Required level currently reflects authored item/base requirements, not additional requirements introduced by effects.
 
+Rows without a base-item code are treated as inactive/header rows rather than broken items. Missing custom property definitions and missing localization remain explicit project-data errors.
+
 Defense rounding reference: Blizzard's [item basics](https://classic.battle.net/diablo2exp/items/basics.shtml) and [magic prefixes](https://classic.battle.net/diablo2exp/items/magic/pre.shtml). Stat names, localization and property wiring are resolved from the user's data.
 
 ## Responsiveness

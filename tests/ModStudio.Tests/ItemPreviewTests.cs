@@ -37,6 +37,8 @@ internal static class ItemPreviewTests
         throws(() => Preview(profile: "test"), "Stale preview overrides are blocked");
         var broken = (JsonObject)item.DeepClone(); broken["fields"]!["prop3"] = "missing";
         check(Preview(broken).Issues.Any(x => x.Contains("missing")) && Preview(broken).Lines.Any(x => x.StartsWith("Derived totals unavailable")), "Unknown properties remain visible and block misleading derived totals");
+        var inactive = Row("inactive", "index", "Expansion");
+        check(Preview(inactive).Issues.Length == 0 && Preview(inactive).Lines.Contains("Inactive/header row · no base item code"), "Inactive separator rows do not report incomplete item previews");
         broken = (JsonObject)item.DeepClone(); broken["fields"]!["min1"] = "100";
         check(Preview(broken).Issues.Any(x => x.Contains("Minimum exceeds")), "Invalid roll ranges produce useful preview errors");
         Table("armor", Row("armor", "code", "arm", "namestr", "armor", "minac", "5", "maxac", "10")); resolver.Clear();

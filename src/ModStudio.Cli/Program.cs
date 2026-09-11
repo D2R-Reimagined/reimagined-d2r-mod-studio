@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModStudio.Core;
@@ -6,9 +7,40 @@ using static ModStudio.Core.Storage;
 
 try
 {
-    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | check <project> | build <project> [profile] | preview-info <file> | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
+    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | check <project> | build <project> [profile] | preview-info <file> | item-preview <project> <uniqueitems|setitems> <row> [profile] [level] [locale] | item-preview-audit <project> [profile] [level] [locale] | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
     switch (args[0])
     {
+        case "item-preview":
+            var itemProject = ModProject.Open(args[1]); var itemTable = TableData.Load(Inside(itemProject.Root, "source/tables/" + args[2] + "/records.json"));
+            var itemRow = int.Parse(args[3]); Require(itemRow >= 0 && itemRow < itemTable.Records.Count, "Invalid item row.");
+            var itemResult = new ItemPreviewResolver().Resolve(itemProject, args[2], (JsonObject)itemTable.Records[itemRow]!, args.ElementAtOrDefault(4) ?? "standard", int.Parse(args.ElementAtOrDefault(5) ?? "80"), args.ElementAtOrDefault(6) ?? "enUS", default);
+            Console.WriteLine(JsonSerializer.Serialize(itemResult, Pretty)); break;
+        case "item-preview-audit":
+            var auditProject = ModProject.Open(args[1]);
+            var auditRows = new List<(string Table, JsonObject Row)>();
+            foreach (var auditTableName in new[] { "uniqueitems", "setitems" })
+            {
+                var auditFile = Inside(auditProject.Root, $"source/tables/{auditTableName}/records.json");
+                if (!File.Exists(auditFile)) continue;
+                auditRows.AddRange(TableData.Load(auditFile).Records.OfType<JsonObject>().Select(row => (auditTableName, row)));
+            }
+            var issueCounts = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+            int completedPreviews = 0;
+            Parallel.ForEach(auditRows, new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Math.Max(1, Environment.ProcessorCount)) },
+                () => new ItemPreviewResolver(),
+                (entry, _, resolver) =>
+                {
+                    try
+                    {
+                        var result = resolver.Resolve(auditProject, entry.Table, entry.Row, args.ElementAtOrDefault(2) ?? "standard", int.Parse(args.ElementAtOrDefault(3) ?? "80"), args.ElementAtOrDefault(4) ?? "enUS", default);
+                        if (result.Issues.Length == 0) Interlocked.Increment(ref completedPreviews);
+                        foreach (var issue in result.Issues) issueCounts.AddOrUpdate(issue, 1, (_, count) => count + 1);
+                    }
+                    catch (Exception ex) { issueCounts.AddOrUpdate("Preview failed: " + ex.Message, 1, (_, count) => count + 1); }
+                    return resolver;
+                }, resolver => resolver.Clear());
+            Console.WriteLine(JsonSerializer.Serialize(new { Items = auditRows.Count, Complete = completedPreviews, Incomplete = auditRows.Count - completedPreviews, Issues = issueCounts.OrderByDescending(x => x.Value).Select(x => new { Count = x.Value, Issue = x.Key }) }, Pretty));
+            break;
         case "preview-info":
             var preview = SpecialistPreview.Load(args[1]); var pixels = preview.Decode(preview.InitialFrame);
             Console.WriteLine(JsonSerializer.Serialize(new { preview.Summary, Frames = preview.Frames.Length, pixels.Width, pixels.Height }, Pretty)); break;

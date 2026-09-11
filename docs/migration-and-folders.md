@@ -21,4 +21,6 @@ Select `D2R.exe` for the game executable, or the appropriate loader for your pro
 
 Settings displays path warnings as you edit. Incomplete settings can be saved; Build works without game paths. Deployment and Play perform their own checks, including source separation, ownership and existing files, before copying or launching.
 
+**Overwrite destination** in Run settings is enabled by default, including for existing settings, and saved separately for each profile. Deploy and Play can replace existing files included in the build, including files edited outside Studio. Unrelated destination files remain untouched. Uncheck it to reject differing unowned files and externally edited deployed files. Another project's deployment remains protected, as do externally edited files that would be removed rather than replaced. Interrupted deployments retain the existing backup and rollback behavior.
+
 Migration copies and fingerprints files using at most four workers, with file counts, processed MiB and current paths. Convert existing leaves old generated `.studio/builds/` only in the complete original backup; recovery files and Git metadata are preserved. Source conversion and profile validation remain ordered. Cancellation is checked between file chunks; cleanup can take additional time.

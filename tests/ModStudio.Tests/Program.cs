@@ -12,7 +12,10 @@ void Write(string file, string text) { Directory.CreateDirectory(Path.GetDirecto
 try
 {
     PreviewTests.Run(root, Check, Throws);
+    ItemPreviewTests.Run(root, Check, Throws);
+    PreviewPerformanceTests.Run(root, Check);
     BuildTests.Run(root, Check, Throws, Write);
+    await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
     var encodedFile = Path.Combine(root, "utf16.bat");
     var encodedBytes = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes("@echo off\r\necho hello\r\n")).ToArray();

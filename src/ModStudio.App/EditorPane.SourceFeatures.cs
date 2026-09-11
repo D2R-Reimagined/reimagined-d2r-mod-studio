@@ -7,6 +7,11 @@ namespace ModStudio.App;
 public sealed partial class EditorPane
 {
     private FoldingManager? folding;
+    private CancellationTokenSource? foldingWork;
+    private int foldingRevision, appliedFoldingRevision = -1;
+    private bool foldingAttached;
+    internal int FoldingScanCount { get; private set; }
+    internal Task PendingFolding { get; private set; } = Task.CompletedTask;
     internal int FoldedBlockCount => folding?.AllFoldings.Count(f => f.IsFolded) ?? 0;
     private void InitializeSourceFeatures(WrapPanel toolbar)
     {
@@ -15,32 +20,58 @@ public sealed partial class EditorPane
         if (!System.IO.Path.GetExtension(Document.FilePath).Equals(".json", StringComparison.OrdinalIgnoreCase)) return;
         folding = FoldingManager.Install(Source.TextArea);
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
-        timer.Tick += (_, _) => { timer.Stop(); UpdateJsonFolds(); };
-        Source.TextChanged += (_, _) => { timer.Stop(); timer.Start(); };
-        DetachedFromVisualTree += (_, _) => timer.Stop();
-        AttachedToVisualTree += (_, _) => UpdateJsonFolds();
+        timer.Tick += (_, _) => { timer.Stop(); PendingFolding = UpdateJsonFoldsAsync(); };
+        Source.TextChanged += (_, _) => { foldingRevision++; foldingWork?.Cancel(); timer.Stop(); if (foldingAttached && Source.IsVisible) timer.Start(); };
+        DetachedFromVisualTree += (_, _) => { foldingAttached = false; timer.Stop(); foldingWork?.Cancel(); };
+        AttachedToVisualTree += (_, _) => { foldingAttached = true; PendingFolding = UpdateJsonFoldsAsync(); };
+        Source.PropertyChanged += (_, e) => {
+            if (e.Property.Name != nameof(Source.IsVisible)) return;
+            timer.Stop();
+            if (Source.IsVisible) PendingFolding = UpdateJsonFoldsAsync(); else foldingWork?.Cancel();
+        };
         foreach (var collapse in new[] { true, false })
         {
             var button = EditorToolbarIcons.Create(collapse ? "Collapse JSON" : "Expand JSON");
-            button.Click += (_, _) => { timer.Stop(); UpdateJsonFolds(); foreach (var fold in folding.AllFoldings) fold.IsFolded = collapse; };
+            button.Click += (_, _) => { timer.Stop(); PendingFolding = UpdateJsonFoldsAsync(collapse); };
             button.IsVisible = Source.IsVisible; Source.PropertyChanged += (_, e) => { if (e.Property.Name == "IsVisible") button.IsVisible = Source.IsVisible; };
             toolbar.Children.Add(button);
         }
     }
 
-    internal void UpdateJsonFolds()
+    private async Task UpdateJsonFoldsAsync(bool? collapse = null)
     {
-        if (folding == null) return;
-        folding.UpdateFoldings(JsonFolds(Source.Text), -1);
+        if (folding == null || !foldingAttached || !Source.IsVisible) return;
+        foldingWork?.Cancel();
+        if (appliedFoldingRevision == foldingRevision)
+        {
+            if (collapse.HasValue) foreach (var fold in folding.AllFoldings) fold.IsFolded = collapse.Value;
+            return;
+        }
+        var work = foldingWork = new CancellationTokenSource(); var token = work.Token;
+        int current = foldingRevision;
+        // AvaloniaEdit's immutable snapshot can be scanned away from the dispatcher while typing continues.
+        var snapshot = Source.Document.CreateSnapshot();
+        try
+        {
+            FoldingScanCount++;
+            var folds = await Task.Run(() => JsonFolds(snapshot.Text, token).ToArray(), token);
+            if (token.IsCancellationRequested || current != foldingRevision || !foldingAttached || !Source.IsVisible) return;
+            folding.UpdateFoldings(folds, -1); appliedFoldingRevision = current;
+            if (collapse.HasValue) foreach (var fold in folding.AllFoldings) fold.IsFolded = collapse.Value;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { error(ex); }
+        finally { if (ReferenceEquals(foldingWork, work)) foldingWork = null; work.Dispose(); }
     }
 
-    internal static IEnumerable<NewFolding> JsonFolds(string text)
+    internal static IEnumerable<NewFolding> JsonFolds(string text, CancellationToken cancellation = default)
     {
         var stack = new Stack<(int Offset, char Kind, int Line)>();
         var folds = new List<NewFolding>();
         bool quoted = false, escaped = false; int line = 0;
         for (int i = 0; i < text.Length; i++)
         {
+            if ((i & 4095) == 0) cancellation.ThrowIfCancellationRequested();
             char c = text[i];
             if (c == '\n') line++;
             if (quoted) { if (escaped) escaped = false; else if (c == '\\') escaped = true; else if (c == '"') quoted = false; continue; }
@@ -54,6 +85,7 @@ public sealed partial class EditorPane
                 if (line > start.Line) folds.Add(new NewFolding(start.Offset, i + 1) { Name = start.Kind == '{' ? "{ … }" : "[ … ]" });
             }
         }
+        cancellation.ThrowIfCancellationRequested();
         return folds.OrderBy(f => f.StartOffset);
     }
 

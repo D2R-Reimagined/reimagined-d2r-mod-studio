@@ -4,7 +4,7 @@ using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
 
-public record RunSettings(string DeploymentDirectory = "", string Executable = "", string Runner = "", string[]? RunnerArguments = null, string[]? Arguments = null, bool SaveBeforePlay = true, string GameDirectory = "", string LaunchTarget = "D2R.exe")
+public record RunSettings(string DeploymentDirectory = "", string Executable = "", string Runner = "", string[]? RunnerArguments = null, string[]? Arguments = null, bool SaveBeforePlay = true, string GameDirectory = "", string LaunchTarget = "D2R.exe", bool OverwriteDestination = true)
 {
     public string InstallationDirectory => string.IsNullOrWhiteSpace(GameDirectory) ? Path.GetDirectoryName(Executable) ?? "" : GameDirectory;
     public static string[] DetectExecutables(string directory)
@@ -65,7 +65,7 @@ public static class DeploymentService
 {
     private const string Owner = ".studio-owner.json";
     private const string Transaction = ".studio-transaction";
-    public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null)
+    public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null, bool overwriteDestination = false)
     {
         using var buildLock = BuildCache.Lock(project);
         var buildManifest = Inside(project.Cache, "builds/current/build.json");
@@ -89,11 +89,12 @@ public static class DeploymentService
         {
             token.ThrowIfCancellationRequested(); var source = Inside(build.Output, file.Path); Require(File.Exists(source) && BuildCache.FileHash(source) == file.Sha256, "Build output changed; rebuild before deploying.");
             var dest = Inside(target, file.Path);
-            if (File.Exists(dest) && previous?.Files.All(f => !f.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) != false)
-                Require(BuildCache.FileHash(dest) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Use a separate test mod folder.");
+            if (!overwriteDestination && File.Exists(dest) && previous?.Files.All(f => !f.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) != false)
+                Require(BuildCache.FileHash(dest) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Enable Overwrite destination in Run settings or use a separate mod folder.");
         }
         foreach (var owned in previous?.Files ?? [])
         {
+            if (overwriteDestination && next.ContainsKey(owned.Path)) continue;
             var dest = Inside(target, owned.Path); if (File.Exists(dest)) Require(BuildCache.FileHash(dest) == owned.Sha256, $"Deployed file was edited outside Studio: {owned.Path}. Preserve/import it before deploying.");
         }
         var ownership = JsonSerializer.SerializeToUtf8Bytes(new DeploymentManifest(project.Id, build.Id, build.Profile, build.Files), Pretty);
@@ -179,7 +180,7 @@ public sealed class RunController : IDisposable
             Require(!Running || !deploy, "Stop this editor's running game before deploying again.");
             var start = play ? CreateStartInfo(project, settings) : null;
             var build = await Task.Run(() => BuildService.Build(project, profile, token, progress), token);
-            if (deploy) await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress), token);
+            if (deploy) await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress, settings.OverwriteDestination), token);
             token.ThrowIfCancellationRequested();
             if (start != null)
             {

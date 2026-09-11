@@ -44,9 +44,13 @@ public static partial class SpecialistPreview
         Pixels(w, h); Require(frames is > 0 and <= 4096 && w % frames == 0 && frameWidth > 0 && frameWidth <= w / frames, "Unsupported sprite frame layout.");
         int length = format == 31 ? checked(w * h * 4) : checked(((w + 3) / 4) * ((h + 3) / 4) * (format is 57 or 58 or 63 ? 8 : 16)); Range(b, 40, length);
         return new($"D2R sprite · {w} × {h} atlas · {frames} frames · format {format}", new[] { "Full atlas" }.Concat(Enumerable.Range(0, frames).Select(i => $"Frame {i + 1}")).ToArray(), index => {
-            Require(index >= 0 && index <= frames, "Invalid sprite frame."); var atlas = Decode(b, 40, length, w, h, format); if (index == 0) return atlas;
+            Require(index >= 0 && index <= frames, "Invalid sprite frame.");
+            if (index == 0) return Decode(b, 40, length, w, h, format);
+            // Uncompressed sprites can crop directly from the encoded bytes, avoiding a full atlas copy.
+            var source = format == 31 ? b : Decode(b, 40, length, w, h, format).Rgba;
+            int sourceOffset = format == 31 ? 40 : 0;
             var result = new byte[checked(frameWidth * h * 4)];
-            for (int y = 0; y < h; y++) Buffer.BlockCopy(atlas.Rgba, (y * w + (index - 1) * (w / frames)) * 4, result, y * frameWidth * 4, frameWidth * 4);
+            for (int y = 0; y < h; y++) Buffer.BlockCopy(source, sourceOffset + (y * w + (index - 1) * (w / frames)) * 4, result, y * frameWidth * 4, frameWidth * 4);
             return new(frameWidth, h, result);
         });
     }

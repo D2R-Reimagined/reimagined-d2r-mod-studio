@@ -43,12 +43,12 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
-        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshLaunchTargets(); };
+        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshLaunchTargets(); };
         ProjectTree.ItemTemplate = new FuncTreeDataTemplate<ProjectEntry>((entry, _) =>
         {
             var label = new TextBlock { Text = entry.Name, Margin = new(2, 4), TextTrimming = TextTrimming.CharacterEllipsis };
@@ -203,6 +203,7 @@ public partial class MainWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             workspaceRevision++; SemanticStatus.Text = "Files changed; run source checks again";
+            RefreshItemPreview();
             _ = RefreshSemanticInspectorAsync();
             if (runningBuild != null && controller.Running) RunState.Text = $"Game: {runningBuild} · source changed";
             foreach (var tab in tabs)
@@ -361,12 +362,13 @@ public partial class MainWindow : Window
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var schemaFile = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(file)!, "schema.json");
         var pane = new EditorPane(document, ShowError, UpdateInspector, System.IO.Path.GetFileName(file) == "records.json" && File.Exists(schemaFile) ? async () => { try { await OpenDocumentAsync(schemaFile); } catch (Exception e) { ShowError(e); } } : null, SavePane);
+        pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
         var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { reload, close }; tab.ContextMenu = menu;
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
-        document.Changed += () => { if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); };
+        document.Changed += () => { if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); };
         var recoveryFile = RecoveryFile(document);
         if (File.Exists(recoveryFile) && !Program.Arguments.Contains("--smoke"))
         {
@@ -401,14 +403,14 @@ public partial class MainWindow : Window
         }
         Changes.ItemsSource = changes;
     }
-    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else RefreshRowEditor(null); }
+    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); } }
     private void UpdateInspector(EditorPane pane)
     {
         if (Active != pane) return; inspectorUpdating = true;
         var table = pane.Document.Table; SelectionLabel.Text = table == null ? pane.Document.FilePath : $"{table.Name} · row {pane.SelectedRow}\n{table.Records.Count:N0} records · {table.Columns.Length} columns";
         FieldPicker.ItemsSource = table?.Columns; FieldPicker.SelectedItem = table?.Columns.Contains(pane.SelectedColumn) == true ? pane.SelectedColumn : table?.Columns.FirstOrDefault(); inspectorUpdating = false; FieldSelected(null, null!);
         InspectorInfo.Text = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; IDs and keys remain stable. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
-        RefreshRowEditor(pane);
+        RefreshRowEditor(pane); RefreshItemPreview();
     }
     private void FieldSelected(object? sender, SelectionChangedEventArgs e) { if (!inspectorUpdating) { CellValue.Text = Active?.Document.Table is { } table && Active.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string field ? table.Cell(Active.SelectedRow, field) : ""; _ = RefreshSemanticInspectorAsync(); } }
     private void ApplyCellClicked(object? sender, RoutedEventArgs e) { try { if (Active is { } pane && FieldPicker.SelectedItem is string field) { pane.Document.SetCells([(pane.SelectedRow, field, CellValue.Text ?? "")]); pane.Refresh(); } } catch (Exception ex) { ShowError(ex); } }
@@ -470,6 +472,8 @@ public partial class MainWindow : Window
             var deployment = Field($"Deployment mod folder (…/mods/{project!.Name})", current.DeploymentDirectory);
             panel.Children.Add(new TextBlock { Text = $"Example: C:/Games/Diablo II Resurrected/mods/{project.Name}\nSelect the final {project.Name} folder. Studio creates its .mpq/data contents. The destination may be new; do not select your source data folder.", TextWrapping = TextWrapping.Wrap });
             var pickDeploy = new Button { Content = "Browse deployment folder" }; pickDeploy.Click += async (_, _) => { var value = await PickFolderAsync("Deployment mod folder"); if (value != null) deployment.Text = value; }; panel.Children.Add(pickDeploy);
+            var overwriteDestination = new CheckBox { Content = "Overwrite destination", IsChecked = current.OverwriteDestination }; panel.Children.Add(overwriteDestination);
+            panel.Children.Add(new TextBlock { Text = "Replace existing files included in the build during Deploy / Play, including files edited outside Studio. Unrelated files are kept. Enabled by default; saved per profile.", TextWrapping = TextWrapping.Wrap });
             var gameDirectory = Field("Game installation folder (contains D2R.exe / D2RLoader.exe)", current.InstallationDirectory);
             var launchTarget = new ComboBox { MinWidth = 200 };
             panel.Children.Add(new TextBlock { Text = "Launch using" }); panel.Children.Add(launchTarget);
@@ -494,7 +498,7 @@ public partial class MainWindow : Window
                 message.Text = issues.Count > 0 ? string.Join("\n", issues) : string.IsNullOrWhiteSpace(deployment.Text) || string.IsNullOrWhiteSpace(gameDirectory.Text) ? "Setup incomplete: Build works without game paths. Configure deployment and the game folder before Play." : "Paths look consistent. Deploy also checks folder ownership and existing files before copying.";
             }
             deployment.TextChanged += (_, _) => CheckPaths(); gameDirectory.TextChanged += (_, _) => { DetectLaunchers(); CheckPaths(); }; launchTarget.SelectionChanged += (_, _) => CheckPaths(); runner.TextChanged += (_, _) => CheckPaths(); CheckPaths();
-            var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true, gameDirectory.Text ?? "", launchTarget.SelectedItem as string ?? current.LaunchTarget).Save(project, Profile); RefreshLaunchTargets(); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
+            var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true, gameDirectory.Text ?? "", launchTarget.SelectedItem as string ?? current.LaunchTarget, overwriteDestination.IsChecked == true).Save(project, Profile); RefreshLaunchTargets(); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
             dialog.Content = new ScrollViewer { Content = panel };
             if (!Program.Arguments.Contains("--smoke"))
             {
@@ -565,6 +569,7 @@ public partial class MainWindow : Window
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await LoadProjectAsync(root); var results = new List<object>();
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
+            await SmokeItemPreviewsAsync(output);
             var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
             File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
             new RunSettings(GameDirectory: detectedGame).Save(project!, Profile); RefreshLaunchTargets();
@@ -782,9 +787,23 @@ public partial class MainWindow : Window
             Require(!saveIcon.IsVisible && !jsonPane.Document.IsDirty && File.ReadAllText(jsonFile) == jsonPane.Source.Text, "Document Save icon did not save and hide.");
             var jsonText = jsonPane.Source.Text;
             ActionButton("Collapse JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await jsonPane.PendingFolding;
             Require(jsonPane.FoldedBlockCount == 2 && jsonPane.Source.Text == jsonText, "JSON collapse changed text or missed nested blocks.");
+            int foldingScans = jsonPane.FoldingScanCount;
             ActionButton("Expand JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await jsonPane.PendingFolding;
             Require(jsonPane.FoldedBlockCount == 0 && jsonPane.Source.TextArea.TextView.Margin.Left >= 10, "Expand JSON or source gutter spacing failed.");
+            Require(jsonPane.FoldingScanCount == foldingScans, "Unchanged JSON was rescanned when expanding blocks.");
+            jsonPane.Source.Text = "[\n" + string.Join(",\n", Enumerable.Repeat("{\n  \"value\": 1\n}", 4000)) + "\n]";
+            ActionButton("Collapse JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var staleFolding = jsonPane.PendingFolding;
+            jsonPane.Source.Text = jsonText;
+            ActionButton("Collapse JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Task.WhenAll(staleFolding, jsonPane.PendingFolding);
+            Require(jsonPane.FoldedBlockCount == 2 && jsonPane.Source.Text == jsonText, "Stale JSON scan replaced newer document fold ranges.");
+            saveIcon.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ActionButton("Expand JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await jsonPane.PendingFolding;
             await Task.Delay(100);
             using (var sourceImage = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96,96))) { sourceImage.Render(this); sourceImage.Save(System.IO.Path.Combine(output, "json-folding.png"), PngBitmapEncoderOptions.Default); }
             await CloseTabAsync(tabs.First(t => t.Content == jsonPane));

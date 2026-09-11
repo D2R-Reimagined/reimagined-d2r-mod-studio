@@ -32,7 +32,9 @@
    </TabControl>
    <GridSplitter Grid.Column="3" ResizeDirection="Columns" />
    <TabControl x:Name="InspectorTabs" Grid.Column="4" Background="#242324">
-   <TabItem Header="Details"><ScrollViewer><StackPanel Margin="14" Spacing="9">
+   <TabControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></TabControl.ItemsPanel>
+   <TabControl.Styles><Style Selector="TabItem"><Setter Property="Padding" Value="8,6" /><Setter Property="MinHeight" Value="32" /><Setter Property="FontSize" Value="12" /></Style></TabControl.Styles>
+   <TabItem><TabItem.Header><TextBlock Text="Details" FontSize="12" /></TabItem.Header><ScrollViewer><StackPanel Margin="14" Spacing="9">
     <TextBlock Text="INSPECTOR" Foreground="#D8BC86" /><TextBlock x:Name="SelectionLabel" Text="Select a document or row" TextWrapping="Wrap" />
     <TextBlock Text="Field" Classes="muted" /><ComboBox x:Name="FieldPicker" SelectionChanged="FieldSelected" />
     <TextBox x:Name="CellValue" AcceptsReturn="True" MinHeight="60" TextWrapping="Wrap" /><Button Content="Apply cell" Click="ApplyCellClicked" />
@@ -43,7 +45,7 @@
     <TextBlock x:Name="ReferenceStatus" TextWrapping="Wrap" Classes="muted" />
     <ListBox x:Name="ReferenceList" MaxHeight="140" DoubleTapped="ReferenceDoubleTapped" KeyDown="ReferenceKeyDown" />
    </StackPanel></ScrollViewer></TabItem>
-   <TabItem Header="Row Editor"><Grid RowDefinitions="Auto,Auto,Auto,*" Margin="12">
+   <TabItem><TabItem.Header><TextBlock Text="Row Editor" FontSize="12" /></TabItem.Header><Grid RowDefinitions="Auto,Auto,Auto,*" Margin="12">
     <TextBlock x:Name="RowEditorLabel" Text="Select a table row" TextWrapping="Wrap" Margin="0,0,0,8" />
     <TextBlock x:Name="RowEditorStatus" Grid.Row="1" Text="Edits apply immediately to the shared source. Save to write to disk." TextWrapping="Wrap" Classes="muted" Margin="0,0,0,10" />
     <TextBox x:Name="RowEditorSearch" Grid.Row="2" PlaceholderText="Find columns…" ToolTip.Tip="Filter column names; retained when switching rows. Clear to show all." Margin="0,0,0,10" />

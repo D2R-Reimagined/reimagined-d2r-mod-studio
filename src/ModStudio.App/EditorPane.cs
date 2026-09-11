@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Templates;
 using Avalonia.Data;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
@@ -28,6 +29,9 @@ public sealed class RowView(Document document, int row, Action<Exception> error)
 
 public sealed partial class EditorPane : Grid
 {
+    public event Action<EditorPane, int, Control?>? ItemHovered;
+    private Control? hoveredItem;
+    private int hoveredRow = -1;
     public Document Document { get; }
     public DataGrid TableGrid { get; } = CreateGrid();
     public DataGrid FrozenGrid { get; } = CreateGrid();
@@ -163,6 +167,15 @@ public sealed partial class EditorPane : Grid
     private void WireGrid(DataGrid grid)
     {
         ScrollViewer.SetAllowAutoHide(grid, false);
+        grid.PointerMoved += (_, e) => {
+            if (Document.Table?.Name is not ("uniqueitems" or "setitems")) return;
+            var rowControl = (e.Source as Visual)?.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault();
+            int row = (rowControl?.DataContext as RowView)?.Row ?? -1;
+            if (row == hoveredRow && rowControl == hoveredItem) return;
+            hoveredRow = row; hoveredItem = rowControl; ItemHovered?.Invoke(this, row, rowControl);
+        };
+        grid.PointerExited += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
+        DetachedFromVisualTree += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
         grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
         grid.TemplateApplied += (_, e) =>
         {
@@ -296,16 +309,17 @@ public sealed partial class EditorPane : Grid
         }
         // Leave room for the frozen marker, sorting indicator and header padding.
         var width = Math.Clamp(Measure(Header(index)) + 48, 40, maximum);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        // Bound font-layout work on the UI thread. Sample the beginning and the full table,
-        // rather than measuring thousands of distinct identifiers before the first frame.
+        // Sample values cheaply, then measure only the longest candidates. Creating a font
+        // layout for every distinct ID across 24 visible columns delays the first paint.
         var sampleRows = Enumerable.Range(0, Math.Min(100, table.Records.Count))
             .Concat(Enumerable.Range(0, Math.Min(100, table.Records.Count)).Select(i => i * (table.Records.Count - 1) / 99)).Distinct();
-        foreach (int row in sampleRows)
+        var candidates = sampleRows.Select(row => table.Cell(row, table.Columns[index]))
+            .Select(value => { var end = value.IndexOfAny(['\r', '\n']); return value[..Math.Min(end < 0 ? value.Length : end, 256)]; })
+            .Distinct(StringComparer.Ordinal).OrderByDescending(value => value.Length).Take(12);
+        foreach (var value in candidates)
         {
             if (width >= maximum) break;
-            var value = table.Cell(row, table.Columns[index]);
-            if (seen.Add(value)) width = Math.Min(maximum, Math.Max(width, Measure(value) + 24));
+            width = Math.Min(maximum, Math.Max(width, Measure(value) + 24));
         }
         return fittedWidths[index] = Math.Ceiling(width);
     }
@@ -322,6 +336,10 @@ public sealed partial class EditorPane : Grid
                 foreach (var i in VisibleColumns())
                 {
                     var column = new DataGridTextColumn { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
+                    column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
+                        var label = new TextBlock { Text = Header(i), TextTrimming = TextTrimming.CharacterEllipsis };
+                        ToolTip.SetTip(label, Document.Table.Columns[i]); return label;
+                    });
                     columnMap[column] = i; grid.Columns.Add(column);
                     column.PropertyChanged += (_, e) =>
                     {

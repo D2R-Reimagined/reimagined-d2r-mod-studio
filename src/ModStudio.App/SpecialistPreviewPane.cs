@@ -25,11 +25,17 @@ public sealed class SpecialistPreviewPane : Grid
     private readonly ScrollViewer scroll;
     private readonly Border backdrop;
     private readonly ProgressBar busy = new() { IsIndeterminate = true, Height = 4 };
+    private static readonly PreviewWorkQueue Work = new();
+    private PreviewFrameCache frameCache = new();
+    private CancellationTokenSource? pending;
     private PreviewAsset? asset;
     private Bitmap? bitmap;
     private byte[]? palette;
     private int revision;
     private bool attached, changingFrames;
+    internal int DecodeCount { get; private set; }
+    internal Task ReloadAsync() => LoadAsync();
+    internal void SelectChannel(int index) => channels.SelectedIndex = index;
     internal void SelectFrame(int index) => frames.SelectedIndex = index;
     internal string HexText => hex.Text ?? "";
     public bool Ready => bitmap != null;
@@ -63,40 +69,56 @@ public sealed class SpecialistPreviewPane : Grid
         var footer = new StackPanel(); footer.Children.Add(status); footer.Children.Add(new Expander { Header = "Format details", Content = details }); SetRow(footer, 3); Children.Add(footer);
         background.SelectionChanged += (_, _) => backdrop.Background = background.SelectedIndex switch { 1 => Brushes.White, 2 => Brushes.Magenta, _ => new SolidColorBrush(Color.Parse("#303036")) };
         frames.SelectionChanged += async (_, _) => { if (!changingFrames && asset != null) await RenderFrameAsync(); };
-        channels.SelectionChanged += async (_, _) => { if (attached && bitmap != null) await RenderFrameAsync(); };
+        channels.SelectionChanged += async (_, _) => { if (attached && frames.IsEnabled) await RenderFrameAsync(); };
         zoom.SelectionChanged += (_, _) => ResizePreview();
         scroll.SizeChanged += (_, _) => ResizePreview();
         AttachedToVisualTree += async (_, _) => { attached = true; await LoadAsync(); };
-        DetachedFromVisualTree += (_, _) => { attached = false; revision++; asset = null; picture.Source = null; bitmap?.Dispose(); bitmap = null; };
+        DetachedFromVisualTree += (_, _) => { attached = false; revision++; pending?.Cancel(); frameCache = new(); asset = null; picture.Source = null; bitmap?.Dispose(); bitmap = null; };
+    }
+    private CancellationTokenSource BeginWork()
+    {
+        pending?.Cancel();
+        return pending = new CancellationTokenSource();
+    }
+    private void EndWork(CancellationTokenSource work)
+    {
+        if (ReferenceEquals(pending, work)) pending = null;
+        work.Dispose();
     }
     private async Task LoadAsync()
     {
-        int current = ++revision; asset = null; details.Text = ""; frames.IsEnabled = false; busy.IsVisible = true; status.Text = "Loading read-only preview…";
+        var work = BeginWork(); var token = work.Token; var selectedPalette = palette;
+        int current = ++revision; frameCache = new(); asset = null; details.Text = ""; frames.IsEnabled = false; busy.IsVisible = true; status.Text = "Loading read-only preview…";
         try
         {
-            var result = await Task.Run(() => {
+            var result = await Work.RunAsync(_ => {
                 Storage.NoLinks(file); using var input = File.OpenRead(file); var prefix = new byte[(int)Math.Min(4096, input.Length)]; input.ReadExactly(prefix);
                 var text = new StringBuilder();
                 for (int offset = 0; offset < prefix.Length; offset += 16) { var line = prefix.Skip(offset).Take(16).ToArray(); text.AppendLine($"{offset:X8}  {Convert.ToHexString(line).Chunk(2).Select(c => new string(c)).Aggregate("", (a, b) => a + b + " "),-48} {new string(line.Select(b => b is >= 32 and <= 126 ? (char)b : '.').ToArray())}"); }
                 PreviewAsset? decoded = null; string? error = null;
-                try { if (SpecialistPreview.Supports(file)) decoded = SpecialistPreview.Load(file, palette); } catch (Exception ex) { error = ex.Message; }
+                try { if (SpecialistPreview.Supports(file)) decoded = SpecialistPreview.Load(file, selectedPalette); } catch (Exception ex) { error = ex.Message; }
                 return (Hex: $"{input.Length:N0} bytes · first {prefix.Length:N0} bytes\n\n" + text, Asset: decoded, Error: error);
-            });
+            }, token);
             if (!attached || current != revision) return;
             hex.Text = result.Hex; if (result.Error != null) throw new InvalidDataException(result.Error); asset = result.Asset; frames.IsEnabled = true;
             changingFrames = true; frames.ItemsSource = asset?.Frames ?? ["Image (first frame)"]; frames.SelectedIndex = asset?.InitialFrame ?? 0; changingFrames = false;
             details.Text = asset?.Summary ?? "Standard image preview. Animated GIF/WebP displays its first frame.";
             await RenderFrameAsync();
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex) { if (attached && current == revision) { status.Text = "Preview unavailable: " + ex.Message; picture.Source = null; bitmap?.Dispose(); bitmap = null; busy.IsVisible = false; } }
+        finally { EndWork(work); }
     }
     private async Task RenderFrameAsync()
     {
+        var work = BeginWork(); var token = work.Token; var cache = frameCache;
         int current = ++revision, frame = frames.SelectedIndex, channel = channels.SelectedIndex; var selected = asset; busy.IsVisible = true;
         try
         {
-            var pixels = await Task.Run(() => {
-                if (selected != null) return selected.Decode(frame);
+            var pixels = await Work.RunAsync(cancellation => {
+                var decoded = cache.GetOrDecode(frame, index => {
+                DecodeCount++;
+                if (selected != null) return selected.Decode(index);
                 Storage.Require(new FileInfo(file).Length <= 64 * 1024 * 1024, "Image exceeds the 64 MiB preview limit.");
                 using var input = File.OpenRead(file); using var codec = SkiaSharp.SKCodec.Create(input) ?? throw new InvalidDataException("Unrecognized image format.");
                 var info = codec.Info; Storage.Require(info.Width > 0 && info.Height > 0 && (long)info.Width * info.Height <= 16 * 1024 * 1024, "Image exceeds the 16-megapixel preview limit.");
@@ -105,18 +127,18 @@ public sealed class SpecialistPreviewPane : Grid
                 var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
                 try { Storage.Require(codec.GetPixels(rgbaInfo, handle.AddrOfPinnedObject()) == SkiaSharp.SKCodecResult.Success, "Image data is incomplete or invalid."); } finally { handle.Free(); }
                 return new PreviewPixels(info.Width, info.Height, bytes);
-            });
-            if (channel > 0) await Task.Run(() => {
-                for (int i = 0; i < pixels.Rgba.Length; i += 4) { if (channel == 2) pixels.Rgba[i] = pixels.Rgba[i + 1] = pixels.Rgba[i + 2] = pixels.Rgba[i + 3]; pixels.Rgba[i + 3] = 255; }
-            });
+                }, cancellation);
+                return PreviewFrameCache.WithChannel(decoded, channel, cancellation);
+            }, token);
             if (!attached || current != revision) return;
             var next = new WriteableBitmap(new PixelSize(pixels.Width, pixels.Height), new Vector(96, 96), PixelFormat.Rgba8888, AlphaFormat.Unpremul);
             using (var target = next.Lock()) for (int y = 0; y < pixels.Height; y++) Marshal.Copy(pixels.Rgba, y * pixels.Width * 4, target.Address + y * target.RowBytes, pixels.Width * 4);
             picture.Source = next; bitmap?.Dispose(); bitmap = next;
             status.Text = $"Read-only · {channels.SelectedItem} · {pixels.Width} × {pixels.Height} · {Path.GetFileName(file)}" + (selected?.UsesPalette == true && palette == null ? " · grayscale indices (load palette for color)" : Path.GetExtension(file).Equals(".ds1", StringComparison.OrdinalIgnoreCase) ? " · occupancy overview, not full collision / terrain" : ""); ResizePreview();
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex) { if (attached && current == revision) { picture.Source = null; bitmap?.Dispose(); bitmap = null; status.Text = "Preview unavailable: " + ex.Message; } }
-        finally { if (attached && current == revision) busy.IsVisible = false; }
+        finally { if (attached && current == revision) busy.IsVisible = false; EndWork(work); }
     }
     private void ResizePreview()
     {

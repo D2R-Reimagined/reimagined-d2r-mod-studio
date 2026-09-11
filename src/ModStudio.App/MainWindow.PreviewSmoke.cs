@@ -26,6 +26,15 @@ public partial class MainWindow
         await OpenDocumentAsync(file, true); var tab = (TabItem)Documents.SelectedItem!; var preview = (SpecialistPreviewPane)tab.Content!;
         await Wait(() => preview.Ready); Require(preview.PreviewStatus.Contains("4 × 2"), "Sprite preview has wrong atlas dimensions.");
         preview.SelectFrame(1); await Wait(() => preview.PreviewStatus.Contains("2 × 2"));
+        int decoded = preview.DecodeCount;
+        preview.SelectChannel(2); await Wait(() => preview.PreviewStatus.Contains("· Alpha ·"));
+        preview.SelectChannel(1); preview.SelectChannel(2); preview.SelectChannel(0);
+        await Wait(() => preview.PreviewStatus.Contains("· RGBA ·"));
+        Require(preview.DecodeCount == decoded, "Channel switching decoded cached pixels again.");
+        preview.SelectFrame(0); await Wait(() => preview.PreviewStatus.Contains("4 × 2"));
+        Require(preview.DecodeCount == decoded, "Returning to a cached frame decoded it again.");
+        await preview.ReloadAsync();
+        Require(preview.Ready && preview.DecodeCount == decoded + 1, "Reload did not invalidate the preview cache.");
         Require(File.ReadAllBytes(file).SequenceEqual(bytes) && preview.HexText.Contains("00000000"), "Preview mutated source or omitted hex inspection.");
         await CloseTabAsync(tab); Require(!tabs.Contains(tab) && !preview.Ready, "Closing preview retained bitmap resources.");
         File.WriteAllBytes(file, bytes[..12]); await OpenDocumentAsync(file, true); tab = (TabItem)Documents.SelectedItem!; preview = (SpecialistPreviewPane)tab.Content!;

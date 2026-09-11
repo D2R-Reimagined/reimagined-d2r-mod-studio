@@ -55,10 +55,11 @@ public static partial class SpecialistPreview
         return new($"DS1 v{version} · act {act} · {w} × {h} tiles\nTop-down layer occupancy, not rendered terrain or full collision. Teal: floor. Gold: wall. Red: explicit unwalkable flag. Dark: empty.\nDependencies (not loaded):\n" + string.Join("\n", dependencies),
             new[] { "Combined layers" }.Concat(layers.Select(l => l.Name)).ToArray(), index => {
                 Require(index >= 0 && index <= layers.Count, "Invalid DS1 layer."); var rgba = new byte[cells * 4];
+                var selectedLayers = index == 0 ? layers.OrderBy(l => l.Wall).ToArray() : [layers[index - 1]];
                 for (int i = 0; i < cells; i++)
                 {
                     byte r = 30, g = 32, blue = 35;
-                    foreach (var layer in (index == 0 ? layers.OrderBy(l => l.Wall) : layers.Skip(index - 1).Take(1)))
+                    foreach (var layer in selectedLayers)
                     {
                         uint cell = unchecked((uint)Int(b, layer.Offset + i * 4)); if ((cell & 255) == 0) continue;
                         if ((cell & 0x20000) != 0) { r = 225; g = 65; blue = 55; break; }

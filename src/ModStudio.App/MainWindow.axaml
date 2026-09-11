@@ -14,9 +14,16 @@
    </DockPanel>
   </Border>
   <Grid Grid.Row="1" ColumnDefinitions="240,5,*,5,270">
-   <Grid RowDefinitions="Auto,*" Background="#242324">
+   <Grid RowDefinitions="Auto,Auto,Auto,*" Background="#242324">
     <TextBlock x:Name="ProjectLabel" Text="No project open" Margin="14" Classes="muted" TextWrapping="Wrap" />
-    <TreeView x:Name="ProjectTree" Grid.Row="1" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" />
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,8">
+     <TextBox x:Name="ExplorerSearch" PlaceholderText="Find files…" ToolTip.Tip="Filter file names and relative paths. Escape clears the search." />
+     <Button x:Name="ClearExplorerSearch" Grid.Column="1" Content="×" ToolTip.Tip="Clear file search" IsVisible="False" Padding="8,4" />
+    </Grid>
+    <TextBlock x:Name="ExplorerSearchStatus" Grid.Row="2" IsVisible="False" Margin="14,0,14,8" Classes="muted" Text="No matching files" />
+    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown">
+     <TreeView.Styles><Style Selector="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" /></Style></TreeView.Styles>
+    </TreeView>
    </Grid>
    <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
    <TabControl Grid.Column="2" x:Name="Documents" SelectionChanged="DocumentSelected">

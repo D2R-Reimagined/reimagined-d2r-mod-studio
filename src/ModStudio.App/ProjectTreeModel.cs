@@ -9,6 +9,26 @@ public sealed class ProjectEntry(string name, string path, bool directory, strin
     public bool Directory { get; } = directory;
     public string? SchemaPath { get; } = schemaPath;
     public List<ProjectEntry> Children { get; } = [];
+    public bool IsExpanded { get; set; }
+
+    public static List<ProjectEntry> Filter(IEnumerable<ProjectEntry> entries, string query)
+    {
+        query = query.Trim().Replace('\\', '/');
+        List<ProjectEntry> Visit(IEnumerable<ProjectEntry> nodes, string parent)
+        {
+            var result = new List<ProjectEntry>();
+            foreach (var node in nodes)
+            {
+                var path = parent + node.Name;
+                var children = Visit(node.Children, path + "/");
+                if (!path.Contains(query, StringComparison.OrdinalIgnoreCase) && children.Count == 0) continue;
+                var match = new ProjectEntry(node.Name, node.Path, node.Directory, node.SchemaPath) { IsExpanded = true };
+                match.Children.AddRange(children); result.Add(match);
+            }
+            return result;
+        }
+        return Visit(entries, "");
+    }
 
     public static List<ProjectEntry> Read(string root)
     {

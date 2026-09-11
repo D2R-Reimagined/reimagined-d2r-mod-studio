@@ -43,7 +43,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeRowEditor(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeRowEditor(); InitializeExplorerSearch(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
@@ -182,7 +182,7 @@ public partial class MainWindow : Window
         project = await Task.Run(() => ModProject.Open(root)); terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
-        ProjectTree.ItemsSource = entries; ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
+        explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; explorerEntries = entries; FilterExplorer(); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };
         watcher.Changed += OnExternalChange; watcher.Created += OnExternalChange; watcher.Deleted += OnExternalChange; watcher.Renamed += OnExternalChange;
         RefreshStatus(); Status.Text = "Project ready. Single-click to preview; double-click to keep a file open.";
@@ -548,6 +548,18 @@ public partial class MainWindow : Window
             await LoadProjectAsync(root); var results = new List<object>();
             RefreshRunControls(); Require(!StopButton.IsVisible, "Idle Stop button is visible.");
             operation = new(); RefreshRunControls(); Require(StopButton.IsVisible, "Cancelable work has no Stop button."); operation.Dispose(); operation = null; RefreshRunControls();
+            var unfilteredEntries = ProjectTree.ItemsSource;
+            ExplorerSearch.Text = "SOUNDS"; await Task.Delay(400); UpdateLayout();
+            var filteredRoots = ((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).ToArray();
+            var filteredTable = filteredRoots.Single(e => e.Name == "source").Children.Single(e => e.Name == "tables").Children.Single();
+            Require(filteredTable.Name == "sounds" && filteredTable.SchemaPath != null && !filteredTable.Directory, "Explorer search did not preserve logical table metadata or exclude unrelated files.");
+            Require(ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().Any(item => item.DataContext is ProjectEntry { Name: "sounds" }), "Search ancestors were not expanded to reveal the matching file.");
+            ExplorerSearch.Text = "source\\tables\\cube"; await Task.Delay(250);
+            Require(((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Single().Children.Single().Children.Single().Name == "cubemain", "Explorer relative-path search failed.");
+            ExplorerSearch.Text = "missing-file-xyz"; await Task.Delay(250);
+            Require(ExplorerSearchStatus.IsVisible && !((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Any(), "Explorer search did not display the empty state.");
+            ClearExplorerSearch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(250);
+            Require(ReferenceEquals(unfilteredEntries, ProjectTree.ItemsSource) && !ExplorerSearchStatus.IsVisible && !ClearExplorerSearch.IsVisible, "Clearing search did not restore the original tree.");
             var projectEntries = (IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!;
             var sourceEntry = projectEntries.Single(p => p.Name == "source"); var tableEntries = sourceEntry.Children.Single(p => p.Name == "tables").Children;
             Require(tableEntries.Where(p => p.SchemaPath != null).All(p => !p.Directory && p.Children.All(c => c.Name is not ("records.json" or "schema.json"))), "Schema/records are not folded into table nodes.");

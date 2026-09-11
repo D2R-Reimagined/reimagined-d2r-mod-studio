@@ -1,0 +1,8 @@
+bin/
+obj/
+artifacts/
+.studio/
+.packages/
+.idea/
+*.user
+*.log

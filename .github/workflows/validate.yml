@@ -1,0 +1,45 @@
+name: Desktop validation
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore ModStudio.slnx --configfile NuGet.Config
+      - name: Build
+        run: dotnet build ModStudio.slnx --no-restore -c Release --warnaserror
+      - name: Core regression checks
+        run: dotnet run --project tests/ModStudio.Tests -c Release --no-build
+      - name: Create synthetic UI project
+        run: dotnet run --project tests/ModStudio.Tests -c Release --no-build -- --create-ui-fixture artifacts/example-project
+      - name: Render and exercise desktop controls
+        run: dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/example-project artifacts/ui-smoke
+      - name: Package self-contained application and CLI
+        run: ./scripts/publish.ps1 -Runtime '${{ matrix.rid }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-${{ matrix.rid }}
+          path: |
+            artifacts/ui-smoke
+            artifacts/packages/**/*.zip
+            artifacts/packages/**/*.tar.gz

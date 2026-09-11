@@ -1,0 +1,20 @@
+<Application xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="ModStudio.App.StudioApplication" RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+    <Style Selector="Window"><Setter Property="Background" Value="#171819" /><Setter Property="Foreground" Value="#F0E9DF" /><Setter Property="FontSize" Value="13" /></Style>
+    <Style Selector="Button"><Setter Property="Padding" Value="12,7" /><Setter Property="Margin" Value="2" /></Style>
+    <Style Selector="Button.accent"><Setter Property="Background" Value="#8C3529" /><Setter Property="Foreground" Value="#FFF4E1" /></Style>
+    <Style Selector="Button.tabClose"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Foreground" Value="#B9AD97" /></Style>
+    <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="#B9AD97" /></Style>
+    <Style Selector="TextBox"><Setter Property="MinHeight" Value="32" /></Style>
+    <Style Selector="DataGrid"><Setter Property="Background" Value="#202122" /><Setter Property="RowBackground" Value="#202122" /><Setter Property="GridLinesVisibility" Value="Horizontal" /></Style>
+    <Style Selector="TreeViewItem /template/ ToggleButton"><Setter Property="Width" Value="32" /><Setter Property="Height" Value="32" /><Setter Property="MinWidth" Value="32" /><Setter Property="MinHeight" Value="32" /><Setter Property="Background" Value="Transparent" /></Style>
+    <Style Selector="TreeViewItem /template/ ToggleButton /template/ Border"><Setter Property="MinWidth" Value="32" /><Setter Property="MinHeight" Value="32" /><Setter Property="Background" Value="Transparent" /></Style>
+    <Style Selector="TreeViewItem /template/ ToggleButton /template/ Path"><Setter Property="Width" Value="12" /><Setter Property="Height" Value="12" /><Setter Property="HorizontalAlignment" Value="Center" /><Setter Property="VerticalAlignment" Value="Center" /></Style>
+    <Style Selector="ScrollBar"><Setter Property="AllowAutoHide" Value="False" /></Style>
+    <Style Selector="ScrollBar[Orientation=Horizontal]"><Setter Property="MinHeight" Value="22" /></Style>
+    <Style Selector="ScrollBar[Orientation=Horizontal] /template/ Thumb"><Setter Property="MinWidth" Value="44" /><Setter Property="MinHeight" Value="16" /></Style>
+  </Application.Styles>
+</Application>

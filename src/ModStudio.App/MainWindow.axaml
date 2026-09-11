@@ -1,0 +1,53 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="ModStudio.App.MainWindow" Width="1440" Height="920" MinWidth="1100" MinHeight="640" Title="Reimagined D2R Mod Studio">
+ <Grid RowDefinitions="Auto,*,Auto,190,Auto">
+  <Border Background="#292727" BorderBrush="#494038" BorderThickness="0,0,0,1" Padding="10,8">
+   <DockPanel LastChildFill="False">
+    <TextBlock Text="REIMAGINED&#10;D2R MOD STUDIO" FontSize="11" FontWeight="SemiBold" Foreground="#D8BC86" Margin="8,0,18,0" VerticalAlignment="Center" />
+    <Button Content="Open project" Click="OpenClicked" /><Button Content="Import data folder" Click="ImportClicked" />
+    <Button Content="Migrate project" Click="MigrateClicked" />
+    <Button Content="Save all" Click="SaveAllClicked" /><Button Content="Run settings" Click="SettingsClicked" />
+    <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
+    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+     <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
+     <Button Content="Build" Click="BuildClicked" /><Button Content="Deploy" Click="DeployClicked" /><Button Content="▶ Play" Classes="accent" Click="PlayClicked" /><Button x:Name="StopButton" Content="■ Stop / Cancel" Click="StopClicked" IsVisible="False" />
+    </StackPanel>
+   </DockPanel>
+  </Border>
+  <Grid Grid.Row="1" ColumnDefinitions="240,5,*,5,270">
+   <Grid RowDefinitions="Auto,*" Background="#242324">
+    <TextBlock x:Name="ProjectLabel" Text="No project open" Margin="14" Classes="muted" TextWrapping="Wrap" />
+    <TreeView x:Name="ProjectTree" Grid.Row="1" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" />
+   </Grid>
+   <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
+   <TabControl Grid.Column="2" x:Name="Documents" SelectionChanged="DocumentSelected">
+    <TabItem Header="Welcome"><StackPanel Margin="30" Spacing="16"><TextBlock Text="Your mod. One workspace." FontSize="26" Foreground="#D8BC86" /><TextBlock Text="Open an existing JSON-source project or import a native data folder.&#10;Import creates a separate project and preserves the original files." TextWrapping="Wrap" /><TextBlock Text="Table and source editing · Recovery · Profile builds · Deploy and play" Classes="muted" TextWrapping="Wrap" /></StackPanel></TabItem>
+   </TabControl>
+   <GridSplitter Grid.Column="3" ResizeDirection="Columns" />
+   <TabControl x:Name="InspectorTabs" Grid.Column="4" Background="#242324">
+   <TabItem Header="Details"><ScrollViewer><StackPanel Margin="14" Spacing="9">
+    <TextBlock Text="INSPECTOR" Foreground="#D8BC86" /><TextBlock x:Name="SelectionLabel" Text="Select a document or row" TextWrapping="Wrap" />
+    <TextBlock Text="Field" Classes="muted" /><ComboBox x:Name="FieldPicker" SelectionChanged="FieldSelected" />
+    <TextBox x:Name="CellValue" AcceptsReturn="True" MinHeight="60" TextWrapping="Wrap" /><Button Content="Apply cell" Click="ApplyCellClicked" />
+    <TextBlock x:Name="InspectorInfo" Text="Calculations and specialized item previews are planned for the next milestone." TextWrapping="Wrap" Classes="muted" />
+    <TextBlock Text="PROFILE / REFERENCES" Foreground="#D8BC86" Margin="0,10,0,0" />
+    <TextBlock x:Name="ProfileValue" TextWrapping="Wrap" />
+    <Button x:Name="EditProfileButton" Content="Edit profile override…" Click="EditProfileClicked" IsVisible="False" />
+    <TextBlock x:Name="ReferenceStatus" TextWrapping="Wrap" Classes="muted" />
+    <ListBox x:Name="ReferenceList" MaxHeight="140" DoubleTapped="ReferenceDoubleTapped" KeyDown="ReferenceKeyDown" />
+   </StackPanel></ScrollViewer></TabItem>
+   <TabItem Header="Row Editor"><Grid RowDefinitions="Auto,Auto,*" Margin="12">
+    <TextBlock x:Name="RowEditorLabel" Text="Select a table row" TextWrapping="Wrap" Margin="0,0,0,8" />
+    <TextBlock x:Name="RowEditorStatus" Grid.Row="1" Text="Edits apply immediately to the shared source. Save to write to disk." TextWrapping="Wrap" Classes="muted" Margin="0,0,0,10" />
+    <ScrollViewer x:Name="RowEditorScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Visible" AllowAutoHide="False"><StackPanel x:Name="RowEditorFields" Spacing="10" Margin="0,0,24,0" /></ScrollViewer>
+   </Grid></TabItem>
+   </TabControl>
+  </Grid>
+  <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch" ResizeDirection="Rows" />
+  <TabControl Grid.Row="3" x:Name="BottomTabs">
+   <TabItem><TabItem.Header><TextBlock Text="Problems" FontSize="13" /></TabItem.Header><DockPanel><WrapPanel DockPanel.Dock="Top"><Button Content="Check source references / rules" Click="CheckSemanticsClicked" /><Button Content="Edit validation rules…" Click="EditRulesClicked" /><TextBlock x:Name="SemanticStatus" Margin="8" Text="Shared-source checks; game coverage is partial" /></WrapPanel><ListBox x:Name="Problems" DoubleTapped="ProblemDoubleTapped" /></DockPanel></TabItem>
+   <TabItem><TabItem.Header><TextBlock Text="Build / Game output" FontSize="13" /></TabItem.Header><TextBox x:Name="Output" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" /></TabItem>
+   <TabItem><TabItem.Header><TextBlock Text="Changes" FontSize="13" /></TabItem.Header><DockPanel><Button DockPanel.Dock="Top" Content="Compare active table with disk…" Click="CompareClicked" HorizontalAlignment="Left" /><ListBox x:Name="Changes" /></DockPanel></TabItem>
+  </TabControl>
+  <Border Grid.Row="4" Background="#292727" Padding="12,6"><DockPanel><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
+ </Grid>
+</Window>

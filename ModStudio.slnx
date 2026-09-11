@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/ModStudio.Core/ModStudio.Core.csproj" />
+  <Project Path="src/ModStudio.Cli/ModStudio.Cli.csproj" />
+  <Project Path="src/ModStudio.App/ModStudio.App.csproj" />
+  <Project Path="tests/ModStudio.Tests/ModStudio.Tests.csproj" />
+</Solution>

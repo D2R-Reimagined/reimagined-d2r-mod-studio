@@ -180,7 +180,7 @@ public partial class MainWindow : Window
     {
         Require(operation == null, "Wait for the current operation before switching projects."); watcher?.Dispose();
         project = await Task.Run(() => ModProject.Open(root)); terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
-        Title = $"{project.Name} — Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
+        Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         ProjectTree.ItemsSource = entries; ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };

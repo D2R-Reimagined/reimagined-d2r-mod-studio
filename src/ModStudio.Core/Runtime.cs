@@ -4,14 +4,35 @@ using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
 
-public record RunSettings(string DeploymentDirectory = "", string Executable = "", string Runner = "", string[]? RunnerArguments = null, string[]? Arguments = null, bool SaveBeforePlay = true)
+public record RunSettings(string DeploymentDirectory = "", string Executable = "", string Runner = "", string[]? RunnerArguments = null, string[]? Arguments = null, bool SaveBeforePlay = true, string GameDirectory = "", string LaunchTarget = "D2R.exe")
 {
+    public string InstallationDirectory => string.IsNullOrWhiteSpace(GameDirectory) ? Path.GetDirectoryName(Executable) ?? "" : GameDirectory;
+    public static string[] DetectExecutables(string directory)
+    {
+        if (!Directory.Exists(directory)) return [];
+        try
+        {
+            var files = Directory.EnumerateFiles(directory).Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return new[] { "D2R.exe", "D2RLoader.exe" }.Where(files.Contains).ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
+    }
+    public string ResolvedExecutable
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(GameDirectory)) return Executable;
+            Require(LaunchTarget is "D2R.exe" or "D2RLoader.exe", "Choose D2R.exe or D2RLoader.exe as the launch target.");
+            return Directory.Exists(GameDirectory) ? Directory.EnumerateFiles(GameDirectory).FirstOrDefault(f => Path.GetFileName(f).Equals(LaunchTarget, StringComparison.OrdinalIgnoreCase)) ?? Path.Combine(GameDirectory, LaunchTarget) : Path.Combine(GameDirectory, LaunchTarget);
+        }
+    }
     public IReadOnlyList<string> PathIssues(ModProject project)
     {
         var issues = new List<string>();
         try
         {
-            if (!string.IsNullOrWhiteSpace(Executable) && !File.Exists(Executable)) issues.Add("Game executable must be an existing file, not a folder.");
+            if (!string.IsNullOrWhiteSpace(GameDirectory) && !Directory.Exists(GameDirectory)) issues.Add("Game installation folder does not exist.");
+            if (!string.IsNullOrWhiteSpace(ResolvedExecutable) && !File.Exists(ResolvedExecutable)) issues.Add("Selected game/loader executable was not found in the installation folder.");
             if (!string.IsNullOrWhiteSpace(Runner) && !File.Exists(Runner)) issues.Add("Runner must be an existing executable file.");
             if (!string.IsNullOrWhiteSpace(DeploymentDirectory))
             {
@@ -19,14 +40,21 @@ public record RunSettings(string DeploymentDirectory = "", string Executable = "
                 if (File.Exists(target)) issues.Add("Deployment must be a folder, not a file.");
                 if (Contains(project.Root, target) || Contains(target, project.Root)) issues.Add("Deployment must be outside the source project, without overlapping it.");
                 if (!Path.GetFileName(Path.TrimEndingDirectorySeparator(target)).Equals(project.Name, StringComparison.Ordinal)) issues.Add($"Select the final mod folder named {project.Name}, not the game, mods, .mpq or data folder.");
-                if (!string.IsNullOrWhiteSpace(Executable) && !string.Equals(Path.TrimEndingDirectorySeparator(target), Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Executable)!, "mods", project.Name)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) issues.Add($"For Play, deployment must be beside the selected executable under mods/{project.Name}.");
+                if (!string.IsNullOrWhiteSpace(ResolvedExecutable) && !string.Equals(Path.TrimEndingDirectorySeparator(target), Path.GetFullPath(Path.Combine(InstallationDirectory, "mods", project.Name)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) issues.Add($"For Play, deployment must be beside the selected executable under mods/{project.Name}.");
             }
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { issues.Add("Invalid path: " + ex.Message); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException) { issues.Add("Invalid path: " + ex.Message); }
         return issues;
     }
     public static string SettingsFile(ModProject project, string profile) => Inside(project.Cache, $"settings/{profile}.json");
-    public static RunSettings Load(ModProject project, string profile) => File.Exists(SettingsFile(project, profile)) ? JsonSerializer.Deserialize<RunSettings>(File.ReadAllText(SettingsFile(project, profile)), Pretty)! : new();
+    public static RunSettings Load(ModProject project, string profile)
+    {
+        var settings = File.Exists(SettingsFile(project, profile)) ? JsonSerializer.Deserialize<RunSettings>(File.ReadAllText(SettingsFile(project, profile)), Pretty)! : new();
+        var oldName = Path.GetFileName(settings.Executable);
+        if (string.IsNullOrWhiteSpace(settings.GameDirectory) && (oldName.Equals("D2R.exe", StringComparison.OrdinalIgnoreCase) || oldName.Equals("D2RLoader.exe", StringComparison.OrdinalIgnoreCase)))
+            settings = settings with { GameDirectory = Path.GetDirectoryName(settings.Executable) ?? "", LaunchTarget = oldName.Equals("D2RLoader.exe", StringComparison.OrdinalIgnoreCase) ? "D2RLoader.exe" : "D2R.exe", Executable = "" };
+        return settings;
+    }
     public void Save(ModProject project, string profile) => AtomicWrite(SettingsFile(project, profile), JsonSerializer.SerializeToUtf8Bytes(this, Pretty));
 }
 public record DeploymentManifest(string ProjectId, string BuildId, string Profile, List<BuildFile> Files);
@@ -39,6 +67,9 @@ public static class DeploymentService
     private const string Transaction = ".studio-transaction";
     public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null)
     {
+        using var buildLock = BuildCache.Lock(project);
+        var buildManifest = Inside(project.Cache, "builds/current/build.json");
+        Require(File.Exists(buildManifest) && JsonSerializer.Deserialize<BuildResult>(File.ReadAllText(buildManifest), Pretty)?.Id == build.Id, "Build was replaced or did not finish. Rebuild before deploying.");
         Require(build.ProjectId == project.Id && build.ModName == project.Name, "Build belongs to a different project.");
         Require(!string.IsNullOrWhiteSpace(target), "Choose a deployment mod folder in Run settings."); target = Path.GetFullPath(target); NoLinks(target);
         Require(!Contains(project.Root, target) && !Contains(target, project.Root), "Source and deployment folders must not overlap.");
@@ -56,18 +87,18 @@ public static class DeploymentService
         Require(next.Count == build.Files.Count && build.Files.All(f => !f.Path.StartsWith(".studio-", StringComparison.OrdinalIgnoreCase)), "Invalid build ownership paths.");
         foreach (var file in build.Files)
         {
-            token.ThrowIfCancellationRequested(); var source = Inside(build.Output, file.Path); Require(File.Exists(source) && Hash(File.ReadAllBytes(source)) == file.Sha256, "Build output changed; rebuild before deploying.");
+            token.ThrowIfCancellationRequested(); var source = Inside(build.Output, file.Path); Require(File.Exists(source) && BuildCache.FileHash(source) == file.Sha256, "Build output changed; rebuild before deploying.");
             var dest = Inside(target, file.Path);
             if (File.Exists(dest) && previous?.Files.All(f => !f.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) != false)
-                Require(Hash(File.ReadAllBytes(dest)) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Use a separate test mod folder.");
+                Require(BuildCache.FileHash(dest) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Use a separate test mod folder.");
         }
         foreach (var owned in previous?.Files ?? [])
         {
-            var dest = Inside(target, owned.Path); if (File.Exists(dest)) Require(Hash(File.ReadAllBytes(dest)) == owned.Sha256, $"Deployed file was edited outside Studio: {owned.Path}. Preserve/import it before deploying.");
+            var dest = Inside(target, owned.Path); if (File.Exists(dest)) Require(BuildCache.FileHash(dest) == owned.Sha256, $"Deployed file was edited outside Studio: {owned.Path}. Preserve/import it before deploying.");
         }
         var ownership = JsonSerializer.SerializeToUtf8Bytes(new DeploymentManifest(project.Id, build.Id, build.Profile, build.Files), Pretty);
         var all = build.Files.Select(f => f.Path).Concat(previous?.Files.Select(f => f.Path) ?? []).Append(Owner).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var entries = all.Select(relative => new JournalEntry(relative, File.Exists(Inside(target, relative)) ? Hash(File.ReadAllBytes(Inside(target, relative))) : null, relative == Owner ? Hash(ownership) : next.GetValueOrDefault(relative)?.Sha256)).ToList();
+        var entries = all.Select(relative => new JournalEntry(relative, File.Exists(Inside(target, relative)) ? Hash(File.ReadAllBytes(Inside(target, relative))) : null, relative == Owner ? Hash(ownership) : next.GetValueOrDefault(relative)?.Sha256)).Where(e => e.Before != e.After).ToList();
         Directory.CreateDirectory(transaction);
         try
         {
@@ -78,15 +109,15 @@ public static class DeploymentService
                 if (entry.After != null)
                 {
                     var staged = Inside(transaction, "next/" + entry.Path); Directory.CreateDirectory(Path.GetDirectoryName(staged)!);
-                    File.WriteAllBytes(staged, entry.Path == Owner ? ownership : File.ReadAllBytes(Inside(build.Output, entry.Path)));
-                    Require(Hash(File.ReadAllBytes(staged)) == entry.After, "Staged deployment hash mismatch.");
+                    if (entry.Path == Owner) File.WriteAllBytes(staged, ownership); else File.Copy(Inside(build.Output, entry.Path), staged);
+                    Require(BuildCache.FileHash(staged) == entry.After, "Staged deployment hash mismatch.");
                 }
             }
             AtomicWrite(Inside(transaction, "journal.json"), JsonSerializer.SerializeToUtf8Bytes(new DeploymentJournal(project.Id, entries), Pretty));
             foreach (var entry in entries)
             {
                 token.ThrowIfCancellationRequested(); var dest = Inside(target, entry.Path);
-                Require((File.Exists(dest) ? Hash(File.ReadAllBytes(dest)) : null) == entry.Before, "Destination changed during deployment.");
+                Require((File.Exists(dest) ? BuildCache.FileHash(dest) : null) == entry.Before, "Destination changed during deployment.");
                 if (entry.After == null) { if (File.Exists(dest)) File.Delete(dest); }
                 else { Directory.CreateDirectory(Path.GetDirectoryName(dest)!); File.Move(Inside(transaction, "next/" + entry.Path), dest, true); }
                 progress?.Invoke("Deployed " + entry.Path);
@@ -109,7 +140,7 @@ public static class DeploymentService
         Require(journal.ProjectId == project.Id, "Recovery journal belongs to a different project.");
         foreach (var entry in journal.Entries)
         {
-            var current = Inside(target, entry.Path); var hash = File.Exists(current) ? Hash(File.ReadAllBytes(current)) : null;
+            var current = Inside(target, entry.Path); var hash = File.Exists(current) ? BuildCache.FileHash(current) : null;
             Require(hash == entry.Before || hash == entry.After, $"Recovery found an external edit: {entry.Path}. Journal retained.");
             if (entry.Before != null) Require(Hash(File.ReadAllBytes(Inside(transaction, "backup/" + entry.Path))) == entry.Before, "Recovery backup is damaged.");
         }
@@ -130,12 +161,13 @@ public sealed class RunController : IDisposable
     public bool Running => child is { HasExited: false };
     public static ProcessStartInfo CreateStartInfo(ModProject project, RunSettings settings)
     {
-        Require(File.Exists(settings.Executable), "Select an existing game/loader executable in Run settings.");
-        Require(Path.GetFullPath(settings.DeploymentDirectory) == Path.GetFullPath(Path.Combine(Path.GetDirectoryName(settings.Executable)!, "mods", project.Name)), "Play requires deployment to the selected game's mods/<mod-name> folder.");
-        if (!OperatingSystem.IsWindows() && settings.Executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) Require(File.Exists(settings.Runner), "Configure Wine/Proton or another supported runner for a Windows executable on this platform.");
+        var executable = settings.ResolvedExecutable;
+        Require(File.Exists(executable), "Choose the game installation folder and an available launch target in Run settings.");
+        Require(string.Equals(Path.GetFullPath(settings.DeploymentDirectory), Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "mods", project.Name)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal), "Play requires deployment to the selected game's mods/<mod-name> folder.");
+        if (!OperatingSystem.IsWindows() && executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) Require(File.Exists(settings.Runner), "Configure Wine/Proton or another supported runner for a Windows executable on this platform.");
         if (!string.IsNullOrEmpty(settings.Runner)) Require(File.Exists(settings.Runner), "Runner executable does not exist.");
-        var start = new ProcessStartInfo { FileName = string.IsNullOrEmpty(settings.Runner) ? settings.Executable : settings.Runner, WorkingDirectory = Path.GetDirectoryName(settings.Executable)!, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-        if (!string.IsNullOrEmpty(settings.Runner)) { foreach (var arg in settings.RunnerArguments ?? []) start.ArgumentList.Add(arg); start.ArgumentList.Add(settings.Executable); }
+        var start = new ProcessStartInfo { FileName = string.IsNullOrEmpty(settings.Runner) ? executable : settings.Runner, WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        if (!string.IsNullOrEmpty(settings.Runner)) { foreach (var arg in settings.RunnerArguments ?? []) start.ArgumentList.Add(arg); start.ArgumentList.Add(executable); }
         foreach (var arg in new[] { "-mod", project.Name, "-txt" }.Concat(settings.Arguments ?? [])) start.ArgumentList.Add(arg);
         return start;
     }

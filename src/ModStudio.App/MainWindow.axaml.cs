@@ -43,12 +43,12 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeRowEditor(); InitializeExplorerSearch(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
-        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); };
+        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshLaunchTargets(); };
         ProjectTree.ItemTemplate = new FuncTreeDataTemplate<ProjectEntry>((entry, _) =>
         {
             var label = new TextBlock { Text = entry.Name, Margin = new(2, 4), TextTrimming = TextTrimming.CharacterEllipsis };
@@ -185,7 +185,7 @@ public partial class MainWindow : Window
         explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; explorerEntries = entries; FilterExplorer(); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };
         watcher.Changed += OnExternalChange; watcher.Created += OnExternalChange; watcher.Deleted += OnExternalChange; watcher.Renamed += OnExternalChange;
-        RefreshStatus(); Status.Text = "Project ready. Single-click to preview; double-click to keep a file open.";
+        RefreshLaunchTargets(); RefreshStatus(); Status.Text = "Project ready. Single-click to preview; double-click to keep a file open.";
         if (!Program.Arguments.Contains("--smoke"))
         {
             try
@@ -320,7 +320,15 @@ public partial class MainWindow : Window
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var existing = tabs.FirstOrDefault(t => t != loadingTab && string.Equals((t.Content as EditorPane)?.Document.FilePath ?? t.Tag as string, file, comparison)); if (existing != null) { if (!preview) KeepTab(existing); Documents.SelectedItem = existing; return existing.Content as EditorPane; }
         var extension = System.IO.Path.GetExtension(file).ToLowerInvariant();
-        var isText = await Task.Run(() => { NoLinks(file); return TextFileEncoding.LooksLikeText(File.ReadAllBytes(file)); });
+        if (SpecialistPreviewPane.Supports(file))
+        {
+            if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
+            var specialTab = loadingTab ?? new TabItem { Tag = file };
+            specialTab.Content = new SpecialistPreviewPane(file);
+            if (loadingTab == null) AddDocumentTab(specialTab, preview); else UpdateTabHeader(specialTab);
+            return null;
+        }
+        var isText = await Task.Run(() => { NoLinks(file); using var input = File.OpenRead(file); var prefix = new byte[(int)Math.Min(input.Length, 8192)]; input.ReadExactly(prefix); return TextFileEncoding.LooksLikeText(prefix); });
         if (!isText)
         {
             NoLinks(file); using var stream = File.OpenRead(file); var bytes = new byte[Math.Min(stream.Length, 1024)]; await stream.ReadExactlyAsync(bytes);
@@ -462,9 +470,19 @@ public partial class MainWindow : Window
             var deployment = Field($"Deployment mod folder (…/mods/{project!.Name})", current.DeploymentDirectory);
             panel.Children.Add(new TextBlock { Text = $"Example: C:/Games/Diablo II Resurrected/mods/{project.Name}\nSelect the final {project.Name} folder. Studio creates its .mpq/data contents. The destination may be new; do not select your source data folder.", TextWrapping = TextWrapping.Wrap });
             var pickDeploy = new Button { Content = "Browse deployment folder" }; pickDeploy.Click += async (_, _) => { var value = await PickFolderAsync("Deployment mod folder"); if (value != null) deployment.Text = value; }; panel.Children.Add(pickDeploy);
-            var executable = Field(Profile == "d2rl" ? "D2RLoader executable" : "Game executable", current.Executable);
-            panel.Children.Add(new TextBlock { Text = Profile == "d2rl" ? "Select D2RLoader.exe in the game installation folder." : "Select D2R.exe in the game installation folder, not a shortcut or directory.", TextWrapping = TextWrapping.Wrap });
-            var pickExe = new Button { Content = "Browse executable" }; pickExe.Click += async (_, _) => { var value = await PickFileAsync("Game or loader executable"); if (value != null) { executable.Text = value; if (string.IsNullOrWhiteSpace(deployment.Text)) deployment.Text = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(value)!, "mods", project.Name); } }; panel.Children.Add(pickExe);
+            var gameDirectory = Field("Game installation folder (contains D2R.exe / D2RLoader.exe)", current.InstallationDirectory);
+            var launchTarget = new ComboBox { MinWidth = 200 };
+            panel.Children.Add(new TextBlock { Text = "Launch using" }); panel.Children.Add(launchTarget);
+            var detected = new TextBlock { TextWrapping = TextWrapping.Wrap }; panel.Children.Add(detected);
+            void DetectLaunchers()
+            {
+                var selected = launchTarget.SelectedItem as string ?? current.LaunchTarget;
+                var choices = RunSettings.DetectExecutables(gameDirectory.Text ?? ""); launchTarget.ItemsSource = choices;
+                launchTarget.SelectedItem = choices.Contains(selected) ? selected : choices.FirstOrDefault();
+                detected.Text = choices.Length == 0 ? "No D2R.exe or D2RLoader.exe found. Choose the game installation folder." : "Detected: " + string.Join(", ", choices) + ". The launch target is independent of the build profile.";
+            }
+            DetectLaunchers();
+            var pickGame = new Button { Content = "Browse game folder" }; pickGame.Click += async (_, _) => { var value = await PickFolderAsync("Game installation folder containing D2R.exe"); if (value != null) { gameDirectory.Text = value; if (string.IsNullOrWhiteSpace(deployment.Text)) deployment.Text = System.IO.Path.Combine(value, "mods", project.Name); } }; panel.Children.Add(pickGame);
             var runner = Field("Optional runner executable (Wine/Proton on Linux or macOS)", current.Runner);
             var runnerArgs = Field("Runner arguments (JSON array, before the game executable)", JsonSerializer.Serialize(current.RunnerArguments ?? []));
             var args = Field("Additional game arguments (JSON array)", JsonSerializer.Serialize(current.Arguments ?? []));
@@ -472,11 +490,11 @@ public partial class MainWindow : Window
             var message = new TextBlock { TextWrapping = TextWrapping.Wrap }; panel.Children.Add(message);
             void CheckPaths()
             {
-                var issues = new RunSettings(deployment.Text ?? "", executable.Text ?? "", runner.Text ?? "").PathIssues(project);
-                message.Text = issues.Count > 0 ? string.Join("\n", issues) : string.IsNullOrWhiteSpace(deployment.Text) || string.IsNullOrWhiteSpace(executable.Text) ? "Setup incomplete: Build works without game paths. Configure deployment and executable before Play." : "Paths look consistent. Deploy also checks folder ownership and existing files before copying.";
+                var issues = new RunSettings(deployment.Text ?? "", Runner: runner.Text ?? "", GameDirectory: gameDirectory.Text ?? "", LaunchTarget: launchTarget.SelectedItem as string ?? "D2R.exe").PathIssues(project);
+                message.Text = issues.Count > 0 ? string.Join("\n", issues) : string.IsNullOrWhiteSpace(deployment.Text) || string.IsNullOrWhiteSpace(gameDirectory.Text) ? "Setup incomplete: Build works without game paths. Configure deployment and the game folder before Play." : "Paths look consistent. Deploy also checks folder ownership and existing files before copying.";
             }
-            deployment.TextChanged += (_, _) => CheckPaths(); executable.TextChanged += (_, _) => CheckPaths(); runner.TextChanged += (_, _) => CheckPaths(); CheckPaths();
-            var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", executable.Text ?? "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true).Save(project, Profile); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
+            deployment.TextChanged += (_, _) => CheckPaths(); gameDirectory.TextChanged += (_, _) => { DetectLaunchers(); CheckPaths(); }; launchTarget.SelectionChanged += (_, _) => CheckPaths(); runner.TextChanged += (_, _) => CheckPaths(); CheckPaths();
+            var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true, gameDirectory.Text ?? "", launchTarget.SelectedItem as string ?? current.LaunchTarget).Save(project, Profile); RefreshLaunchTargets(); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
             dialog.Content = new ScrollViewer { Content = panel };
             if (!Program.Arguments.Contains("--smoke"))
             {
@@ -509,7 +527,7 @@ public partial class MainWindow : Window
                 var build = await controller.ExecuteAsync(project!, Profile, settings, deploy, play, operation.Token, Log);
                 buildDiagnostics.AddRange(build.Diagnostics ?? []); RefreshStatus();
                 if (play) { runningBuild = build.Id[..8]; RunState.Text = "Game: " + runningBuild + (revisions.Any(p => p.Key.Revision != p.Value) ? " · newer edits" : " · " + build.Profile); }
-                Log($"Snapshot {build.Id[..8]} complete. Output: {build.Output}");
+                Log($"Build {build.Id[..8]} complete. Output: {build.Output}");
             }
             finally { operation.Dispose(); operation = null; }
         }
@@ -546,6 +564,18 @@ public partial class MainWindow : Window
                 "Portable update check must finish without offering an install.");
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
+            var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
+            File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
+            new RunSettings(GameDirectory: detectedGame).Save(project!, Profile); RefreshLaunchTargets();
+            Require(LaunchTargetPicker.ItemCount == 2 && LaunchTargetPicker.SelectedItem as string == "D2R.exe", "Launch picker did not detect vanilla and loader.");
+            LaunchTargetPicker.SelectedItem = "D2RLoader.exe";
+            Require(RunSettings.Load(project!, Profile).LaunchTarget == "D2RLoader.exe", "Launch picker did not persist selected target.");
+            var settingsTask = ShowSettingsAsync(); await Task.Delay(150);
+            var settingsDialog = (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Windows.Single(w => w.Title?.StartsWith("Run settings") == true);
+            Require(settingsDialog.GetVisualDescendants().OfType<TextBox>().Any(t => t.Text == detectedGame), "Run settings did not show the installation folder.");
+            using (var settingsImage = new RenderTargetBitmap(new PixelSize((int)settingsDialog.Bounds.Width, (int)settingsDialog.Bounds.Height), new Vector(96,96))) { settingsImage.Render(settingsDialog); settingsImage.Save(System.IO.Path.Combine(output, "game-folder-settings.png"), PngBitmapEncoderOptions.Default); }
+            settingsDialog.Close(); await settingsTask;
             RefreshRunControls(); Require(!StopButton.IsVisible, "Idle Stop button is visible.");
             operation = new(); RefreshRunControls(); Require(StopButton.IsVisible, "Cancelable work has no Stop button."); operation.Dispose(); operation = null; RefreshRunControls();
             var unfilteredEntries = ProjectTree.ItemsSource;

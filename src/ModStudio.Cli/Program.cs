@@ -6,9 +6,12 @@ using static ModStudio.Core.Storage;
 
 try
 {
-    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | check <project> | build <project> [profile] | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
+    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | check <project> | build <project> [profile] | preview-info <file> | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
     switch (args[0])
     {
+        case "preview-info":
+            var preview = SpecialistPreview.Load(args[1]); var pixels = preview.Decode(preview.InitialFrame);
+            Console.WriteLine(JsonSerializer.Serialize(new { preview.Summary, Frames = preview.Frames.Length, pixels.Width, pixels.Height }, Pretty)); break;
         case "check":
             var check = Semantics.Check(ModProject.Open(args[1])); Console.WriteLine(JsonSerializer.Serialize(check, Pretty));
             if (check.Diagnostics.Any(d => d.Severity == "Error")) Environment.ExitCode = 1; break;

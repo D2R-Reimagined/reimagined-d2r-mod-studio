@@ -12,18 +12,32 @@ public static class BuildService
     public static BuildResult Build(ModProject project, string profile, CancellationToken token = default, Action<string>? progress = null)
     {
         Require(project.Profiles.Contains(profile), "Unknown runtime profile.");
-        var id = Guid.NewGuid().ToString("N"); var folder = Inside(project.Cache, "builds/" + id);
+        using var buildLock = BuildCache.Lock(project);
+        var id = Guid.NewGuid().ToString("N"); var folder = Inside(project.Cache, "builds/current");
         var snapshot = Inside(folder, "snapshot"); var output = Inside(folder, "output");
-        Directory.CreateDirectory(output); var hashes = new Dictionary<string, string>();
+        Directory.CreateDirectory(output); Directory.CreateDirectory(snapshot); var hashes = new Dictionary<string, string>();
+        var manifest = Inside(folder, "build.json"); if (File.Exists(manifest)) File.Delete(manifest);
+        var cacheFile = Inside(folder, "tables.json");
+        Dictionary<string, CachedTable> previous;
+        try { previous = File.Exists(cacheFile) ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, CachedTable>>(File.ReadAllText(cacheFile), Pretty) ?? [] : []; }
+        catch (System.Text.Json.JsonException) { previous = []; }
+        var cache = new Dictionary<string, CachedTable>(); int compiled = 0, reused = 0, written = 0;
         try
         {
-            progress?.Invoke("Capturing consistent source snapshot…");
+            progress?.Invoke("Checking source changes…");
             foreach (var file in project.SourceFiles())
             {
-                token.ThrowIfCancellationRequested(); var bytes = File.ReadAllBytes(file); hashes[file] = Hash(bytes);
-                var target = Inside(snapshot, Relative(project.Root, file)); Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.WriteAllBytes(target, bytes);
+                token.ThrowIfCancellationRequested(); hashes[file] = BuildCache.FileHash(file);
+                var target = Inside(snapshot, Relative(project.Root, file));
+                if (BuildCache.CopyChanged(file, target, hashes[file]))
+                    Require(BuildCache.FileHash(target) == hashes[file], "Source changed while capturing build. Retry.");
             }
-            Require(project.SourceFiles().Count() == hashes.Count && hashes.All(p => File.Exists(p.Key) && Hash(File.ReadAllBytes(p.Key)) == p.Value), "Source changed while capturing build. Retry.");
+            var sourcePaths = hashes.Keys.Select(f => Relative(project.Root, f)).ToHashSet(StringComparer.Ordinal);
+            foreach (var old in Files(snapshot)) if (!sourcePaths.Contains(Relative(snapshot, old))) File.Delete(old);
+            // Remove empty table directories too, so deleted tables cannot be resurrected by the cache.
+            foreach (var dir in Directory.GetDirectories(snapshot, "*", SearchOption.AllDirectories).OrderByDescending(p => p.Length))
+                if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
+            Require(project.SourceFiles().Count() == hashes.Count && hashes.All(p => File.Exists(p.Key) && BuildCache.FileHash(p.Key) == p.Value), "Source changed while capturing build. Retry.");
             var profilePath = Inside(snapshot, $"compatibility/{profile}/profile.json");
             var settings = File.Exists(profilePath) ? Read(profilePath) : new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full" };
             Require(settings.I("schemaVersion") == 1 && settings.S("id") == profile, "Invalid profile schema or identity.");
@@ -31,10 +45,11 @@ public static class BuildService
             var modInfoPath = Inside(snapshot, "modinfo.json");
             var modInfo = File.Exists(modInfoPath) ? Read(modInfoPath) : new JsonObject { ["name"] = project.Name, ["version"] = "1.0.0", ["savepath"] = project.Name + "/" };
             var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>()))).ToArray();
+            var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + project.Name + profile + Json(settings) + string.Join("", rules.Select(Json)));
             var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>(); var stringIds = new HashSet<int>();
             void Emit(string relative, byte[] bytes)
             {
-                Require(generated.Add(relative), $"Duplicate generated target: {relative}"); var target = Inside(output, relative); Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.WriteAllBytes(target, bytes);
+                Require(generated.Add(relative), $"Duplicate generated target: {relative}"); var target = Inside(output, relative); if (BuildCache.WriteChanged(target, bytes)) written++;
             }
             var dataPrefix = project.Name + ".mpq/data/";
             foreach (var kind in new[] { "tables", "strings" })
@@ -46,6 +61,17 @@ public static class BuildService
                     try
                     {
                         Require(!Directory.Exists(Path.Combine(dir, "records")), "Individual records/ folders must be consolidated before opening this project.");
+                        var cacheId = Relative(snapshot, dir);
+                        var cacheKey = Hash(contextKey + BuildCache.FileHash(file) + BuildCache.FileHash(Path.Combine(dir, "schema.json")));
+                        if (previous.TryGetValue(cacheId, out var saved) && saved.Key == cacheKey && saved.Files.All(f => File.Exists(Inside(output, f.Path)) && BuildCache.FileHash(Inside(output, f.Path)) == f.Sha256))
+                        {
+                            foreach (var savedFile in saved.Files) Require(generated.Add(savedFile.Path), "Duplicate generated target: " + savedFile.Path);
+                            foreach (var stringId in saved.StringIds) Require(stringIds.Add(stringId), $"Duplicate global string ID {stringId}");
+                            if (kind == "tables") tableNames.Add(saved.Name);
+                            cache[cacheId] = saved; reused++; continue;
+                        }
+                        var beforeTargets = generated.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        compiled++;
                         progress?.Invoke($"Checking {Path.GetFileName(dir)}…"); var table = TableData.Load(file); var issues = table.Validate(original); diagnostics.AddRange(issues); if (issues.Count > 0) continue;
                         if (kind == "strings")
                         {
@@ -84,6 +110,8 @@ public static class BuildService
                                 Emit(dataPrefix + target, resolved.EncodeTsv());
                             }
                         }
+                        cache[cacheId] = new(cacheKey, table.Name, kind == "strings" ? table.Records.Select(r => r.I("id")).ToArray() : [],
+                            generated.Where(p => !beforeTargets.Contains(p)).Select(p => new BuildFile(p, BuildCache.FileHash(Inside(output, p)), new FileInfo(Inside(output, p)).Length)).ToList());
                     }
                     catch (Exception e) when (e is not OperationCanceledException) { diagnostics.Add(new(original, e.Message)); }
                 }
@@ -101,7 +129,9 @@ public static class BuildService
             foreach (var file in Files(Path.Combine(snapshot, "data")))
             {
                 token.ThrowIfCancellationRequested(); if (new[] { ".bat", ".ps1", ".py", ".mjs", ".bak", ".log" }.Contains(Path.GetExtension(file).ToLowerInvariant())) continue;
-                Emit(dataPrefix + Relative(Path.Combine(snapshot, "data"), file), File.ReadAllBytes(file));
+                var relative = dataPrefix + Relative(Path.Combine(snapshot, "data"), file);
+                Require(generated.Add(relative), "Duplicate generated target: " + relative);
+                if (BuildCache.CopyChanged(file, Inside(output, relative), BuildCache.FileHash(file))) written++;
             }
             var assetTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var asset in (JsonArray?)settings["assetOverrides"] ?? [])
@@ -114,7 +144,7 @@ public static class BuildService
                 // Existing native data assets may be overridden; generated source may not.
                 Require(scope != "data" || !generated.Contains(relative) || File.Exists(Inside(snapshot, "data/" + target)), "Asset override cannot replace generated source.");
                 var destination = Inside(output, relative); var expected = asset?["expectSha256"]?.GetValue<string>();
-                Require((File.Exists(destination) ? Hash(File.ReadAllBytes(destination)) : null) == expected, "Stale asset override: " + target);
+                Require((generated.Contains(relative) && File.Exists(destination) ? BuildCache.FileHash(destination) : null) == expected, "Stale asset override: " + target);
                 var bytes = File.ReadAllBytes(Inside(Path.GetDirectoryName(profilePath)!, asset.S("source")));
                 if (asset?["transform"] != null)
                 {
@@ -122,15 +152,19 @@ public static class BuildService
                     var template = JsonNode.Parse(Utf8.GetString(bytes).TrimStart('\uFEFF'))!;
                     bytes = Utf8.GetBytes(Json(Template(template, modInfo.S("version"))));
                 }
-                Directory.CreateDirectory(Path.GetDirectoryName(destination)!); File.WriteAllBytes(destination, bytes); generated.Add(relative);
+                if (BuildCache.WriteChanged(destination, bytes)) written++; generated.Add(relative);
             }
             Emit(project.Name + ".mpq/modinfo.json", File.Exists(modInfoPath) ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
-            token.ThrowIfCancellationRequested(); var entries = Files(output).Select(f => new BuildFile(Relative(output, f), Hash(File.ReadAllBytes(f)), new FileInfo(f).Length)).ToList();
+            token.ThrowIfCancellationRequested();
+            foreach (var old in Files(output)) if (!generated.Contains(Relative(output, old))) File.Delete(old);
+            var entries = Files(output).Select(f => new BuildFile(Relative(output, f), BuildCache.FileHash(f), new FileInfo(f).Length)).ToList();
             var result = new BuildResult(id, profile, project.Id, project.Name, output, entries, snapshot, semanticDiagnostics);
             AtomicWrite(Inside(folder, "build.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result, Pretty));
-            progress?.Invoke($"Built {entries.Count} files · {profile} · {id[..8]}"); return result;
+            AtomicWrite(cacheFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(cache, Pretty));
+            BuildCache.RemoveOldBuilds(project, progress);
+            progress?.Invoke($"Built {entries.Count} files · {profile} · {id[..8]} · {compiled} tables converted, {reused} reused, {written} output files written"); return result;
         }
-        catch { if (Directory.Exists(folder)) Directory.Delete(folder, true); throw; }
+        catch { if (File.Exists(manifest)) File.Delete(manifest); throw; }
     }
     private static JsonNode Template(JsonNode node, string version)
     {

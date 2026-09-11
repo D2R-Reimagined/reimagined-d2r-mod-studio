@@ -4,6 +4,9 @@ Mod Studio's own MIT license does not replace upstream licenses. The distributab
 
 | Component | Source / license |
 | --- | --- |
+| BCnEncoder.Net 2.3.0 | [BCnEncoder.NET](https://github.com/Nominom/BCnEncoder.NET), MIT option; `licenses/BCnEncoder.txt` |
+| CommunityToolkit.HighPerformance 8.4.0 | [CommunityToolkit](https://github.com/CommunityToolkit/dotnet), MIT; `licenses/CommunityToolkit.txt` |
+| Reimagined Level Editor texture/DS1 layout adaptations | MIT; `licenses/D2RLevelEditor.txt` |
 | Velopack 1.2.0 installer and update framework | [Velopack](https://github.com/velopack/velopack), MIT; `licenses/Velopack.txt` |
 | Avalonia 12.1.2, desktop backends, Fluent theme, DataGrid, Headless and Inter integration | [Avalonia](https://github.com/AvaloniaUI/Avalonia), MIT; `licenses/Avalonia.txt` |
 | AvaloniaEdit 12.0.0 | [AvaloniaEdit](https://github.com/AvaloniaUI/AvaloniaEdit), MIT; `licenses/AvaloniaEdit.txt` |

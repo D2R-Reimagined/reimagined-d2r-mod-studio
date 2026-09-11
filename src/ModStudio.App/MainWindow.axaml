@@ -9,6 +9,7 @@
     <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
      <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
+     <ComboBox x:Name="LaunchTargetPicker" Width="135" PlaceholderText="Game target" IsEnabled="False" VerticalAlignment="Center" ToolTip.Tip="Launch using D2R.exe (vanilla) or D2RLoader.exe. Configure the game folder in Run settings." />
      <Button Content="Build" Click="BuildClicked" /><Button Content="Deploy" Click="DeployClicked" /><Button Content="▶ Play" Classes="accent" Click="PlayClicked" /><Button x:Name="StopButton" Content="■ Stop / Cancel" Click="StopClicked" IsVisible="False" />
     </StackPanel>
    </DockPanel>

@@ -11,6 +11,8 @@ void Throws(Action action, string name) { try { action(); } catch { count++; Con
 void Write(string file, string text) { Directory.CreateDirectory(Path.GetDirectoryName(file)!); File.WriteAllText(file, text, Utf8); }
 try
 {
+    PreviewTests.Run(root, Check, Throws);
+    BuildTests.Run(root, Check, Throws, Write);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
     var encodedFile = Path.Combine(root, "utf16.bat");
     var encodedBytes = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes("@echo off\r\necho hello\r\n")).ToArray();
@@ -83,6 +85,8 @@ try
     profile["tableOverrides"] = new JsonArray("change.json"); WriteJson(profilePath, profile);
     doc.SetCells([(0, "value", "170")]); doc.Save(); Throws(() => BuildService.Build(project, "d2rl"), "Stale override blocks build"); Write(records, before);
     var deployment = Path.Combine(root, "game/mods/TestMod");
+    Throws(() => DeploymentService.Deploy(project, build, deployment), "Replaced or failed build cannot deploy stale output");
+    build = BuildService.Build(project, "standard");
     DeploymentService.Deploy(project, build, deployment); Check(File.Exists(Path.Combine(deployment, "TestMod.mpq/data/hd/native.bin")), "Deploy writes complete output");
     Write(Path.Combine(deployment, "personal.cfg"), "keep"); DeploymentService.Deploy(project, build, deployment); Check(File.ReadAllText(Path.Combine(deployment, "personal.cfg")) == "keep", "Deployment retains unowned files");
     Write(Path.Combine(deployment, "TestMod.mpq/data/hd/native.bin"), "external"); Throws(() => DeploymentService.Deploy(project, build, deployment), "Locally modified deployed asset protected");
@@ -101,6 +105,7 @@ try
         canceled.Cancel(); Throws(() => DeploymentService.Deploy(project, build, deployment, canceled.Token), "Canceled deployment does not write");
         Check(!File.Exists(Path.Combine(deployment, "TestMod.mpq/data/hd/native.bin")), "Canceled deployment leaves last successful output");
     }
+    Write(Path.Combine(target, "data/hd/native.bin"), "unchanged"); build = BuildService.Build(project, "standard");
     using (var interrupted = new CancellationTokenSource())
     {
         Throws(() => DeploymentService.Deploy(project, build, deployment, interrupted.Token, _ => interrupted.Cancel()), "Cancellation during deployment rolls back");

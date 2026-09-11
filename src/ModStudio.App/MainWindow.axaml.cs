@@ -509,6 +509,25 @@ public partial class MainWindow : Window
     }
     private async Task SmokeAsync()
     {
+        async Task SettleRowEditorAsync()
+        {
+            // A timer continuation may run before Background-priority selection/layout work on CI.
+            // Drain that work before taking a baseline; wait for the actual selected document state.
+            var timeout = Stopwatch.StartNew();
+            int settled = 0;
+            while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Background);
+                var pane = Active;
+                bool matches = !rowEditorRefreshQueued && pane != null && rowEditorPane == pane &&
+                    rowEditorRow == pane.SelectedRow && rowEditorRevision == pane.Document.Revision &&
+                    ReferenceEquals(rowEditorTable, pane.Document.Table);
+                if (matches && ++settled >= 2) return;
+                if (!matches) settled = 0;
+                await Task.Delay(10);
+            }
+            throw new TimeoutException($"Row Editor did not settle: selected row {Active?.SelectedRow}, editor row {rowEditorRow}, revision {Active?.Document.Revision}/{rowEditorRevision}, queued {rowEditorRefreshQueued}.");
+        }
         int exit = 0;
         try
         {
@@ -637,7 +656,7 @@ public partial class MainWindow : Window
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
                 results.Add(new { table = name, elapsedMs = timer.Elapsed.TotalMilliseconds, rows = pane.Document.Table!.Records.Count, displayedColumns = pane.TableGrid.Columns.Count, realizedRows, editingAndUndo = true });
             }
-            InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
+            InspectorTabs.SelectedIndex = 1; await SettleRowEditorAsync();
             var widePane = Active!;
             var realizedFields = RowEditorFields.GetVisualDescendants().OfType<TextBox>().Count();
             Require(RowEditorFields.ItemCount == 322 && realizedFields > 0 && realizedFields < 40, "Wide row editor did not virtualize its inputs.");
@@ -646,12 +665,12 @@ public partial class MainWindow : Window
             var previousValue = widePane.Document.Table!.Cell(previousRow, previousFields[0].Column);
             var refreshCount = rowEditorRefreshCount;
             for (int i = 0; i < 20; i++) RefreshRowEditor(widePane);
-            await Task.Delay(80);
-            Require(rowEditorRefreshCount == refreshCount && ReferenceEquals(previousFields, RowEditorFields.ItemsSource), "Unchanged row rebuilt the field list.");
+            await SettleRowEditorAsync();
+            Require(rowEditorRefreshCount == refreshCount && ReferenceEquals(previousFields, RowEditorFields.ItemsSource), $"Unchanged row rebuilt the field list: refreshes {refreshCount}->{rowEditorRefreshCount}, row {previousRow}->{rowEditorRow}, document revision {widePane.Document.Revision}, editor revision {rowEditorRevision}.");
             var switchWatch = Stopwatch.StartNew();
             widePane.Jump(201, widePane.SelectedColumn); widePane.Jump(202, widePane.SelectedColumn); widePane.Jump(203, widePane.SelectedColumn);
-            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
-            switchWatch.Stop(); await Task.Delay(80);
+            await SettleRowEditorAsync();
+            switchWatch.Stop();
             Require(rowEditorRow == 203 && rowEditorRefreshCount == refreshCount + 1, "Rapid row changes were not coalesced to the latest row.");
             previousFields[0].Value = previousValue + " stale";
             Require(widePane.Document.Table.Cell(previousRow, previousFields[0].Column) == previousValue, "Detached row input changed a previous row.");
@@ -667,7 +686,7 @@ public partial class MainWindow : Window
             InspectorTabs.SelectedIndex = 0; var hiddenFields = RowEditorFields.ItemsSource;
             widePane.Jump(204, widePane.SelectedColumn); await Task.Delay(80);
             Require(ReferenceEquals(hiddenFields, RowEditorFields.ItemsSource), "Hidden Row Editor rebuilt its fields.");
-            InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
+            InspectorTabs.SelectedIndex = 1; await SettleRowEditorAsync();
             Require(rowEditorRow == 204, "Reopened Row Editor missed the latest selection.");
             RowEditorFields.ScrollIntoView(RowEditorFields.Items[0]!); await Task.Delay(100);
             results.Add(new { rowEditorColumns = 322, realizedFields, rapidSwitchMs = switchWatch.Elapsed.TotalMilliseconds, virtualizationAndStaleEventChecks = true });
@@ -759,7 +778,19 @@ public partial class MainWindow : Window
             }
             File.WriteAllText(System.IO.Path.Combine(output, "ui-smoke.json"), JsonSerializer.Serialize(results, Pretty));
         }
-        catch (Exception e) { exit = 1; Console.Error.WriteLine(e); }
+        catch (Exception e)
+        {
+            exit = 1; Console.Error.WriteLine(e);
+            try
+            {
+                var output = Program.Arguments[Array.IndexOf(Program.Arguments, "--smoke") + 2];
+                Directory.CreateDirectory(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "failure.txt"), e.ToString());
+                using var failureImage = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96));
+                failureImage.Render(this); failureImage.Save(System.IO.Path.Combine(output, "failure.png"), PngBitmapEncoderOptions.Default);
+            }
+            catch (Exception diagnosticError) { Console.Error.WriteLine("Could not capture failure diagnostics: " + diagnosticError.Message); }
+        }
         closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(exit);
     }
 }

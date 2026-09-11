@@ -56,6 +56,13 @@ jobs:
           if ($LASTEXITCODE) { throw 'UI fixture failed' }
           dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/example-project artifacts/ui-smoke
           if ($LASTEXITCODE) { throw 'UI checks failed' }
+      - name: Retain UI failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-failure-${{ matrix.rid }}
+          path: artifacts/ui-smoke
+          if-no-files-found: ignore
       - name: Package Windows / Linux updates
         if: matrix.rid != 'osx-arm64'
         run: ./scripts/package-release.ps1 -Runtime $env:RID -Version $env:VERSION -RepositoryUrl $env:REPOSITORY_URL

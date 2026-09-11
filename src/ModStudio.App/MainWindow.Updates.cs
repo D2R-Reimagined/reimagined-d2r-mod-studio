@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Net;
+using System.Net.Http;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Velopack;
@@ -68,8 +70,13 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            if (manual) ShowError(new Exception("Could not check Studio updates: " + ex.Message, ex));
-            else Log("Studio update check unavailable: " + ex.Message);
+            var reason = ex is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
+                ? "The update repository or release feed is not publicly accessible (GitHub 404). " +
+                  "Studio checks without GitHub credentials; private repositories require authentication. " +
+                  "The publisher must provide a public release feed, or configure private update access."
+                : ex.Message;
+            if (manual) ShowError(new Exception("Could not check Studio updates: " + reason, ex));
+            else Log("Studio update check unavailable: " + reason);
         }
         finally
         {

@@ -23,6 +23,8 @@ try
     var preferencesFile = Path.Combine(root, "user-settings/preferences.json");
     var preferences = StudioPreferences.Load(preferencesFile);
     Check(preferences.LastProject == null && !preferences.HasIntroduced(target), "First launch has no remembered project or settings introduction");
+    preferences.RowEditorSearch = "damage"; preferences.Save(preferencesFile);
+    Check(StudioPreferences.Load(preferencesFile).RowEditorSearch == "damage", "Row editor search persists across launches");
     preferences.Remember(target, preferencesFile);
     preferences = StudioPreferences.Load(preferencesFile);
     Check(preferences.LastProject == Path.GetFullPath(target), "Last project survives reloading preferences");

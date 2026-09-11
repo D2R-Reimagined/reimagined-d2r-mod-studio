@@ -58,7 +58,7 @@ Import handles `global/excel/*.txt` and `global/excel/base/*.txt`, preserving UT
 
 Recognized `local/lng/strings/*.json` catalogs become locale matrices; all original locale values are checked for semantic equality. Catalog whitespace/escaping may change. Other assets remain native. Import records original file hashes in `import-report.json`. It creates fresh mod metadata for the chosen name; review your original `modinfo.json` and loader settings separately because they live outside `data/` and are not part of this import.
 
-Each table uses a single formatted JSON array in physical runtime order. Stable formatting makes unrelated cell edits reviewable; it does not eliminate Git conflicts in the same record. Unknown supported record metadata is retained. Do not alphabetize source arrays or renumber existing slots. Use Git normally outside the editor for branches/commits; the **Changes** panel lists unsaved documents and can compare the active table with disk. Git status and merging remain outside the editor.
+Each table uses a single formatted JSON array in physical runtime order. Stable formatting makes unrelated cell edits reviewable; it does not eliminate Git conflicts in the same record. Unknown supported record metadata is retained. Do not alphabetize source arrays or renumber existing slots. Use Git in the bottom Terminal tab or an external terminal for branches/commits; the **Changes** panel lists unsaved documents and can compare the active table with disk. There is no graphical Git status or merge interface.
 
 Profiles are data, not hardcoded mod variants. Any `compatibility/<id>/profile.json` with matching `id`, `schemaVersion: 1`, `stringMode: "standard" | "full"`, `tableOverrides` and `assetOverrides` participates in builds. An empty Standard/D2RL pair is created on import. Table overrides name a table, stable record, reason and field `expect`/`value`; stale or competing overrides block the build. Source/schema/override files are editable in Source view. [Architecture and schema example](docs/architecture.md).
 
@@ -100,3 +100,13 @@ PowerShell 7 packaging: `./scripts/publish.ps1 -Runtime win-x64`. Supported pack
 Own code is MIT licensed. See [third-party notices](THIRD_PARTY_NOTICES.md); game and mod assets retain their own ownership and are not covered by this project's license.
 
 Installer releases and automatic updates: see [docs/releases.md](docs/releases.md).
+
+## Editing shortcuts and project shell
+
+- Row Editor's **Find columns** filters field names without changing table data. The search stays active across rows and is remembered locally across launches. Clear it to show every field.
+- Right-click a column header to freeze/unfreeze, lock/unlock, fit its contents or set a width. Drag header dividers to resize. Widths and freeze/lock state last for the open document; **Fit columns** resets manual widths. Automatic widths sample values and remain capped at 220 pixels.
+- A **Save** icon appears on each changed document. It uses the same validation and external-change protection as Save all.
+- JSON source has individual gutter folding controls and collapse/expand-all icons. Folding only changes the view. Source editors leave space after line numbers.
+- **Terminal** starts a persistent `cmd.exe` shell on Windows or `/bin/bash` on Linux/macOS when you submit a command. It starts in the project root and retains directory/environment changes. Up/Down recalls session commands. Stop shell terminates that shell and its child processes; the shell is also stopped when switching projects, closing Studio, or beginning in-place migration. Output is bounded; interactive full-screen programs require an external terminal. Commands edit real project files and do not automatically save editor buffers.
+
+If in-place migration cannot rename a folder, the prepared conversion is retained and its path is reported. Close terminals/editors holding the original directory and select **Retry final step**. Retry verifies both original and prepared files before publishing; changed files require a fresh migration. Closing the dialog keeps the prepared conversion for manual recovery, but the retry action is only available while the dialog remains open.

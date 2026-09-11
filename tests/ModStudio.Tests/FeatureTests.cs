@@ -74,7 +74,29 @@ internal static class FeatureTests
             stop.Cancel(); throws(() => LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup", stop.Token), "Canceled in-place conversion does not swap the project");
             check(File.Exists(Path.Combine(directRoot, "global/excel/example.txt")) && !Directory.Exists(directRoot + ".backup"), "Canceled conversion leaves original root intact");
         }
-        LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup");
+        if (OperatingSystem.IsWindows())
+        {
+            LegacyMigration.FinalizationException? blocked = null;
+            using (var held = new FileStream(Path.Combine(directRoot, ".git/config"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                try { LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup"); }
+                catch (LegacyMigration.FinalizationException ex) { blocked = ex; }
+                check(blocked != null && File.Exists(Path.Combine(directRoot, "global/excel/example.txt")) && Directory.GetDirectories(root, "direct-native.converted-*").Length == 1, "Blocked rename retains prepared conversion and original files");
+            }
+            using (var stop = new CancellationTokenSource()) { stop.Cancel(); throws(() => blocked!.Retry(stop.Token), "Finalization retry honors cancellation"); }
+            var unchanged = File.ReadAllText(Path.Combine(directRoot, ".git/config"));
+            write(Path.Combine(directRoot, ".git/config"), "changed after rename failed");
+            throws(() => blocked!.Retry(default), "Finalization retry rejects original files changed after conversion");
+            write(Path.Combine(directRoot, ".git/config"), unchanged);
+            var retainedFile = Path.Combine(Directory.GetDirectories(root, "direct-native.converted-*").Single(), ".git/config");
+            var retainedText = File.ReadAllText(retainedFile);
+            write(retainedFile, "changed prepared conversion");
+            throws(() => blocked!.Retry(default), "Finalization retry rejects changed prepared files");
+            write(retainedFile, retainedText);
+            blocked!.Retry(default);
+            check(!Directory.GetDirectories(root, "direct-native.converted-*").Any() && File.Exists(Path.Combine(directRoot + ".backup", "global/excel/example.txt")), "Finalization retry publishes without converting again and retains backup");
+        }
+        else LegacyMigration.MigrateInPlace(directCandidate, "Direct", directRoot + ".backup");
         check(File.Exists(Path.Combine(directRoot, ".git/config")), "Direct data-root conversion retains repository metadata");
         check(new RunSettings(project.Root).PathIssues(project).Any(p => p.Contains("overlap")), "Run settings detects source/deployment overlap");
         check(new RunSettings(Path.Combine(root, "mods"), Path.Combine(root, "missing.exe")).PathIssues(project).Count >= 2, "Run settings explains wrong deployment folder and missing executable");

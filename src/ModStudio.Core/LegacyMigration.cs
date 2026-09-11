@@ -10,6 +10,10 @@ public record LegacyProject(string Root, string DataRoot, string Name, bool Spli
 
 public static class LegacyMigration
 {
+    public sealed class FinalizationException(string message, Exception inner, Func<CancellationToken, ImportReport> retry) : IOException(message, inner)
+    {
+        public ImportReport Retry(CancellationToken token) => retry(token);
+    }
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase) { ".git", ".studio", ".idea", "node_modules", "bin", "obj", "build", "dist" };
     public static List<LegacyProject> Detect(string selected)
     {
@@ -51,6 +55,7 @@ public static class LegacyMigration
         var prepared = root + ".converted-" + Guid.NewGuid().ToString("N");
         progress?.Invoke("Scanning the original project and repository metadata…");
         var originals = MigrationFiles.Fingerprint(MigrationFiles.Enumerate(root, token, skipBuildCache: true), root, "Scanning original project (old .studio/builds stay in backup)", token, progress);
+        bool preservePrepared = false;
         try
         {
             // Validate once, after supporting files have been preserved and before replacing the root.
@@ -77,14 +82,38 @@ public static class LegacyMigration
             var cache = Inside(prepared, ".studio/builds"); if (Directory.Exists(cache)) Directory.Delete(cache, true);
             // A second fingerprint check also covers Git metadata and files excluded from migration input.
             MigrationFiles.Verify(originals, MigrationFiles.Enumerate(root, token, skipBuildCache: true), root, token, progress, "Project changed during conversion. Retry when other tools have finished writing.");
-            token.ThrowIfCancellationRequested();
-            progress?.Invoke("Keeping original project at " + backup);
-            Directory.Move(root, backup);
-            try { Directory.Move(prepared, root); }
-            catch { Directory.Move(backup, root); throw; }
-            return result with { Project = ModProject.Open(root) };
+            Dictionary<string, string>? preparedHashes = null;
+            ImportReport Publish(CancellationToken retryToken, bool verify)
+            {
+                if (verify && preparedHashes != null) MigrationFiles.Verify(preparedHashes, MigrationFiles.Enumerate(prepared, retryToken), prepared, retryToken, progress, "Prepared conversion changed. Start a fresh migration; retained files have not been published.");
+                if (verify) MigrationFiles.Verify(originals, MigrationFiles.Enumerate(root, retryToken, skipBuildCache: true), root, retryToken, progress, "Original files changed. Keep the prepared copy for reference and start a fresh migration.");
+                retryToken.ThrowIfCancellationRequested();
+                bool movedOriginal = false;
+                try
+                {
+                    progress?.Invoke("Keeping original project at " + backup);
+                    Directory.Move(root, backup); movedOriginal = true;
+                    Directory.Move(prepared, root);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    preservePrepared = true;
+                    if (movedOriginal)
+                    {
+                        try { Directory.Move(backup, root); }
+                        catch (Exception rollback)
+                        {
+                            throw new IOException($"Could not restore the original path. Original files are safe at {backup}. Converted files are at {prepared}. Close tools using these folders before restoring the original folder. {rollback.Message}", ex);
+                        }
+                    }
+                    preparedHashes ??= MigrationFiles.Fingerprint(MigrationFiles.Enumerate(prepared, retryToken), prepared, "Retaining verified conversion for retry", retryToken, progress);
+                    throw new FinalizationException($"The operating system could not rename the project folder. A terminal using it as its working directory, an editor, or a background process may hold a directory handle.\nOriginal: {root}\nPrepared conversion (retained): {prepared}\nBackup destination: {backup}\nClose tools using the original folder, then retry the final step.\n{ex.Message}", ex, t => Publish(t, true));
+                }
+                return result with { Project = ModProject.Open(root) };
+            }
+            return Publish(token, false);
         }
-        finally { if (Directory.Exists(prepared)) Directory.Delete(prepared, true); }
+        finally { if (!preservePrepared && Directory.Exists(prepared)) Directory.Delete(prepared, true); }
     }
     private static string SuggestedName(string root)
     {

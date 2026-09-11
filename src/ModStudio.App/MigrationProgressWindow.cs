@@ -29,7 +29,7 @@ public sealed class MigrationProgressWindow : Window
         panel.Children.Add(action); Content = new ScrollViewer { Content = panel, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
         var watch = Stopwatch.StartNew(); var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         timer.Tick += (_, _) => elapsed.Text = $"Elapsed: {watch.Elapsed:mm\\:ss}";
-        bool finished = false; ImportReport? result = null;
+        bool finished = false; ImportReport? result = null; LegacyMigration.FinalizationException? pendingPublish = null;
         void Cancel()
         {
             if (finished || cancellation.IsCancellationRequested) return;
@@ -37,12 +37,12 @@ public sealed class MigrationProgressWindow : Window
             stage.Text = "Canceling migration…";
             detail.Text = "Waiting for the current step and cleanup to finish. The original project is unchanged.";
         }
-        action.Click += (_, _) => { if (finished) Close(result); else Cancel(); };
+        action.Click += async (_, _) => { if (finished && pendingPublish != null) await RunAsync(); else if (finished) Close(result); else Cancel(); };
         Closing += (_, e) => { if (!finished) { e.Cancel = true; Cancel(); } };
         Closed += (_, _) => timer.Stop();
-        Opened += async (_, _) =>
+        async Task RunAsync()
         {
-            timer.Start();
+            finished = false; action.Content = "Cancel migration"; progress.IsIndeterminate = true; watch.Start(); timer.Start();
             try
             {
                 void Progress(string message)
@@ -50,20 +50,26 @@ public sealed class MigrationProgressWindow : Window
                     log(message);
                     Dispatcher.UIThread.Post(() => { if (!finished && !cancellation.IsCancellationRequested) stage.Text = message; });
                 }
-                result = await Task.Run(() => backup == null ? LegacyMigration.Migrate(source, destination, name, cancellation.Token, Progress) : LegacyMigration.MigrateInPlace(source, name, backup, cancellation.Token, Progress));
-                heading.Text = "Migration complete"; stage.Text = "Your project is ready";
+                result = await Task.Run(() => pendingPublish != null ? pendingPublish.Retry(cancellation.Token) : backup == null ? LegacyMigration.Migrate(source, destination, name, cancellation.Token, Progress) : LegacyMigration.MigrateInPlace(source, name, backup, cancellation.Token, Progress));
+                pendingPublish = null; heading.Text = "Migration complete"; stage.Text = "Your project is ready";
                 detail.Text = $"{result.Tables:N0} tables · {result.Catalogs:N0} string catalogs · {result.VerifiedTables:N0} verified TXT files\nA migration report is included in the new project.";
                 action.Content = "Open migrated project";
             }
+            catch (LegacyMigration.FinalizationException ex)
+            {
+                pendingPublish = ex; heading.Text = "Conversion ready; folder rename blocked";
+                stage.Text = "The prepared conversion has been retained"; detail.Text = ex.Message;
+                log(ex.Message); action.Content = "Retry final step";
+            }
             catch (OperationCanceledException)
             {
-                heading.Text = "Migration canceled"; stage.Text = "Cleanup finished";
-                detail.Text = "No migrated project was published. Your original files are unchanged.";
+                pendingPublish = null; heading.Text = "Migration canceled"; stage.Text = "Cleanup finished";
+                detail.Text = "No migrated project was published. Your original files are unchanged. Any previously retained conversion remains at the path shown in the log.";
                 action.Content = "Close";
             }
             catch (Exception ex)
             {
-                heading.Text = "Migration could not finish"; stage.Text = "Review the error below";
+                pendingPublish = null; heading.Text = "Migration could not finish"; stage.Text = "Review the error below";
                 detail.Text = ex.Message; log("Migration failed: " + ex.Message); action.Content = "Close";
             }
             finally
@@ -72,6 +78,7 @@ public sealed class MigrationProgressWindow : Window
                 elapsed.Text = $"Elapsed: {watch.Elapsed:mm\\:ss}";
                 progress.IsIndeterminate = false; progress.Value = result == null ? 0 : 100; action.IsEnabled = true;
             }
-        };
+        }
+        Opened += async (_, _) => await RunAsync();
     }
 }

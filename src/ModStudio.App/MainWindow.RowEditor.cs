@@ -17,9 +17,27 @@ public partial class MainWindow
     private TableData? rowEditorTable;
     private string rowEditorLocks = "";
     private int rowEditorRefreshCount;
+    private RowEditorField[] rowEditorAllFields = [];
+    private void FilterRowEditor()
+    {
+        var term = (RowEditorSearch.Text ?? "").Trim();
+        RowEditorFields.ItemsSource = term.Length == 0 ? rowEditorAllFields : rowEditorAllFields.Where(f => f.Column.Contains(term, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (rowEditorTable != null) RowEditorLabel.Text = $"{rowEditorTable.Name} · row {rowEditorRow} · {RowEditorFields.ItemCount}/{rowEditorAllFields.Length} fields";
+    }
 
     private void InitializeRowEditor()
     {
+        if (!Program.Arguments.Contains("--smoke"))
+            try { RowEditorSearch.Text = StudioPreferences.Load(StudioPreferences.DefaultFile).RowEditorSearch; } catch (Exception) { }
+        var searchSave = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        searchSave.Tick += (_, _) => {
+            searchSave.Stop();
+            if (Program.Arguments.Contains("--smoke")) return;
+            try { var prefs = StudioPreferences.Load(StudioPreferences.DefaultFile); prefs.RowEditorSearch = RowEditorSearch.Text ?? ""; prefs.Save(StudioPreferences.DefaultFile); }
+            catch (Exception ex) { ShowError(ex); }
+        };
+        Closed += (_, _) => searchSave.Stop();
+        RowEditorSearch.TextChanged += (_, _) => { FilterRowEditor(); searchSave.Stop(); searchSave.Start(); };
         RowEditorFields.ItemTemplate = new FuncDataTemplate<RowEditorField>((field, _) =>
         {
             if (field == null) return new Border();
@@ -61,7 +79,7 @@ public partial class MainWindow
         int row = pane?.SelectedRow ?? -1;
         if (pane == null || table == null || document!.PendingSource || row < 0 || row >= table.Records.Count)
         {
-            RowEditorFields.ItemsSource = null;
+            rowEditorAllFields = []; RowEditorFields.ItemsSource = null;
             rowEditorPane = null; rowEditorTable = null;
             RowEditorLabel.Text = document?.PendingSource == true ? "Apply valid source before editing rows." : "Select a table row";
             return;
@@ -74,7 +92,7 @@ public partial class MainWindow
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";
         RowEditorStatus.Text = "Edits apply immediately to the shared source. Save to write to disk.";
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
-        RowEditorFields.ItemsSource = table.Columns.Select(column =>
+        rowEditorAllFields = table.Columns.Select(column =>
         {
             bool identity = table.IsCatalog ? column is "id" or "Key" : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
@@ -100,6 +118,7 @@ public partial class MainWindow
                     }
                 });
         }).ToArray();
+        FilterRowEditor();
     }
 
     private sealed class RowEditorField(string column, string label, string value, bool readOnly, bool multiline, Action<RowEditorField> edit) : INotifyPropertyChanged

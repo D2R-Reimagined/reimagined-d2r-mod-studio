@@ -11,6 +11,9 @@ internal static class EditorToolbarIcons
     {
         var (description, geometry) = action switch
         {
+            "Save" => ("Save this file", "M3,3 H18 L21,6 V21 H3 Z M7,3 V9 H17 V3 M7,21 V14 H17 V21"),
+            "Collapse JSON" => ("Collapse JSON blocks", "M4,8 L12,12 L20,8 M4,16 L12,12 L20,16"),
+            "Expand JSON" => ("Expand JSON blocks", "M4,8 L12,4 L20,8 M4,16 L12,20 L20,16"),
             "Table" => ("Table view", "M3,3 H21 V21 H3 Z M3,9 H21 M3,15 H21 M9,3 V21"),
             "Format JSON" => ("Format JSON (Undo available)", "M3,4 H21 M7,9 H17 M7,14 H21 M3,19 H17"),
             "Source" => ("Edit source text", "M8,5 L2,12 L8,19 M16,5 L22,12 L16,19 M14,3 L10,21"),

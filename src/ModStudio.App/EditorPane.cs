@@ -26,7 +26,7 @@ public sealed class RowView(Document document, int row, Action<Exception> error)
     }
 }
 
-public sealed class EditorPane : Grid
+public sealed partial class EditorPane : Grid
 {
     public Document Document { get; }
     public DataGrid TableGrid { get; } = CreateGrid();
@@ -69,13 +69,13 @@ public sealed class EditorPane : Grid
     public string SelectedColumn => Document.Table?.Columns.Contains(selectedColumn) == true ? selectedColumn : Document.Table?.Columns.FirstOrDefault() ?? "";
     private static DataGrid CreateGrid() => new()
     {
-        AutoGenerateColumns = false, CanUserReorderColumns = false, CanUserSortColumns = true,
+        AutoGenerateColumns = false, CanUserReorderColumns = false, CanUserSortColumns = true, CanUserResizeColumns = true,
         RowHeight = 30, RowHeaderWidth = 60, HeadersVisibility = DataGridHeadersVisibility.All, SelectionMode = DataGridSelectionMode.Extended, IsReadOnly = false,
         HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Visible, VerticalScrollBarVisibility = ScrollBarVisibility.Visible
     };
 
-    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Func<Task>? editSchema = null)
+    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Func<Task>? editSchema = null, Action<EditorPane>? save = null)
     {
         Document = document; error = onError; selection = onSelection; activeGrid = TableGrid;
         Source.SyntaxHighlighting = SourceCodeEditing.Highlighting(document.FilePath);
@@ -152,6 +152,12 @@ public sealed class EditorPane : Grid
             Button("Refresh preview", ShowMarkdownPreview);
             toolbar.Children.Add(new TextBlock { Text = "GitHub-style Markdown preview", Margin = new(10, 7) });
         }
+        var saveButton = EditorToolbarIcons.Create("Save");
+        saveButton.IsVisible = document.IsDirty;
+        saveButton.Click += (_, _) => { try { if (save != null) save(this); else { document.ApplySource(); document.Save(); Refresh(); } } catch (Exception ex) { error(ex); } };
+        document.Changed += () => saveButton.IsVisible = document.IsDirty;
+        toolbar.Children.Insert(0, saveButton);
+        InitializeSourceFeatures(toolbar);
         Refresh();
     }
     private void WireGrid(DataGrid grid)
@@ -176,6 +182,18 @@ public sealed class EditorPane : Grid
         {
             BeginInput(grid);
             if (!e.GetCurrentPoint(grid).Properties.IsRightButtonPressed || e.Source is not Visual visual) return;
+            var header = visual.GetSelfAndVisualAncestors().OfType<DataGridColumnHeader>().FirstOrDefault();
+            if (header != null)
+            {
+                var headerColumn = grid.Columns.FirstOrDefault(c => Equals(c.Header, header.Content));
+                if (headerColumn != null && columnMap.TryGetValue(headerColumn, out var index))
+                {
+                    e.Handled = true; acceptingInput = false;
+                    var columnMenu = CreateColumnMenu(index);
+                    header.ContextMenu = columnMenu; columnMenu.Closed += (_, _) => header.ContextMenu = null; columnMenu.Open(header);
+                }
+                return;
+            }
             var row = visual.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault();
             if (row?.DataContext is not RowView item) return;
             // Prevent the grid's default right-click handling from collapsing a multiple-row selection.
@@ -277,7 +295,7 @@ public sealed class EditorPane : Grid
             return text.DesiredSize.Width;
         }
         // Leave room for the frozen marker, sorting indicator and header padding.
-        var width = Math.Clamp(Measure(table.Columns[index]) + 70, 64, maximum);
+        var width = Math.Clamp(Measure(Header(index)) + 48, 40, maximum);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         // Bound font-layout work on the UI thread. Sample the beginning and the full table,
         // rather than measuring thousands of distinct identifiers before the first frame.
@@ -303,7 +321,7 @@ public sealed class EditorPane : Grid
                 grid.FrozenColumnCount = 0; grid.Columns.Clear();
                 foreach (var i in VisibleColumns())
                 {
-                    var column = new DataGridTextColumn { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 64, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
+                    var column = new DataGridTextColumn { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
                     columnMap[column] = i; grid.Columns.Add(column);
                     column.PropertyChanged += (_, e) =>
                     {

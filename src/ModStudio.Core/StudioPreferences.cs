@@ -5,6 +5,7 @@ namespace ModStudio.Core;
 public sealed class StudioPreferences
 {
     public string? LastProject { get; set; }
+    public string RowEditorSearch { get; set; } = "";
     public List<string> SettingsIntroduced { get; set; } = [];
     public static string DefaultFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReimaginedD2RModStudio", "preferences.json");
     public static StudioPreferences Load(string file) => File.Exists(file)
@@ -22,5 +23,5 @@ public sealed class StudioPreferences
         Save(file);
     }
     private static string Normalize(string root) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-    private void Save(string file) => Storage.AtomicWrite(file, JsonSerializer.SerializeToUtf8Bytes(this, new JsonSerializerOptions { WriteIndented = true }));
+    public void Save(string file) => Storage.AtomicWrite(file, JsonSerializer.SerializeToUtf8Bytes(this, new JsonSerializerOptions { WriteIndented = true }));
 }

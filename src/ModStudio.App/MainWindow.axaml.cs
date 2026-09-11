@@ -24,6 +24,7 @@ namespace ModStudio.App;
 public partial class MainWindow : Window
 {
     private ModProject? project;
+    private readonly ProjectTerminal terminal = new();
     private readonly ObservableCollection<TabItem> tabs = [];
     private TabItem? previewTab;
     private readonly SemaphoreSlim documentOpening = new(1, 1);
@@ -42,7 +43,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeRowEditor(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeRowEditor(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
@@ -69,7 +70,7 @@ public partial class MainWindow : Window
             if (operation != null) { operation.Cancel(); ShowError(new Exception("Canceling the current operation. Close again when it has finished.")); return; }
             if (!await MayLeaveAsync()) return;
             if (controller.Running && await ChooseAsync("A game process is still running", "Closing Studio leaves that process running.", "Leave running and close", "Cancel") != "Leave running and close") return;
-            closingApproved = true; watcher?.Dispose(); recoveryTimer.Stop(); runStateTimer.Stop(); controller.Dispose(); Close();
+            closingApproved = true; terminal.Dispose(); watcher?.Dispose(); recoveryTimer.Stop(); runStateTimer.Stop(); controller.Dispose(); Close();
         };
         Opened += async (_, _) =>
         {
@@ -166,8 +167,10 @@ public partial class MainWindow : Window
         }
         if (await ChooseAsync("Review migration", $"Mode: {mode}\nProject root: {candidate.Root}\nData folder: {candidate.DataRoot}\nDestination: {destination}" + (backup == null ? "\n\nOriginal unchanged. Additional project files go under legacy/; Git history and caches are excluded from the copy." : $"\nBackup: {backup}\n\nThe converted project keeps its original path, Git metadata and supporting files. Old .studio/builds caches stay in the backup and can be rebuilt. Do not edit the project in other tools during conversion.") + "\n\nConversion and profile builds are verified before publishing.", "Migrate", "Cancel") != "Migrate") return;
         operation = new(); RefreshRunControls(); ImportReport? report;
+        recoveryTimer.Stop(); if (watcher != null) watcher.EnableRaisingEvents = false;
+        if (backup != null) terminal.Stop();
         try { report = await new MigrationProgressWindow(candidate, destination, name, operation, Log, backup).ShowDialog<ImportReport?>(this); }
-        finally { operation.Dispose(); operation = null; RefreshRunControls(); }
+        finally { operation.Dispose(); operation = null; recoveryTimer.Start(); if (watcher != null) watcher.EnableRaisingEvents = true; RefreshRunControls(); }
         if (report == null) return;
         await LoadProjectAsync(report.Project.Root); Log($"Migrated {report.Tables} tables and {report.Catalogs} catalogs. See migration-report.json for verification and preserved files.");
         await new QuickStartWindow().ShowDialog(this);
@@ -176,7 +179,7 @@ public partial class MainWindow : Window
     public async Task LoadProjectAsync(string root)
     {
         Require(operation == null, "Wait for the current operation before switching projects."); watcher?.Dispose();
-        project = await Task.Run(() => ModProject.Open(root)); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
+        project = await Task.Run(() => ModProject.Open(root)); terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} — Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         ProjectTree.ItemsSource = entries; ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
@@ -333,7 +336,7 @@ public partial class MainWindow : Window
                 {
                     var rawDocument = await Task.Run(() => new Document(file, forceRaw: true));
                     if (!tabs.Contains(binary)) return;
-                    var rawPane = new EditorPane(rawDocument, ShowError, UpdateInspector);
+                    var rawPane = new EditorPane(rawDocument, ShowError, UpdateInspector, save: SavePane);
                     binary.Content = rawPane;
                     rawDocument.Changed += () => { if (rawDocument.IsDirty) KeepTab(binary); UpdateTabHeader(binary); RefreshStatus(); };
                     UpdateTabHeader(binary); UpdateInspector(rawPane);
@@ -349,7 +352,7 @@ public partial class MainWindow : Window
         var document = await Task.Run(() => new Document(file));
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var schemaFile = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(file)!, "schema.json");
-        var pane = new EditorPane(document, ShowError, UpdateInspector, System.IO.Path.GetFileName(file) == "records.json" && File.Exists(schemaFile) ? async () => { try { await OpenDocumentAsync(schemaFile); } catch (Exception e) { ShowError(e); } } : null);
+        var pane = new EditorPane(document, ShowError, UpdateInspector, System.IO.Path.GetFileName(file) == "records.json" && File.Exists(schemaFile) ? async () => { try { await OpenDocumentAsync(schemaFile); } catch (Exception e) { ShowError(e); } } : null, SavePane);
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
         var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { reload, close }; tab.ContextMenu = menu;
@@ -403,6 +406,12 @@ public partial class MainWindow : Window
     private void ApplyCellClicked(object? sender, RoutedEventArgs e) { try { if (Active is { } pane && FieldPicker.SelectedItem is string field) { pane.Document.SetCells([(pane.SelectedRow, field, CellValue.Text ?? "")]); pane.Refresh(); } } catch (Exception ex) { ShowError(ex); } }
     private async void ProblemDoubleTapped(object? sender, TappedEventArgs e) { try { if (Problems.SelectedItem is Diagnostic d && File.Exists(d.File)) { var pane = await OpenDocumentAsync(d.File); if (d.Row >= 0) pane?.Jump(d.Row, d.Field); } } catch (Exception ex) { ShowError(ex); } }
     private async void SaveAllClicked(object? sender, RoutedEventArgs e) => await SaveAllAsync();
+    private void SavePane(EditorPane pane)
+    {
+        pane.Document.ApplySource(); pane.Document.Save();
+        var recovery = RecoveryFile(pane.Document); if (File.Exists(recovery)) File.Delete(recovery);
+        pane.Refresh();
+    }
     private async Task<bool> SaveAllAsync()
     {
         try
@@ -631,7 +640,7 @@ public partial class MainWindow : Window
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
                 await Task.Delay(100);
                 var clickableRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r.DataContext is RowView rv && rv.Row != 200 && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is Point point && point.Y > 50 && point.Y < pane.TableGrid.Bounds.Height - 40);
-                var clickableCell = clickableRow.GetVisualDescendants().OfType<DataGridCell>().First(c => c.Bounds.Width > 100);
+                var clickableCell = pane.TableGrid.Columns.First(c => c.Header?.ToString()?.Contains(field, StringComparison.Ordinal) == true).GetCellContent(clickableRow)!.GetVisualAncestors().OfType<DataGridCell>().First();
                 var cellPoint = clickableCell.TranslatePoint(new Point(clickableCell.Bounds.Width / 2, 15), this)!.Value;
                 this.MouseDown(cellPoint, MouseButton.Left, RawInputModifiers.None); this.MouseUp(cellPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
                 Require(pane.SelectedRow == ((RowView)clickableRow.DataContext!).Row && pane.SelectedColumn == field, "Mouse cell selection failed to update the inspector selection.");
@@ -660,6 +669,35 @@ public partial class MainWindow : Window
             var widePane = Active!;
             var realizedFields = RowEditorFields.GetVisualDescendants().OfType<TextBox>().Count();
             Require(RowEditorFields.ItemCount == 322 && realizedFields > 0 && realizedFields < 40, "Wide row editor did not virtualize its inputs.");
+            RowEditorSearch.Text = widePane.Document.Table!.Columns[^1];
+            var searchText = RowEditorSearch.Text;
+            await Task.Delay(60);
+            Require(RowEditorFields.ItemCount > 0 && RowEditorFields.ItemCount < 322, "Row search did not filter columns.");
+            widePane.Jump(201); await SettleRowEditorAsync();
+            Require(RowEditorSearch.Text == searchText && ((RowEditorField[])RowEditorFields.ItemsSource!).All(f => f.Column.Contains(searchText!, StringComparison.OrdinalIgnoreCase)), "Row search was lost when changing rows.");
+            RowEditorSearch.Text = "no-column-with-this-name"; await Task.Delay(60);
+            Require(RowEditorFields.ItemCount == 0, "Unmatched row search should be empty.");
+            RowEditorSearch.Text = ""; await Task.Delay(60); widePane.Jump(200); await SettleRowEditorAsync();
+            var columnIndex = 1;
+            await Task.Delay(100);
+            var columnHeader = widePane.TableGrid.GetVisualDescendants().OfType<DataGridColumnHeader>().First(h => Equals(h.Content, widePane.TableGrid.Columns[1].Header));
+            var headerPoint = columnHeader.TranslatePoint(new Point(columnHeader.Bounds.Width / 2, 12), this)!.Value;
+            this.MouseDown(headerPoint, MouseButton.Right, RawInputModifiers.None); this.MouseUp(headerPoint, MouseButton.Right, RawInputModifiers.None); await Task.Delay(80);
+            var columnMenu = columnHeader.ContextMenu!;
+            Require(columnMenu is { IsOpen: true }, "Column header right-click did not open its menu.");
+            columnMenu!.Close();
+            columnMenu.Items.OfType<MenuItem>().First().RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Require(widePane.FrozenColumns.Contains(columnIndex), "Column header freeze action failed.");
+            widePane.ToggleFrozenColumn(widePane.Document.Table.Columns[columnIndex]);
+            var resized = widePane.TableGrid.Columns[1]; resized.Width = new DataGridLength(123);
+            widePane.RefreshColumns();
+            Require(widePane.TableGrid.Columns[1].Width.Value == 123 && widePane.FrozenGrid.Columns[1].Width.Value == 123 && widePane.TableGrid.CanUserResizeColumns, "Column resize was not retained and synchronized.");
+            Require(EditorPane.JsonFolds("{\n\"text\": \"[}]\",\n\"items\": [\n1,2\n]\n}").Count() == 2, "JSON folds mishandled braces in strings.");
+            await terminal.SendAsync(OperatingSystem.IsWindows() ? "echo studio-terminal-%COMSPEC%" : "printf studio-terminal-$((6*7))");
+            var terminalDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (!(OperatingSystem.IsWindows() ? terminal.OutputText.Contains("studio-terminal-C:", StringComparison.OrdinalIgnoreCase) : terminal.OutputText.Contains("studio-terminal-42")) && DateTime.UtcNow < terminalDeadline) await Task.Delay(80);
+            Require((OperatingSystem.IsWindows() ? terminal.OutputText.Contains("studio-terminal-C:", StringComparison.OrdinalIgnoreCase) : terminal.OutputText.Contains("studio-terminal-42")), "Project shell did not produce output.");
+            terminal.Stop();
             var previousFields = (RowEditorField[])RowEditorFields.ItemsSource!;
             var previousRow = widePane.SelectedRow;
             var previousValue = widePane.Document.Table!.Cell(previousRow, previousFields[0].Column);
@@ -691,6 +729,24 @@ public partial class MainWindow : Window
             RowEditorFields.ScrollIntoView(RowEditorFields.Items[0]!); await Task.Delay(100);
             results.Add(new { rowEditorColumns = 322, realizedFields, rapidSwitchMs = switchWatch.Elapsed.TotalMilliseconds, virtualizationAndStaleEventChecks = true });
             await Task.Delay(500); var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)); bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "studio.png"), PngBitmapEncoderOptions.Default); bitmap.Dispose();
+            var jsonFile = System.IO.Path.Combine(output, "folding.json");
+            File.WriteAllText(jsonFile, "{\n  \"enabled\": 1,\n  \"nested\": {\n    \"value\": 2\n  }\n}\n", Utf8);
+            var jsonPane = (await OpenDocumentAsync(jsonFile))!; await Task.Delay(100);
+            Button ActionButton(string name) => jsonPane.GetVisualDescendants().OfType<Button>().First(b => Avalonia.Automation.AutomationProperties.GetName(b) == name);
+            var saveIcon = ActionButton("Save this file"); Require(!saveIcon.IsVisible, "Clean document shows Save icon.");
+            jsonPane.Source.Text += "\n"; await Task.Delay(80);
+            Require(saveIcon.IsVisible && jsonPane.Document.IsDirty, "Source edit did not reveal Save icon.");
+            saveIcon.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(!saveIcon.IsVisible && !jsonPane.Document.IsDirty && File.ReadAllText(jsonFile) == jsonPane.Source.Text, "Document Save icon did not save and hide.");
+            var jsonText = jsonPane.Source.Text;
+            ActionButton("Collapse JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(jsonPane.FoldedBlockCount == 2 && jsonPane.Source.Text == jsonText, "JSON collapse changed text or missed nested blocks.");
+            ActionButton("Expand JSON blocks").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(jsonPane.FoldedBlockCount == 0 && jsonPane.Source.TextArea.TextView.Margin.Left >= 10, "Expand JSON or source gutter spacing failed.");
+            await Task.Delay(100);
+            using (var sourceImage = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96,96))) { sourceImage.Render(this); sourceImage.Save(System.IO.Path.Combine(output, "json-folding.png"), PngBitmapEncoderOptions.Default); }
+            await CloseTabAsync(tabs.First(t => t.Content == jsonPane));
+            Documents.SelectedItem = tabs.First(t => t.Content == widePane); await SettleRowEditorAsync();
             var markdownFile = System.IO.Path.Combine(output, "preview.md");
             InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
             var rowEditorScroll = RowEditorFields.GetVisualDescendants().OfType<ScrollViewer>().First();

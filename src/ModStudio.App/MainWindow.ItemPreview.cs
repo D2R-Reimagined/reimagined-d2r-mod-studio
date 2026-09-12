@@ -13,7 +13,9 @@ public partial class MainWindow
     private readonly PreviewWorkQueue itemWork = new();
     private readonly ContentControl itemPreviewContent = new();
     private readonly NumericUpDown itemLevel = new() { Minimum = 1, Maximum = 99, Value = 80, Width = 115 };
-    private readonly TextBox itemLocale = new() { Text = "enUS", Width = 70 };
+    private readonly ComboBox itemLocale = new() { ItemsSource = ModProject.GameLocales, SelectedItem = "enUS", MinWidth = 90 };
+    private string? itemLocaleProject; private bool refreshingItemLocales;
+    private string ItemLocale => itemLocale.SelectedItem as string ?? "enUS";
     private TabItem itemPreviewTab = null!;
     private CancellationTokenSource? itemPreviewCancellation;
     private CancellationTokenSource? itemTooltipCloseCancellation;
@@ -34,7 +36,7 @@ public partial class MainWindow
         var panel = new DockPanel { Margin = new(8) }; DockPanel.SetDock(options, Dock.Top); panel.Children.Add(options);
         panel.Children.Add(new ScrollViewer { Content = itemPreviewContent });
         itemPreviewTab = new TabItem { Header = new TextBlock { Text = "Item Preview", FontSize = 12 }, Content = panel, IsVisible = false }; InspectorTabs.Items.Add(itemPreviewTab);
-        itemLevel.ValueChanged += (_, _) => RefreshItemPreview(); itemLocale.LostFocus += (_, _) => RefreshItemPreview();
+        itemLevel.ValueChanged += (_, _) => RefreshItemPreview(); itemLocale.SelectionChanged += (_, _) => { if (!refreshingItemLocales && itemLocale.SelectedItem != null) RefreshItemPreview(); };
         InspectorTabs.SelectionChanged += (_, _) => RefreshItemPreview();
         Closed += (_, _) => CancelItemPreview();
         itemPreviewContent.Content = new TextBlock { Text = "Select a Unique or Set item.", TextWrapping = TextWrapping.Wrap };
@@ -50,10 +52,23 @@ public partial class MainWindow
         itemTooltipCloseCancellation?.Cancel();
         itemTooltipCloseCancellation = null;
     }
+    /// <summary>Offers the project's catalog locales; keeps the current choice when it is still available.</summary>
+    private void RefreshItemLocales()
+    {
+        if (project?.Root == itemLocaleProject) return;
+        itemLocaleProject = project?.Root;
+        var locales = project?.Locales() ?? ModProject.GameLocales;
+        var current = ItemLocale; refreshingItemLocales = true;
+        try { itemLocale.ItemsSource = locales; itemLocale.SelectedItem = locales.Contains(current) ? current : locales.Contains("enUS") ? "enUS" : locales.FirstOrDefault(); }
+        finally { refreshingItemLocales = false; }
+    }
     private void ScheduleItemTooltipClose()
     {
         CancelScheduledItemTooltipClose();
-        if (itemTooltipAnchor == null || !itemHoverRequest) return;
+        if (!itemHoverRequest) return;
+        // The pointer left the row before its hover request resolved. Drop the request so the
+        // tooltip cannot open later at wherever the pointer has moved to.
+        if (itemTooltipAnchor == null) { CancelItemPreview(); return; }
         var wait = itemTooltipCloseCancellation = new CancellationTokenSource();
         _ = CloseItemTooltipAfterGraceAsync(wait);
     }
@@ -84,6 +99,7 @@ public partial class MainWindow
             return;
         }
         if (InspectorTabs.SelectedItem != itemPreviewTab) return;
+        RefreshItemLocales();
         if (Active is { } pane && pane.Document.Table?.Name is "uniqueitems" or "setitems") RequestItemPreview(pane, pane.SelectedRow, null);
         else itemPreviewContent.Content = new TextBlock { Text = "Select a Unique or Set item.", TextWrapping = TextWrapping.Wrap };
     }
@@ -98,7 +114,7 @@ public partial class MainWindow
         var work = itemPreviewCancellation = new CancellationTokenSource(); var token = work.Token;
         var selectedProject = project; var table = pane.Document.Table; var profile = Profile;
         int revision = pane.Document.Revision, workspace = workspaceRevision, level = (int)(itemLevel.Value ?? 80);
-        string locale = itemLocale.Text?.Trim() ?? "enUS";
+        string locale = ItemLocale;
         if (selectedProject == null || table == null || row < 0 || row >= table.Records.Count) { itemPreviewCancellation = null; work.Dispose(); return; }
         try
         {

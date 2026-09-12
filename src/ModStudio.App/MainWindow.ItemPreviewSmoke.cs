@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.LogicalTree;
 using Avalonia.VisualTree;
 using ModStudio.Core;
 using static ModStudio.Core.Storage;
@@ -39,7 +40,24 @@ public partial class MainWindow
         await Task.Delay(100);
         var headerLabel = pane.TableGrid.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => ToolTip.GetTip(t)?.ToString() == "very_long_column_name_for_preview_testing");
         Require(headerLabel != null, "Truncated column header has no full-name tooltip.");
+        var codeHeader = pane.TableGrid.GetVisualDescendants().OfType<TextBlock>().FirstOrDefault(t => t.Text == "code" && ToolTip.GetTip(t) is Control);
+        Require(codeHeader != null && codeHeader.GetVisualAncestors().OfType<DataGridColumnHeader>().Any(), "Documented column header has no data-guide card.");
+        Require(((Control)ToolTip.GetTip(codeHeader!)!).GetLogicalDescendants().OfType<TextBlock>().Any(t => t.Text?.Contains("baseline item code") == true), "Column header guide card lacks the d2rdoc description.");
+        ToolTip.SetIsOpen(codeHeader!, true); await Task.Delay(200);
+        if (((Control)ToolTip.GetTip(codeHeader!)!).GetVisualAncestors().OfType<ToolTip>().FirstOrDefault() is { Bounds.Width: > 0 } guideCard)
+            using (var guideImage = new RenderTargetBitmap(new PixelSize((int)Math.Ceiling(guideCard.Bounds.Width), (int)Math.Ceiling(guideCard.Bounds.Height)), new Vector(96, 96)))
+            { guideImage.Render(guideCard); guideImage.Save(System.IO.Path.Combine(output, "column-guide.png"), PngBitmapEncoderOptions.Default); }
+        ToolTip.SetIsOpen(codeHeader!, false);
+        Require(itemLocale.ItemsSource is IEnumerable<string> localeChoices && localeChoices.SequenceEqual(project.Locales()) && itemLocale.SelectedItem as string == "enUS", "Locale picker does not offer the project's catalog locales.");
+        InspectorTabs.SelectedIndex = 1; await Task.Delay(200);
+        var guidedField = RowEditorFields.GetVisualDescendants().OfType<StackPanel>().FirstOrDefault(p => ToolTip.GetTip(p) is Control && p.GetLogicalDescendants().OfType<TextBox>().Any(t => Avalonia.Automation.AutomationProperties.GetName(t) == "prop1"));
+        Require(guidedField != null, "Row editor field for prop1 has no data-guide card.");
+        Require(RowEditorFields.GetVisualDescendants().OfType<StackPanel>().Any(p => ToolTip.GetTip(p) == null && p.GetLogicalDescendants().OfType<TextBox>().Any(t => Avalonia.Automation.AutomationProperties.GetName(t) == "very_long_column_name_for_preview_testing")), "Undocumented row editor field shows a guide card.");
+        InspectorTabs.SelectedItem = itemPreviewTab; await PendingItemPreview;
         var anchor = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First();
+        RequestItemPreview(pane, 0, anchor); var abandoned = PendingItemPreview;
+        ScheduleItemTooltipClose(); await abandoned; await Task.Delay(450);
+        Require(!ToolTip.GetIsOpen(anchor) && ToolTip.GetTip(anchor) == null, "Leaving a row before its hover resolved still opened the tooltip.");
         RequestItemPreview(pane, 0, anchor); await PendingItemPreview;
         Require(ToolTip.GetIsOpen(anchor), "Item hover did not open its tooltip.");
         CancelItemPreview();

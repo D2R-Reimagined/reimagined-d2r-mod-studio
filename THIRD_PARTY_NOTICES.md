@@ -15,6 +15,7 @@ Mod Studio's own MIT license does not replace upstream licenses. The distributab
 | MicroCom.Runtime 0.11.6 | [MicroCom](https://github.com/kekekeks/MicroCom), MIT; `licenses/MicroCom.txt` |
 | Tmds.DBus.Protocol 0.94.1 | [Tmds.DBus](https://github.com/tmds/Tmds.DBus), MIT; `licenses/Tmds.DBus.txt` |
 | Inter font | [Inter](https://github.com/rsms/inter), SIL Open Font License 1.1; `licenses/Inter.txt` |
+| d2rdoc data guide field descriptions (`src/ModStudio.Core/Assets/column-guide.json`) | [eezstreet/d2rdoc](https://github.com/eezstreet/d2rdoc), community-maintained annotations of Blizzard's D2R data guide; the repository publishes no license file, so the bundled text is redistributed as community documentation with attribution and a link back to the guide. Regenerate with `scripts/import-column-guide.mjs`. |
 | SkiaSharp 3.119.4 and native assets | [SkiaSharp](https://github.com/mono/SkiaSharp), MIT wrapper plus native third-party notices copied from its packages |
 | HarfBuzzSharp 8.3.1.3 and native assets | [SkiaSharp/HarfBuzzSharp](https://github.com/mono/SkiaSharp), MIT wrapper plus native third-party notices copied from its packages |
 | Avalonia ANGLE Windows native assets 2.1.27548.20260419 | Package `LICENSE` copied during packaging |

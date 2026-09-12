@@ -42,12 +42,16 @@ public partial class MainWindow
         {
             if (field == null) return new Border();
             var panel = new StackPanel { Spacing = 3, Margin = new(0, 0, 24, 10) };
-            panel.Children.Add(new TextBlock { Text = field.Label, TextWrapping = TextWrapping.Wrap });
+            var label = new TextBlock { Text = field.Label, TextWrapping = TextWrapping.Wrap };
+            if (field.Guide != null) { label.TextDecorations = TextDecorations.Underline; label.Foreground = new SolidColorBrush(Color.Parse("#D8BC86")); }
+            panel.Children.Add(label);
             var input = new TextBox { IsReadOnly = field.ReadOnly, AcceptsReturn = field.Multiline,
                 TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
             Avalonia.Automation.AutomationProperties.SetName(input, field.Column);
             input.Bind(TextBox.TextProperty, new Binding(nameof(RowEditorField.Value)) { Source = field, Mode = BindingMode.TwoWay });
             panel.Children.Add(input);
+            // Hovering the label or the input shows what the column means, from the bundled data guide.
+            if (field.Guide != null) ToolTip.SetTip(panel, ColumnGuideTooltip.Create(field.Table, field.Column, field.Guide));
             return panel;
         });
         InspectorTabs.SelectionChanged += (_, e) =>
@@ -97,7 +101,7 @@ public partial class MainWindow
             bool identity = table.IsCatalog ? column is "id" or "Key" : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
             return new RowEditorField(column, column + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
-                table.Cell(row, column), identity || locked, table.IsCatalog, field =>
+                table.Cell(row, column), identity || locked, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>
                 {
                     // Detached controls and queued binding updates must never edit a newly selected row/document.
                     if (Active != pane || pane.SelectedRow != row || document.PendingSource || field.ReadOnly ||
@@ -121,9 +125,11 @@ public partial class MainWindow
         FilterRowEditor();
     }
 
-    private sealed class RowEditorField(string column, string label, string value, bool readOnly, bool multiline, Action<RowEditorField> edit) : INotifyPropertyChanged
+    private sealed class RowEditorField(string column, string label, string value, bool readOnly, bool multiline, string table, ColumnGuideEntry? guide, Action<RowEditorField> edit) : INotifyPropertyChanged
     {
         public string Column { get; } = column;
+        public string Table { get; } = table;
+        public ColumnGuideEntry? Guide { get; } = guide;
         public string Label { get; } = label;
         public bool ReadOnly { get; } = readOnly;
         public bool Multiline { get; } = multiline;

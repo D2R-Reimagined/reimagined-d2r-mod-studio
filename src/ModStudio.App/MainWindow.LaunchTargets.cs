@@ -13,6 +13,24 @@ public partial class MainWindow
             catch (Exception ex) { ShowError(ex); }
         };
     }
+    /// <summary>First-run convenience: when the profile has no game folder yet, look in the usual Battle.net/Steam places and pre-fill the run settings.</summary>
+    private async Task ApplyDetectedGameDefaultsAsync()
+    {
+        if (project == null || Program.Arguments.Contains("--smoke")) return;
+        var current = project; var profile = Profile;
+        try
+        {
+            var settings = RunSettings.Load(current, profile);
+            if (!string.IsNullOrWhiteSpace(settings.InstallationDirectory)) return;
+            var installations = await Task.Run(() => GameInstallDetector.Detect());
+            if (project != current || Profile != profile || installations.Count == 0) return;
+            var detected = settings.WithDetectedDefaults(current, installations);
+            if (detected == settings) return;
+            detected.Save(current, profile); RefreshLaunchTargets();
+            Log($"Detected Diablo II: Resurrected at {installations[0].Directory} ({installations[0].Source}). Run settings for {profile} were pre-filled; open Run settings to change them.");
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
     private void RefreshLaunchTargets()
     {
         if (project == null) return;

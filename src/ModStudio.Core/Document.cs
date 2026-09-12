@@ -54,7 +54,7 @@ public sealed class Document
             if (schemaHash != null) Table = new((JsonObject)Read(SchemaFile), (JsonArray)(JsonNode.Parse(raw.TrimStart('\uFEFF')) ?? throw new InvalidDataException("Empty JSON.")));
             else if (FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && raw.Contains('\t')) Table = TableData.FromTsv(Utf8.GetBytes(raw), Path.GetFileNameWithoutExtension(FilePath), "global/excel/" + Path.GetFileName(FilePath));
             else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) JsonNode.Parse(raw.TrimStart('\uFEFF'));
-            if (Table != null) Diagnostics.AddRange(Table.Validate(FilePath));
+            if (Table != null) Diagnostics.AddRange(Validated());
             PendingSource = false;
         }
         catch (Exception e) { Diagnostics.Add(new(FilePath, e.Message)); PendingSource = true; }
@@ -86,13 +86,63 @@ public sealed class Document
         var affected = edits.Select(e => e.Row).Distinct().ToDictionary(i => i, i => Table!.Records[i]!.DeepClone());
         try { foreach (var e in edits) Table!.SetCell(e.Row, e.Column, e.Value); }
         catch { foreach (var p in affected) Table!.Records[p.Key] = p.Value; throw; }
-        Record(() => RestoreRows(affected)); modelChanged = true; Diagnostics = Table!.Validate(FilePath).ToList(); Notify();
+        Record(() => RestoreRows(affected)); modelChanged = true; Diagnostics = Validated(); Notify();
     }
+    private List<Diagnostic> Validated()
+    {
+        var diagnostics = Table!.Validate(FilePath).ToList();
+        if (Table!.RowOrderChanged) diagnostics.Add(new(FilePath, TableData.RowOrderAdvice, "Warning"));
+        return diagnostics;
+    }
+    /// <summary>Inserts blank rows (optionally pre-filled) at a physical slot. Later rows keep their identities; only their slot numbers move.</summary>
+    public void InsertRows(int index, int count = 1, IReadOnlyList<JsonObject?>? fields = null)
+    {
+        Require(Table != null && !PendingSource, "Apply valid source before adding rows.");
+        Require(index >= 0 && index <= Table!.Records.Count && count > 0, "Invalid row position.");
+        Require(!LockedRows.Contains(index) || index == Table!.Records.Count, "The row below the insertion point is locked against edits.");
+        var rows = Enumerable.Range(0, count).Select(i => (JsonNode)Table!.NewRecord(fields != null && i < fields.Count ? fields[i] : null)).ToArray();
+        Splice(index, 0, rows);
+    }
+    /// <summary>Deletes rows added in Studio. Imported rows are protected: the game data contract keeps their slots.</summary>
+    public void DeleteRows(IEnumerable<int> rows)
+    {
+        Require(Table != null && !PendingSource, "Apply valid source before deleting rows.");
+        var targets = rows.Distinct().OrderByDescending(r => r).ToArray(); if (targets.Length == 0) return;
+        Require(targets.All(r => r >= 0 && r < Table!.Records.Count), "Invalid row.");
+        Require(targets.All(r => !Table!.IsOriginalRow(r)), "Original imported rows cannot be deleted; clear their cells instead.");
+        Require(targets.All(r => !LockedRows.Contains(r)), "A selected row is locked against edits.");
+        RemoveRows(targets);
+    }
+    private void RemoveRows(int[] descendingRows)
+    {
+        var removed = descendingRows.Select(r => (Row: r, Node: Table!.Records[r]!.DeepClone())).ToArray();
+        foreach (var r in descendingRows) Table!.Records.RemoveAt(r);
+        Renumber(); LockedRows.Clear();
+        Record(() => Reinsert(removed)); Finish();
+    }
+    private void Reinsert((int Row, JsonNode Node)[] removed)
+    {
+        foreach (var (row, node) in removed.Reverse()) Table!.Records.Insert(row, node.DeepClone());
+        Renumber();
+        Record(() => RemoveRows(removed.Select(x => x.Row).ToArray())); Finish();
+    }
+    private void Splice(int index, int remove, JsonNode[] insert)
+    {
+        var removed = Enumerable.Range(index, remove).Select(i => Table!.Records[i]!.DeepClone()).ToArray();
+        for (int i = 0; i < remove; i++) Table!.Records.RemoveAt(index);
+        for (int i = 0; i < insert.Length; i++) Table!.Records.Insert(index + i, insert[i]);
+        Renumber();
+        var shifted = LockedRows.Where(r => r >= index).ToArray(); LockedRows.ExceptWith(shifted); LockedRows.UnionWith(shifted.Select(r => r + insert.Length - remove).Where(r => r >= index + insert.Length));
+        Record(() => Splice(index, insert.Length, removed));
+        Finish();
+    }
+    private void Renumber() { for (int i = 0; i < Table!.Records.Count; i++) Table.Records[i]!["order"] = i; }
+    private void Finish() { modelChanged = true; Diagnostics = Validated(); Notify(); }
     private void RestoreRows(Dictionary<int, JsonNode> rows)
     {
         Require(Table != null && !PendingSource, "Apply source before undoing table changes.");
         var reverse = rows.Keys.ToDictionary(i => i, i => Table!.Records[i]!.DeepClone());
-        foreach (var p in rows) Table!.Records[p.Key] = p.Value.DeepClone(); Record(() => RestoreRows(reverse)); modelChanged = true; Diagnostics = Table!.Validate(FilePath).ToList(); Notify();
+        foreach (var p in rows) Table!.Records[p.Key] = p.Value.DeepClone(); Record(() => RestoreRows(reverse)); modelChanged = true; Diagnostics = Validated(); Notify();
     }
     public void Undo()
     {

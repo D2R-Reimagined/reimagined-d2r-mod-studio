@@ -15,15 +15,27 @@ using ModStudio.Core;
 
 namespace ModStudio.App;
 
-public sealed class RowView(Document document, int row, Action<Exception> error) : INotifyPropertyChanged
+public sealed class RowView(Document document, int row, Action<Exception> error, Func<int>? materialize = null) : INotifyPropertyChanged
 {
-    public int Row { get; } = row;
+    /// <summary>Table row index; -1 while this is the blank "type here to add a row" line at the bottom.</summary>
+    public int Row { get; private set; } = row;
+    public bool IsPlaceholder => Row < 0;
     public event PropertyChangedEventHandler? PropertyChanged;
     public void RefreshValues() => PropertyChanged?.Invoke(this, new("Item[]"));
     public string this[int column]
     {
         get => document.Table!.Cell(Row, document.Table.Columns[column]);
-        set { try { document.SetCells([(Row, document.Table!.Columns[column], value)]); } catch (Exception e) { error(e); } PropertyChanged?.Invoke(this, new("Item[]")); }
+        set
+        {
+            try
+            {
+                // The first value typed into the placeholder line creates the row it stands for.
+                if (IsPlaceholder) { if (value.Length == 0 || materialize == null) return; Row = materialize(); }
+                document.SetCells([(Row, document.Table!.Columns[column], value)]);
+            }
+            catch (Exception e) { error(e); }
+            PropertyChanged?.Invoke(this, new("Item[]"));
+        }
     }
 }
 
@@ -176,7 +188,7 @@ public sealed partial class EditorPane : Grid
         };
         grid.PointerExited += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
         DetachedFromVisualTree += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
-        grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
+        grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
         grid.TemplateApplied += (_, e) =>
         {
             var bar = e.NameScope.Find<ScrollBar>("PART_HorizontalScrollbar"); if (bar == null) return;
@@ -242,11 +254,15 @@ public sealed partial class EditorPane : Grid
             catch (Exception ex) { error(ex); }
         };
         grid.BeginningEdit += (_, e) => { if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col)) e.Cancel = Document.LockedRows.Contains(row.Row) || Document.LockedColumns.Contains(Document.Table!.Columns[col]); };
+        WireCellSelection(grid);
     }
     private ContextMenu CreateRowMenu(DataGrid grid)
     {
-        var rows = grid.SelectedItems.OfType<RowView>().Select(r => r.Row).ToArray();
+        var rows = SelectedRowsForCommands();
         string noun = rows.Length == 1 ? "row" : $"{rows.Length} rows";
+        int cellCount = selectedCells.Count(c => c.Row >= 0);
+        bool addable = !Document.Table!.IsCatalog && !Document.PendingSource;
+        bool deletable = addable && rows.Length > 0 && rows.All(r => !Document.Table.IsOriginalRow(r) && !Document.LockedRows.Contains(r));
         bool frozen = rows.All(frozenRows.Contains);
         bool locked = rows.All(Document.LockedRows.Contains);
         MenuItem Item(string label, Action action, bool enabled = true)
@@ -255,14 +271,24 @@ public sealed partial class EditorPane : Grid
             item.Click += (_, _) => { try { activeGrid = grid; action(); } catch (Exception ex) { error(ex); } };
             return item;
         }
+        var copyCell = new MenuItem { Header = cellCount == 1 ? $"Copy cell: {SelectedColumn}" : $"Copy {cellCount} cells", IsEnabled = cellCount > 0 };
+        copyCell.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(true); } catch (Exception ex) { error(ex); } };
         var copy = new MenuItem { Header = $"Copy {noun} (displayed columns)" };
-        copy.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(); } catch (Exception ex) { error(ex); } };
-        var paste = new MenuItem { Header = "Paste starting at selected cell", IsEnabled = !Document.PendingSource && !Document.LockedRows.Contains(SelectedRow) && !Document.LockedColumns.Contains(SelectedColumn) };
+        copy.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(false); } catch (Exception ex) { error(ex); } };
+        var paste = new MenuItem { Header = cellCount > 1 ? $"Paste into {cellCount} selected cells" : "Paste starting at selected cell", IsEnabled = !Document.PendingSource && !Document.LockedRows.Contains(SelectedRow) && !Document.LockedColumns.Contains(SelectedColumn) };
         paste.Click += async (_, _) => { try { activeGrid = grid; await PasteAsync(); } catch (Exception ex) { error(ex); } };
+        var clear = new MenuItem { Header = cellCount > 1 ? $"Clear {cellCount} cells" : "Clear cell", IsEnabled = cellCount > 0 && !Document.PendingSource };
+        clear.Click += (_, _) => { try { activeGrid = grid; ApplyToSelection("", null); } catch (Exception ex) { error(ex); } };
+        int rowsToAdd = Math.Max(1, rows.Length); string added = rowsToAdd == 1 ? "row" : $"{rowsToAdd} rows";
+        int above = rows.Length > 0 ? rows.Min() : Document.Table.Records.Count, below = rows.Length > 0 ? rows.Max() + 1 : Document.Table.Records.Count;
         return new ContextMenu { ItemsSource = new Control[] {
+            Item($"Add {added} above", () => InsertRows(above, rowsToAdd), addable && rows.Length > 0),
+            Item($"Add {added} below", () => InsertRows(below, rowsToAdd), addable),
+            Item(rows.Length > 0 && rows.All(r => !Document.Table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
+            new Separator(),
             Item($"{(frozen ? "Unfreeze" : "Freeze")} {noun}", ToggleFrozenRows, frozen || frozenRows.Union(rows).Count() <= 5),
             Item($"{(locked ? "Unlock" : "Lock")} {noun} against edits", ToggleRowLocks),
-            new Separator(), copy, paste,
+            new Separator(), copyCell, copy, paste, clear,
             new Separator(),
             Item($"{(frozenColumns.Contains(Array.IndexOf(Document.Table!.Columns, SelectedColumn)) ? "Unfreeze" : "Freeze")} column: {SelectedColumn}", () => ToggleFrozenColumn(SelectedColumn)),
             Item($"{(Document.LockedColumns.Contains(SelectedColumn) ? "Unlock" : "Lock")} column: {SelectedColumn} against edits", ToggleColumnLock)
@@ -338,7 +364,8 @@ public sealed partial class EditorPane : Grid
                     var column = new DataGridTextColumn { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
                     column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
                         var label = new TextBlock { Text = Header(i), TextTrimming = TextTrimming.CharacterEllipsis };
-                        ToolTip.SetTip(label, Document.Table.Columns[i]); return label;
+                        // Documented columns show the data-guide card; others keep their complete name.
+                        ColumnGuideTooltip.Attach(label, Document.Table, Document.Table.Columns[i], Document.Table.Columns[i]); return label;
                     });
                     columnMap[column] = i; grid.Columns.Add(column);
                     column.PropertyChanged += (_, e) =>
@@ -370,6 +397,8 @@ public sealed partial class EditorPane : Grid
                 frozenRows.RemoveAll(i => i >= Document.Table.Records.Count); frozenColumns.RemoveAll(i => i >= Document.Table.Columns.Length);
                 Document.LockedRows.RemoveWhere(i => i < 0 || i >= Document.Table.Records.Count); Document.LockedColumns.RemoveWhere(c => !Document.Table.Columns.Contains(c));
                 RefreshColumns(); ApplyView(selected, column);
+                if (selectedCells.Count == 0 && selectedRow >= 0 && Array.IndexOf(Document.Table.Columns, SelectedColumn) is var ci and >= 0) { selectedCells.Add((selectedRow, ci)); cellAnchor = (selectedRow, ci); }
+                QueuePaint();
             }
         }
         finally { refreshing = false; }
@@ -380,7 +409,9 @@ public sealed partial class EditorPane : Grid
         var table = Document.Table!; var term = filter.Text ?? "";
         IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
         if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
-        TableGrid.ItemsSource = rows.Select(i => new RowView(Document, i, error)).ToArray();
+        // A blank line at the bottom creates a new row as soon as something is typed into it.
+        var views = rows.Select(i => new RowView(Document, i, error));
+        TableGrid.ItemsSource = (table.IsCatalog ? views : views.Append(new RowView(Document, -1, error, MaterializePlaceholder))).ToArray();
         FrozenGrid.ItemsSource = frozenRows.Select(i => new RowView(Document, i, error)).ToArray();
         FrozenGrid.IsVisible = frozenRows.Count > 0; FrozenGrid.Height = frozenRows.Count * 30 + 34;
         TableGrid.HeadersVisibility = FrozenGrid.IsVisible ? DataGridHeadersVisibility.Row : DataGridHeadersVisibility.All;
@@ -424,7 +455,7 @@ public sealed partial class EditorPane : Grid
     public Task SortAsync(string column) { descending = sortColumn == column && !descending; sortColumn = column; Refresh(); return Task.CompletedTask; }
     public void ToggleFrozenRows()
     {
-        var rows = activeGrid.SelectedItems.OfType<RowView>().Select(r => r.Row).ToArray(); Storage.Require(rows.Length > 0, "Select rows to freeze.");
+        var rows = SelectedRowsForCommands(); Storage.Require(rows.Length > 0, "Select rows to freeze.");
         if (rows.All(frozenRows.Contains)) frozenRows.RemoveAll(rows.Contains);
         else { Storage.Require(frozenRows.Union(rows).Count() <= 5, "Freeze up to five comparison rows at a time."); foreach (var row in rows) if (!frozenRows.Contains(row)) frozenRows.Add(row); }
         Refresh();
@@ -436,7 +467,7 @@ public sealed partial class EditorPane : Grid
     }
     public void ToggleRowLocks()
     {
-        var rows = activeGrid.SelectedItems.OfType<RowView>().Select(r => r.Row).ToArray();
+        var rows = SelectedRowsForCommands();
         if (rows.All(Document.LockedRows.Contains)) Document.LockedRows.ExceptWith(rows); else Document.LockedRows.UnionWith(rows); Refresh();
     }
     public void ToggleColumnLock() { if (!Document.LockedColumns.Remove(SelectedColumn)) Document.LockedColumns.Add(SelectedColumn); Refresh(); }
@@ -450,33 +481,46 @@ public sealed partial class EditorPane : Grid
         if (item != null)
         {
             selectedRow = row; selectedColumn = i >= 0 ? column : Document.Table.Columns.FirstOrDefault() ?? "";
+            selectedCells.Clear(); selectedCells.Add((row, Math.Max(i, 0))); cellAnchor = (row, Math.Max(i, 0)); QueuePaint();
             activeGrid.SelectedItem = item;
             var col = activeGrid.Columns.FirstOrDefault(c => Document.Table.Columns[columnMap[c]] == column) ?? activeGrid.Columns.FirstOrDefault();
             if (col != null) { activeGrid.CurrentColumn = col; RestoreAfterLayout(activeGrid, item, col, true); }
         }
         selection(this);
     }
-    public async Task CopyAsync()
+    /// <summary>Copies the selected cells (one cell, or the rectangle around a multi-cell selection); rows picked by their header copy every displayed column.</summary>
+    public Task CopyAsync() => CopyAsync(cellOnly: !rowHeaderPress);
+    public async Task CopyAsync(bool cellOnly)
     {
         if (Document.Table == null) return;
-        var text = string.Join('\n', activeGrid.SelectedItems.OfType<RowView>().Select(r => string.Join('\t', VisibleColumns().Select(c => r[c]))));
-        if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(text);
+        if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(SelectionText(!cellOnly));
     }
+    /// <summary>Pastes at the current cell. One value fills every selected cell; a block pastes across rows/columns, adding rows at the bottom when it runs past the last one.</summary>
     public async Task PasteAsync()
     {
         if (Document.Table == null || Document.PendingSource) return;
         var clipboard = TopLevel.GetTopLevel(this)?.Clipboard; if (clipboard == null) return;
         var text = await clipboard.TryGetTextAsync(); if (text == null) return;
-        var displayed = ((IEnumerable<RowView>)activeGrid.ItemsSource!).ToArray(); int start = Array.FindIndex(displayed, r => r.Row == SelectedRow);
-        var columns = VisibleColumns(); int firstColumn = Math.Max(0, activeGrid.CurrentColumn?.DisplayIndex ?? 0);
         var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList(); if (lines.Count > 1 && lines[^1] == "") lines.RemoveAt(lines.Count - 1);
-        var edits = new List<(int, string, string)>();
-        for (int r = 0; r < lines.Count; r++)
+        var block = lines.Select(l => l.Split('\t')).ToArray();
+        if (block.Length == 1 && block[0].Length == 1 && selectedCells.Count > 1) { ApplyToSelection(block[0][0], null); return; }
+        var displayed = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
+        int start = SelectedRow < 0 ? displayed.Count : displayed.IndexOf(SelectedRow); Storage.Require(start >= 0, "Select the cell to paste at.");
+        var columns = VisibleColumns(); int firstColumn = Math.Max(0, activeGrid.CurrentColumn?.DisplayIndex ?? 0);
+        int width = block.Max(r => r.Length);
+        Storage.Require(firstColumn + width <= columns.Length, $"Pasting {width} cell(s) at {Document.Table.Columns[columns[firstColumn]]} runs past the displayed columns. Copy a single cell, or paste further left.");
+        int missing = start + block.Length - displayed.Count;
+        if (missing > 0)
         {
-            Storage.Require(start >= 0 && start + r < displayed.Length, "Paste exceeds the displayed rows."); var cells = lines[r].Split('\t');
-            Storage.Require(firstColumn + cells.Length <= columns.Length, "Paste exceeds this column window.");
-            for (int c = 0; c < cells.Length; c++) edits.Add((displayed[start + r].Row, Document.Table.Columns[columns[firstColumn + c]], cells[c]));
+            Storage.Require(!Document.Table.IsCatalog, "Paste exceeds the displayed rows.");
+            int first = Document.Table.Records.Count; Document.InsertRows(first, missing); ShiftSelection(first, missing);
+            displayed.AddRange(Enumerable.Range(first, missing));
         }
-        Document.SetCells(edits); Refresh();
+        var edits = new List<(int, string, string)>();
+        for (int r = 0; r < block.Length; r++) for (int c = 0; c < block[r].Length; c++) edits.Add((displayed[start + r], Document.Table.Columns[columns[firstColumn + c]], block[r][c]));
+        Document.SetCells(edits);
+        selectedCells.Clear(); foreach (var (row, column, _) in edits) selectedCells.Add((row, Array.IndexOf(Document.Table.Columns, column)));
+        cellAnchor = (displayed[start], columns[firstColumn]);
+        Refresh(); QueuePaint();
     }
 }

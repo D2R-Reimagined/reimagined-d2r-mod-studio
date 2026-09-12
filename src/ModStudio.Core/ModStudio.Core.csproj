@@ -1,1 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="BCnEncoder.Net" Version="2.3.0" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="BCnEncoder.Net" Version="2.3.0" /></ItemGroup><ItemGroup><EmbeddedResource Include="Assets/column-guide.json" LogicalName="ModStudio.Core.Assets.column-guide.json" /></ItemGroup></Project>

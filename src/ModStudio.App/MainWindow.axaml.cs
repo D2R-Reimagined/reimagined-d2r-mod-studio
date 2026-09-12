@@ -192,6 +192,7 @@ public partial class MainWindow : Window
             {
                 var preferences = StudioPreferences.Load(StudioPreferences.DefaultFile);
                 preferences.Remember(project.Root, StudioPreferences.DefaultFile);
+                await ApplyDetectedGameDefaultsAsync();
                 if (!preferences.HasIntroduced(project.Root)) await ShowSettingsAsync();
             }
             catch (Exception ex) { ShowError(ex); }
@@ -486,12 +487,36 @@ public partial class MainWindow : Window
                 detected.Text = choices.Length == 0 ? "No D2R.exe or D2RLoader.exe found. Choose the game installation folder." : "Detected: " + string.Join(", ", choices) + ". The launch target is independent of the build profile.";
             }
             DetectLaunchers();
-            var pickGame = new Button { Content = "Browse game folder" }; pickGame.Click += async (_, _) => { var value = await PickFolderAsync("Game installation folder containing D2R.exe"); if (value != null) { gameDirectory.Text = value; if (string.IsNullOrWhiteSpace(deployment.Text)) deployment.Text = System.IO.Path.Combine(value, "mods", project.Name); } }; panel.Children.Add(pickGame);
+            var message = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            void UseGameFolder(string value) { gameDirectory.Text = value; if (string.IsNullOrWhiteSpace(deployment.Text)) deployment.Text = System.IO.Path.Combine(value, "mods", project.Name); }
+            var gameButtons = new WrapPanel();
+            var pickGame = new Button { Content = "Browse game folder" }; pickGame.Click += async (_, _) => { var value = await PickFolderAsync("Game installation folder containing D2R.exe"); if (value != null) UseGameFolder(value); }; gameButtons.Children.Add(pickGame);
+            var detectGame = new Button { Content = "Detect installation", Margin = new(8, 0, 0, 0) }; gameButtons.Children.Add(detectGame);
+            var detectedInstalls = new ComboBox { MinWidth = 320, Margin = new(8, 0, 0, 0), IsVisible = false, PlaceholderText = "Choose a detected installation" }; gameButtons.Children.Add(detectedInstalls);
+            panel.Children.Add(gameButtons);
+            var installations = Array.Empty<GameInstallation>();
+            detectedInstalls.SelectionChanged += (_, _) => { if (detectedInstalls.SelectedIndex >= 0 && detectedInstalls.SelectedIndex < installations.Length) UseGameFolder(installations[detectedInstalls.SelectedIndex].Directory); };
+            async Task DetectInstallationsAsync(bool fillEmpty)
+            {
+                detectGame.IsEnabled = false; detectGame.Content = "Detecting…";
+                try
+                {
+                    installations = (await Task.Run(() => GameInstallDetector.Detect())).ToArray();
+                    detectedInstalls.ItemsSource = installations.Select(i => $"{i.Directory}  ·  {i.Source} ({string.Join(", ", i.Executables)})").ToArray();
+                    detectedInstalls.IsVisible = installations.Length > 0;
+                    if (installations.Length == 0) detected.Text = "No Diablo II: Resurrected installation was found in the Battle.net, Steam or registry locations. Browse to the game folder manually.";
+                    else if (fillEmpty && string.IsNullOrWhiteSpace(gameDirectory.Text)) detectedInstalls.SelectedIndex = 0;
+                    else if (!fillEmpty && installations.Length == 1) detectedInstalls.SelectedIndex = 0;
+                }
+                catch (Exception ex) { message.Text = ex.Message; }
+                finally { detectGame.IsEnabled = true; detectGame.Content = "Detect installation"; }
+            }
+            detectGame.Click += async (_, _) => await DetectInstallationsAsync(false);
             var runner = Field("Optional runner executable (Wine/Proton on Linux or macOS)", current.Runner);
             var runnerArgs = Field("Runner arguments (JSON array, before the game executable)", JsonSerializer.Serialize(current.RunnerArguments ?? []));
             var args = Field("Additional game arguments (JSON array)", JsonSerializer.Serialize(current.Arguments ?? []));
             var saveBefore = new CheckBox { Content = "Save all documents before Build / Deploy / Play", IsChecked = current.SaveBeforePlay }; panel.Children.Add(saveBefore);
-            var message = new TextBlock { TextWrapping = TextWrapping.Wrap }; panel.Children.Add(message);
+            panel.Children.Add(message);
             void CheckPaths()
             {
                 var issues = new RunSettings(deployment.Text ?? "", Runner: runner.Text ?? "", GameDirectory: gameDirectory.Text ?? "", LaunchTarget: launchTarget.SelectedItem as string ?? "D2R.exe").PathIssues(project);
@@ -500,6 +525,7 @@ public partial class MainWindow : Window
             deployment.TextChanged += (_, _) => CheckPaths(); gameDirectory.TextChanged += (_, _) => { DetectLaunchers(); CheckPaths(); }; launchTarget.SelectionChanged += (_, _) => CheckPaths(); runner.TextChanged += (_, _) => CheckPaths(); CheckPaths();
             var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true, gameDirectory.Text ?? "", launchTarget.SelectedItem as string ?? current.LaunchTarget, overwriteDestination.IsChecked == true).Save(project, Profile); RefreshLaunchTargets(); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
             dialog.Content = new ScrollViewer { Content = panel };
+            if (string.IsNullOrWhiteSpace(gameDirectory.Text) && !Program.Arguments.Contains("--smoke")) dialog.Opened += async (_, _) => await DetectInstallationsAsync(true);
             if (!Program.Arguments.Contains("--smoke"))
             {
                 var preferences = StudioPreferences.Load(StudioPreferences.DefaultFile);
@@ -664,7 +690,8 @@ public partial class MainWindow : Window
                 {
                     await clipboard.SetTextAsync(before + " pasted"); await pane.PasteAsync();
                     Require(pane.Document.Table!.Cell(0, field) == before + " pasted", "Clipboard paste did not update selected cell.");
-                    await pane.CopyAsync(); Require((await clipboard.TryGetTextAsync())?.StartsWith(before + " pasted") == true, "Clipboard copy lost selected row.");
+                    await pane.CopyAsync(); Require(await clipboard.TryGetTextAsync() == before + " pasted", "Ctrl+C on a single cell did not copy just that cell.");
+                    await pane.CopyAsync(false); Require((await clipboard.TryGetTextAsync())?.StartsWith(before + " pasted" + (pane.Document.Table.Columns.Length > 1 ? "\t" : "")) == true, "Clipboard row copy lost selected row.");
                     pane.Document.Undo(); pane.Refresh();
                 }
                 await pane.SortAsync(field); Require(pane.Document.Table!.Cell(0, field) == before, "View sorting mutated source order.");
@@ -691,6 +718,58 @@ public partial class MainWindow : Window
                 var cellPoint = clickableCell.TranslatePoint(new Point(clickableCell.Bounds.Width / 2, 15), this)!.Value;
                 this.MouseDown(cellPoint, MouseButton.Left, RawInputModifiers.None); this.MouseUp(cellPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
                 Require(pane.SelectedRow == ((RowView)clickableRow.DataContext!).Row && pane.SelectedColumn == field, "Mouse cell selection failed to update the inspector selection.");
+                // Spreadsheet-style cell selection: click, Ctrl+click, drag, bulk edit, and the blank row at the bottom.
+                var cols = pane.Document.Table.Columns; int fieldIndex = Array.IndexOf(cols, field); int clickedRow = ((RowView)clickableRow.DataContext!).Row;
+                Require(pane.SelectedCells.Count == 1 && pane.SelectedCells.Contains((clickedRow, fieldIndex)), $"Click did not select exactly one cell: [{string.Join(" ", pane.SelectedCells)}] expected ({clickedRow}, {fieldIndex}).");
+                await Task.Delay(80);
+                Require(clickableCell.Background is SolidColorBrush { Color: var paint } && paint == Color.Parse("#4A4123"), "Selected cell is not painted.");
+                var rowRectangle = clickableRow.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Rectangle>().FirstOrDefault(r => r.Name == "BackgroundRectangle");
+                Require(rowRectangle != null && rowRectangle.Opacity == 0, "Row-wide selection highlight still hides which cells are selected.");
+                var secondRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r != clickableRow && r.DataContext is RowView { IsPlaceholder: false } rv && rv.Row != 200 && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is Point p2 && p2.Y > 50 && p2.Y < pane.TableGrid.Bounds.Height - 40);
+                var fieldColumn = pane.TableGrid.Columns.First(c => c.Header?.ToString()?.Contains(field, StringComparison.Ordinal) == true);
+                var secondCell = fieldColumn.GetCellContent(secondRow)!.GetVisualAncestors().OfType<DataGridCell>().First();
+                var secondPoint = secondCell.TranslatePoint(new Point(secondCell.Bounds.Width / 2, 15), this)!.Value;
+                this.MouseDown(secondPoint, MouseButton.Left, RawInputModifiers.Control); this.MouseUp(secondPoint, MouseButton.Left, RawInputModifiers.Control); await Task.Delay(60);
+                int secondRowIndex = ((RowView)secondRow.DataContext!).Row;
+                Require(pane.SelectedCells.Count == 2 && pane.SelectedCells.Contains((secondRowIndex, fieldIndex)) && pane.SelectedCells.Contains((clickedRow, fieldIndex)), "Ctrl+click did not add a second cell.");
+                // Drag across the two right-most columns: after the Jump they are scrolled into view, unlike the columns just right of the frozen one.
+                await Task.Delay(600); // outside the double-click window, so the press starts a drag rather than an edit; layout may have scrolled, so re-measure
+                DataGridCell? LiveCell(int row, DataGridColumn column)
+                {
+                    var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r.DataContext is RowView rv && rv.Row == row);
+                    var cell = column.GetCellContent(container)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                    return cell != null && cell.TranslatePoint(new Point(cell.Bounds.Width, 0), pane.TableGrid) is { X: var right } && right <= pane.TableGrid.Bounds.Width - 20 && cell.TranslatePoint(new Point(), pane.TableGrid) is { X: >= 0 } ? cell : null;
+                }
+                // Columns are virtualized: drag across two neighbouring columns that are realized and fully visible for both rows.
+                var visibleColumns = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
+                Require(visibleColumns.Length >= 2, "Fewer than two scrolling columns are visible for the drag test.");
+                var startColumn = visibleColumns[^2]; var nextColumn = visibleColumns[^1]; int startIndex = pane.ColumnIndexOf(startColumn), nextIndex = pane.ColumnIndexOf(nextColumn);
+                var dragStart = LiveCell(clickedRow, startColumn)!; var dragTarget = LiveCell(secondRowIndex, nextColumn)!;
+                var dragFrom = dragStart.TranslatePoint(new Point(dragStart.Bounds.Width / 2, 15), this)!.Value;
+                var dragPoint = dragTarget.TranslatePoint(new Point(dragTarget.Bounds.Width / 2, 15), this)!.Value;
+                this.MouseDown(dragFrom, MouseButton.Left, RawInputModifiers.None); this.MouseMove(dragPoint, RawInputModifiers.LeftMouseButton); this.MouseUp(dragPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
+                Require(pane.SelectedCells.Count == 4 && pane.SelectedCells.Contains((secondRowIndex, nextIndex)) && pane.SelectedCells.Contains((clickedRow, startIndex)), $"Drag did not select a 2×2 block in {name}: {pane.SelectedCells.Count} cells, rows {string.Join(",", pane.SelectedCells.Select(c => c.Row).Distinct().Order())}, cols {string.Join(",", pane.SelectedCells.Select(c => c.Col).Distinct().Order())}; clicked {clickedRow}, second {secondRowIndex}, field {fieldIndex}, next {nextIndex}.");
+                if (Clipboard is { } cellClipboard)
+                {
+                    await pane.CopyAsync(); var block = await cellClipboard.TryGetTextAsync();
+                    Require(block != null && block.Count(ch => ch == '\n') == 1 && block.Count(ch => ch == '\t') == 2, "Copying a block did not produce tab-separated rows.");
+                }
+                pane.ApplyToSelection("bulk", null);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "bulk" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) == "bulk", "Bulk edit did not reach every selected cell.");
+                pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) != "bulk" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) != "bulk", "Undo did not revert the bulk edit in one step.");
+                var placeholder = ((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Last(); Require(placeholder.IsPlaceholder, "No blank row at the bottom of the table.");
+                int countBefore = pane.Document.Table.Records.Count; placeholder[0] = "brand new";
+                Require(!placeholder.IsPlaceholder && placeholder.Row == countBefore && pane.Document.Table.Records.Count == countBefore + 1 && pane.Document.Table.Cell(countBefore, cols[0]) == "brand new", "Typing into the blank row did not create a row.");
+                pane.Refresh();
+                Require(((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Count(r => r.IsPlaceholder) == 1 && ((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Last().IsPlaceholder, "A fresh blank row was not appended after the new row.");
+                pane.InsertRows(1, 2);
+                Require(pane.Document.Table.Records.Count == countBefore + 3 && pane.Document.Table.Cell(1, cols[0]) == "" && pane.SelectedRow == 1 && pane.Document.Diagnostics.Any(d => d.Severity == "Warning"), "Add rows above did not insert blank rows at the slot with the order advisory.");
+                pane.DeleteSelectedRows();
+                Require(pane.Document.Table.Records.Count == countBefore + 1 && pane.Document.Table.Cell(countBefore, cols[0]) == "brand new", "Deleting the added rows removed the wrong rows.");
+                pane.Document.Undo(); pane.Document.Undo(); pane.Document.Undo(); pane.Document.Undo(); pane.Refresh();
+                Require(pane.Document.Table.Records.Count == countBefore, "Undo did not restore the table after row insertion.");
+                pane.Jump(clickedRow, field); await Task.Delay(60);
                 InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
                 Require(RowEditorFields.ItemCount == pane.Document.Table.Columns.Length, "Row editor omitted columns outside the table window.");
                 var rowInput = RowEditorFields.GetVisualDescendants().OfType<TextBox>().First(t => !t.IsReadOnly);
@@ -704,8 +783,9 @@ public partial class MainWindow : Window
                 var rowMenu = pane.TableGrid.ContextMenu!;
                 Require(rowMenu.IsOpen, "Right-click did not open row actions.");
                 var rowToFreeze = pane.SelectedRow;
-                var freezeAction = rowMenu.Items.OfType<MenuItem>().First();
-                Require(freezeAction.Header?.ToString() == "Freeze row", "Row menu has the wrong freeze action.");
+                var menuHeaders = rowMenu.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? "").ToArray();
+                Require(menuHeaders[0] == "Add row above" && menuHeaders[1] == "Add row below" && menuHeaders[2].StartsWith("Delete row") && !rowMenu.Items.OfType<MenuItem>().ElementAt(2).IsEnabled, "Row menu lacks add/delete row actions, or lets an original row be deleted.");
+                var freezeAction = rowMenu.Items.OfType<MenuItem>().First(m => m.Header?.ToString() == "Freeze row");
                 rowMenu.Close(); freezeAction.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 Require(pane.FrozenRows.Contains(rowToFreeze), "Row context action froze the wrong row.");
                 pane.ToggleFrozenRows();

@@ -34,6 +34,13 @@ public static class Semantics
         }
         return rules;
     }
+    /// <summary>Navigation-only rule from the bundled data guide when the column is documented as a reference to another table. Not used by Check: guide targets can be enum pages or index-based.</summary>
+    public static SemanticRule? GuideReference(string table, string column)
+    {
+        var entry = ColumnGuide.Find(table, column);
+        if (entry?.RefFile == null) return null;
+        return new(table, column, ReferenceTables: [entry.RefFile.ToLowerInvariant()], ReferenceColumn: entry.RefField ?? "code");
+    }
     public static string TableFile(ModProject project, string name) => Inside(project.Root, $"source/tables/{name}/records.json");
     public static List<ReferenceHit> References(ModProject project, SemanticRule rule, string value, IReadOnlyDictionary<string, TableData>? buffers = null, CancellationToken token = default)
     {
@@ -44,8 +51,9 @@ public static class Semantics
             if (!File.Exists(file)) continue;
             var table = buffers?.GetValueOrDefault(file) ?? TableData.Load(file);
             Require(table.Validate(file).Count == 0, "Reference table is invalid: " + name);
-            Require(table.Columns.Contains(rule.ReferenceColumn), $"Reference column {name}/{rule.ReferenceColumn} is missing.");
-            for (int row = 0; row < table.Records.Count; row++) if (table.Cell(row, rule.ReferenceColumn) == value && value.Length > 0) result.Add(new(file, row, rule.ReferenceColumn, value));
+            var column = table.Columns.FirstOrDefault(c => c == rule.ReferenceColumn) ?? table.Columns.FirstOrDefault(c => c.Equals(rule.ReferenceColumn, StringComparison.OrdinalIgnoreCase));
+            Require(column != null, $"Reference column {name}/{rule.ReferenceColumn} is missing.");
+            for (int row = 0; row < table.Records.Count; row++) if (table.Cell(row, column!) == value && value.Length > 0) result.Add(new(file, row, column!, value));
         }
         return result;
     }

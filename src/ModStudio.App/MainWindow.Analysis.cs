@@ -22,13 +22,16 @@ public partial class MainWindow
         int generation = ++inspectionGeneration;
         if (InspectorTabs.SelectedIndex != 0) return;
         if (ProfileValue == null || ReferenceList == null) return;
-        ReferenceList.ItemsSource = null; EditProfileButton.IsVisible = false; ProfileValue.Text = ""; ReferenceStatus.Text = "";
+        ReferenceList.ItemsSource = null; EditProfileButton.IsVisible = false; GoToReferenceButton.IsVisible = false; ProfileValue.Text = ""; ReferenceStatus.Text = "";
         if (project == null || Active is not { } pane || pane.Document.Table is not { IsCatalog: false } table || pane.Document.PendingSource || pane.SelectedRow < 0 || pane.SelectedRow >= table.Records.Count || FieldPicker.SelectedItem is not string column) return;
         var selectedProject = project; int row = pane.SelectedRow; string selectedProfile = Profile, value = table.Cell(row, column);
         try
         {
             await Task.Delay(150); if (generation != inspectionGeneration) return;
+            // Project rules win; otherwise the bundled data guide tells us which table a column points at (navigation only).
             var rule = Semantics.Rules(selectedProject).FirstOrDefault(r => r.Table == table.Name && r.Column == column);
+            bool fromGuide = false;
+            if (rule?.ReferenceTables == null && Semantics.GuideReference(table.Name, column) is { } guideRule) { rule = guideRule; fromGuide = true; }
             var buffers = OpenBuffers(rule?.ReferenceTables ?? []);
             try
             {
@@ -38,15 +41,20 @@ public partial class MainWindow
             }
             catch (Exception e) { ProfileValue.Text = "Profile needs review: " + e.Message; }
             if (rule?.ReferenceTables == null) { ReferenceStatus.Text = "No reference rule for this field yet."; return; }
+            var targets = string.Join(", ", rule.ReferenceTables.Select(t => t + "." + rule.ReferenceColumn));
+            if (!rule.ReferenceTables.Any(t => File.Exists(Semantics.TableFile(selectedProject, t)))) { ReferenceStatus.Text = $"The data guide says this points at {targets}, which is not a table in this project."; return; }
             ReferenceStatus.Text = "Resolving shared-source reference…";
             var hits = await Task.Run(() => Semantics.References(selectedProject, rule, value, buffers));
             if (generation != inspectionGeneration || selectedProject != project) return;
             ReferenceList.ItemsSource = hits;
-            ReferenceStatus.Text = value.Length == 0 ? "Empty reference." : hits.Count == 0 ? "Unresolved in available project tables. Base-game resources may be missing." : $"{hits.Count} shared-source match(es). Double-click to navigate. Unsaved open target tables are included.";
+            var origin = fromGuide ? $"Data guide: this points at {targets}. " : "";
+            ReferenceStatus.Text = value.Length == 0 ? origin + "Empty reference." : hits.Count == 0 ? origin + "Unresolved in available project tables. Base-game resources may be missing." : origin + $"{hits.Count} match(es). Select one and press Go to, or double-click. Unsaved open target tables are included.";
+            if (hits.Count > 0) { ReferenceList.SelectedIndex = 0; GoToReferenceButton.IsVisible = true; GoToReferenceButton.Content = hits.Count == 1 ? $"Go to {Path.GetFileName(Path.GetDirectoryName(hits[0].File))} row {hits[0].Row}" : "Go to selected referenced row"; }
         }
         catch (Exception e) { if (generation == inspectionGeneration) { ProfileValue.Text = e.Message; ReferenceStatus.Text = "Resolve this issue before editing the profile."; } }
     }
     private async void ReferenceDoubleTapped(object? sender, TappedEventArgs e) => await OpenReferenceAsync();
+    private async void GoToReferenceClicked(object? sender, RoutedEventArgs e) => await OpenReferenceAsync();
     private async void ReferenceKeyDown(object? sender, KeyEventArgs e) { if (e.Key == Key.Enter) { e.Handled = true; await OpenReferenceAsync(); } }
     private async Task OpenReferenceAsync()
     {

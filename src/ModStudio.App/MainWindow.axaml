@@ -44,6 +44,7 @@
     <Button x:Name="EditProfileButton" Content="Edit profile override…" Click="EditProfileClicked" IsVisible="False" />
     <TextBlock x:Name="ReferenceStatus" TextWrapping="Wrap" Classes="muted" />
     <ListBox x:Name="ReferenceList" MaxHeight="140" DoubleTapped="ReferenceDoubleTapped" KeyDown="ReferenceKeyDown" />
+    <Button x:Name="GoToReferenceButton" Content="Go to referenced row" Click="GoToReferenceClicked" IsVisible="False" />
    </StackPanel></ScrollViewer></TabItem>
    <TabItem><TabItem.Header><TextBlock Text="Row Editor" FontSize="12" /></TabItem.Header><Grid RowDefinitions="Auto,Auto,Auto,*" Margin="12">
     <TextBlock x:Name="RowEditorLabel" Text="Select a table row" TextWrapping="Wrap" Margin="0,0,0,8" />

@@ -14,6 +14,8 @@ try
     PreviewTests.Run(root, Check, Throws);
     ItemPreviewTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
+    GuideAndDetectionTests.Run(root, Check, Write);
+    RowEditingTests.Run(root, Check, Throws);
     BuildTests.Run(root, Check, Throws, Write);
     await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");

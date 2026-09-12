@@ -55,7 +55,9 @@ Profile override file referenced by `tableOverrides: ["example-change.json"]`:
 }
 ```
 
-An optional `targets` array limits an override to declared table banks. Runtime identity hashes and legacy duplicate allowances in existing schemas are checked. Source JSON must retain those contracts. Imported generic schemas protect original row slots but do not guess game-specific keys. Semantic definitions should be versioned separately from this lossless storage schema.
+An optional `targets` array limits an override to declared table banks. Runtime identity hashes and legacy duplicate allowances in existing schemas are checked. Source JSON must retain those contracts.
+
+`sourceId` is a stable identity, not a slot: imported rows are `row-NNNNN` (their original slot, below `protectedRows`), rows added in Studio get a random `row-xxxxxxxx`. `order` is the physical slot and is renumbered on insertion. Validation requires unique IDs, every original row still present, and the identity hash over the original rows in their original numbering; inserting before original rows produces an advisory warning rather than an error, because only some tables treat the row number as the game ID. Original rows cannot be deleted. See `table-editing.md`. Imported generic schemas protect original row slots but do not guess game-specific keys. Semantic definitions should be versioned separately from this lossless storage schema.
 
 ## Build and deployment contracts
 
@@ -71,5 +73,5 @@ The process controller owns a single child and gates concurrent Build/Deploy/Pla
 - Separate semantic game/version definitions from storage schemas; add reference indexes and incremental diagnostics with revision cancellation.
 - Use the selected build profile for resolved-value provenance, item tooltips and monster calculations. Missing dependencies should produce incomplete results.
 - Add a Git adapter and record/field diffs before automatic three-way merging. IDs, deletions and conflicting cells require explicit resolution.
-- Add row creation/duplication with table-specific identity allocation, rather than generic renumbering.
+- Add row duplication and string-catalog row creation (catalog identities are still protected).
 - Evolve docking and workspace layout persistence after native keyboard/accessibility checks on all three desktop platforms.

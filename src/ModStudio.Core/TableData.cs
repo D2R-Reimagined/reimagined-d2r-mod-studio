@@ -17,6 +17,26 @@ public sealed class TableData
         Columns = IsCatalog ? ["id", "Key", .. ((JsonArray)schema["locales"]!).Select(x => x!.GetValue<string>())] : ((JsonArray)schema["columns"]!).Select(x => x.S("key")).ToArray();
         Require(Columns.Distinct(StringComparer.Ordinal).Count() == Columns.Length, "Duplicate column keys.");
     }
+    private static readonly Regex OriginalId = new("^row-([0-9]{5})$");
+    /// <summary>Slot number of an imported row (its sourceId is row-NNNNN below protectedRows); -1 for rows added in Studio.</summary>
+    public int OriginalSlot(int row)
+    {
+        if (IsCatalog || row < 0 || row >= Records.Count) return -1;
+        var match = OriginalId.Match(Records[row].S("sourceId"));
+        return match.Success && int.Parse(match.Groups[1].Value) < Schema.I("protectedRows") ? int.Parse(match.Groups[1].Value) : -1;
+    }
+    public bool IsOriginalRow(int row) => OriginalSlot(row) >= 0;
+    /// <summary>Set by Validate when rows were inserted before imported rows. Advisory only: it matters for tables where the row number is the game ID.</summary>
+    public bool RowOrderChanged { get; private set; }
+    public const string RowOrderAdvice = "Rows were inserted before original rows. In tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) this shifts existing IDs; add rows at the bottom instead if that matters.";
+    /// <summary>A blank table row with a fresh identity. IDs are random so rows added on different branches never collide; the physical slot is written by the caller.</summary>
+    public JsonObject NewRecord(JsonObject? fields = null)
+    {
+        Require(!IsCatalog, "Adding string entries is not supported yet; add them in Source view.");
+        var ordered = new JsonObject();
+        foreach (var key in Columns) if (fields?[key] is JsonValue v && v.TryGetValue<string>(out var text) && text.Length > 0) ordered[key] = text;
+        return new JsonObject { ["sourceId"] = "row-" + Guid.NewGuid().ToString("N")[..8], ["order"] = 0, ["columnCount"] = Columns.Length, ["fields"] = ordered };
+    }
     public string Cell(int row, string column)
     {
         if (row < 0 || row >= Records.Count || Records[row] is not JsonObject r) return "";
@@ -51,7 +71,7 @@ public sealed class TableData
         {
             Require(Schema.I("schemaVersion") == 1, "Unsupported schema version.");
             Require(Records.Count >= Schema.I("protectedRows"), "Original row slots cannot be removed.");
-            var ids = new HashSet<int>(); var keys = new HashSet<string>(StringComparer.Ordinal);
+            var ids = new HashSet<int>(); var keys = new HashSet<string>(StringComparer.Ordinal); var sourceIds = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < Records.Count; i++)
             {
                 try
@@ -78,7 +98,8 @@ public sealed class TableData
                     }
                     else
                     {
-                        Require(r.S("sourceId") == $"row-{i:D5}", "Source ID must retain its row slot.");
+                        // Source IDs are stable identities (profile overrides refer to them), not slots: rows can be inserted without renumbering.
+                        Require(r.S("sourceId").Length > 0 && sourceIds.Add(r.S("sourceId")), "Missing or duplicate source ID.");
                         var width = r.I("columnCount"); Require(width > 0 && width <= Columns.Length, "Invalid row width.");
                         foreach (var pair in r["fields"]!.AsObject())
                         {
@@ -92,10 +113,16 @@ public sealed class TableData
             if (!IsCatalog && errors.Count == 0)
             {
                 var identityColumns = ((JsonArray?)Schema["identityColumns"] ?? []).Select(x => x!.GetValue<string>()).ToArray();
+                // Every imported row must still exist; the identity hash covers them in their original numbering regardless of where rows were inserted.
+                var originals = new JsonNode?[Schema.I("protectedRows")]; bool moved = false;
+                for (int i = 0; i < Records.Count; i++) { var slot = OriginalSlot(i); if (slot < 0) continue; originals[slot] = Records[i]; moved |= slot != i; }
+                var missing = Enumerable.Range(0, originals.Length).Where(i => originals[i] == null).ToArray();
+                if (missing.Length > 0) throw new InvalidDataException($"Original rows were removed: row-{missing[0]:D5}{(missing.Length > 1 ? $" and {missing.Length - 1} more" : "")}. Only rows added in Studio can be deleted.");
                 var identityRows = new JsonArray();
-                foreach (var r in Records.Take(Schema.I("protectedRows")))
+                foreach (var r in originals)
                     identityRows.Add(new JsonArray(new[] { r.S("sourceId") }.Concat(identityColumns.Select(k => r!["fields"].S(k))).Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
                 if (Schema.ContainsKey("identitySha256")) Require(Hash(identityRows.ToJsonString(Compact)) == Schema.S("identitySha256"), "Protected runtime identities changed.");
+                RowOrderChanged = moved;
                 if (identityColumns.Length > 0)
                 {
                     var groups = Enumerable.Range(0, Records.Count).Where(i => identityColumns.Any(k => Cell(i, k).Length > 0)).GroupBy(i => string.Join('\0', identityColumns.Select(k => Cell(i, k))));

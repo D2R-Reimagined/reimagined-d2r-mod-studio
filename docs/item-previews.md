@@ -1,8 +1,8 @@
 # Item tooltips and calculations
 
-Hover a row in `uniqueitems` or `setitems` for a text-only item tooltip. The **Item Preview** inspector tab keeps the selected item visible and lets you choose character level (1–99) and locale (`enUS` by default). Column headers also show their complete names on hover.
+Hover a row in `uniqueitems` or `setitems` for a text-only item tooltip. The **Item Preview** inspector tab keeps the selected item visible and lets you choose character level (1–99) and a locale from the project's string catalogs (`enUS` by default; the game's 13 locales when no catalog declares any). Column headers show their complete names on hover, or a data-guide card when the column is documented (see `column-guide.md`).
 
-Item names, properties and issue text are selectable in both the inspector and hover card. The hover card stays open when the pointer moves from its row into the card, so you can drag across the text, scroll, and use the platform copy shortcut.
+Item names, properties and issue text are selectable in both the inspector and hover card. The hover card stays open when the pointer moves from its row into the card, so you can drag across the text, scroll, and use the platform copy shortcut. Leaving the row before the 350 ms hover delay elapses cancels the request, so a card never opens under a pointer that has already moved elsewhere.
 
 The resolver uses the project's base-item tables, `properties`, `itemstatcost`, string catalogs and `sets`. It applies the selected profile's table overrides before resolving references. Standard/full localization follows the profile's string mode, including review checks on compact translations. Item names, base names and supported stat descriptions come from the project, rather than a Reimagined-only label list.
 

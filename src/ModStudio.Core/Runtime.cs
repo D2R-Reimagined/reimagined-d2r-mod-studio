@@ -46,6 +46,19 @@ public record RunSettings(string DeploymentDirectory = "", string Executable = "
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException) { issues.Add("Invalid path: " + ex.Message); }
         return issues;
     }
+    /// <summary>Fills an empty game folder from the first detected installation, and an empty deployment folder from mods/&lt;name&gt; beside it. Explicit values are never replaced.</summary>
+    public RunSettings WithDetectedDefaults(ModProject project, IReadOnlyList<GameInstallation> installations)
+    {
+        var settings = this;
+        if (string.IsNullOrWhiteSpace(settings.InstallationDirectory) && installations.Count > 0)
+        {
+            var install = installations[0];
+            settings = settings with { GameDirectory = install.Directory, Executable = "", LaunchTarget = install.Executables.Contains(LaunchTarget, StringComparer.OrdinalIgnoreCase) ? LaunchTarget : install.Executables[0] };
+        }
+        if (string.IsNullOrWhiteSpace(settings.DeploymentDirectory) && !string.IsNullOrWhiteSpace(settings.InstallationDirectory))
+            settings = settings with { DeploymentDirectory = Path.Combine(settings.InstallationDirectory, "mods", project.Name) };
+        return settings;
+    }
     public static string SettingsFile(ModProject project, string profile) => Inside(project.Cache, $"settings/{profile}.json");
     public static RunSettings Load(ModProject project, string profile)
     {

@@ -9,6 +9,19 @@ public sealed record ModProject(string Root, string Id, string Name)
     public string Cache => Inside(Root, ".studio");
     public IEnumerable<string> Profiles => Directory.Exists(Path.Combine(Root, "compatibility")) ? Directory.GetDirectories(Path.Combine(Root, "compatibility")).Select(Path.GetFileName).OfType<string>().Order() : ["standard", "d2rl"];
     public string ModFolder => Name;
+    /// <summary>Locale codes D2R ships string tables for, in the game's order.</summary>
+    public static readonly string[] GameLocales = ["enUS", "zhTW", "deDE", "esES", "frFR", "itIT", "koKR", "plPL", "esMX", "jaJP", "ptBR", "ruRU", "zhCN"];
+    /// <summary>Locales declared by the project's string catalogs; the game's standard list when no catalog declares any.</summary>
+    public IReadOnlyList<string> Locales()
+    {
+        var found = new List<string>();
+        var strings = Path.Combine(Root, "source/strings");
+        if (Directory.Exists(strings))
+            foreach (var schema in Directory.EnumerateFiles(strings, "schema.json", SearchOption.AllDirectories))
+                try { foreach (var locale in (Read(schema)["locales"] as JsonArray)?.Select(x => x?.GetValue<string>()).OfType<string>() ?? []) if (!found.Contains(locale)) found.Add(locale); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException or InvalidOperationException) { }
+        return found.Count > 0 ? found : GameLocales;
+    }
     public static ModProject Open(string root)
     {
         root = Path.GetFullPath(root); NoLinks(root); Require(Directory.Exists(root), "Project folder does not exist.");

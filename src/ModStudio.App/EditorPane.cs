@@ -15,18 +15,23 @@ using ModStudio.Core;
 
 namespace ModStudio.App;
 
-public sealed class RowView(Document document, int row, Action<Exception> error, Func<int>? materialize = null) : INotifyPropertyChanged
+public sealed class RowView(Document document, int row, Action<Exception> error, Func<int>? materialize = null, Func<int, int, string?>? preview = null, Func<int, int, bool>? deferEdit = null) : INotifyPropertyChanged
 {
     /// <summary>Table row index; -1 while this is the blank "type here to add a row" line at the bottom.</summary>
     public int Row { get; private set; } = row;
     public bool IsPlaceholder => Row < 0;
     public event PropertyChangedEventHandler? PropertyChanged;
-    public void RefreshValues() => PropertyChanged?.Invoke(this, new("Item[]"));
+    public void RefreshValues()
+    {
+        PropertyChanged?.Invoke(this, new("Item"));
+        PropertyChanged?.Invoke(this, new("Item[]"));
+    }
     public string this[int column]
     {
-        get => document.Table!.Cell(Row, document.Table.Columns[column]);
+        get => preview?.Invoke(Row, column) ?? document.Table!.Cell(Row, document.Table.Columns[column]);
         set
         {
+            if (deferEdit?.Invoke(Row, column) == true) return;
             try
             {
                 // The first value typed into the placeholder line creates the row it stands for.
@@ -34,7 +39,7 @@ public sealed class RowView(Document document, int row, Action<Exception> error,
                 document.SetCells([(Row, document.Table!.Columns[column], value)]);
             }
             catch (Exception e) { error(e); }
-            PropertyChanged?.Invoke(this, new("Item[]"));
+            RefreshValues();
         }
     }
 }
@@ -361,7 +366,7 @@ public sealed partial class EditorPane : Grid
                 grid.FrozenColumnCount = 0; grid.Columns.Clear();
                 foreach (var i in VisibleColumns())
                 {
-                    var column = new DataGridTextColumn { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
+                    var column = new LiveCellColumn(this, i) { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
                     column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
                         var label = new TextBlock { Text = Header(i), TextTrimming = TextTrimming.CharacterEllipsis };
                         // Documented columns show the data-guide card; others keep their complete name.
@@ -410,9 +415,9 @@ public sealed partial class EditorPane : Grid
         IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
         if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
         // A blank line at the bottom creates a new row as soon as something is typed into it.
-        var views = rows.Select(i => new RowView(Document, i, error));
+        var views = rows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit));
         TableGrid.ItemsSource = (table.IsCatalog ? views : views.Append(new RowView(Document, -1, error, MaterializePlaceholder))).ToArray();
-        FrozenGrid.ItemsSource = frozenRows.Select(i => new RowView(Document, i, error)).ToArray();
+        FrozenGrid.ItemsSource = frozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
         FrozenGrid.IsVisible = frozenRows.Count > 0; FrozenGrid.Height = frozenRows.Count * 30 + 34;
         TableGrid.HeadersVisibility = FrozenGrid.IsVisible ? DataGridHeadersVisibility.Row : DataGridHeadersVisibility.All;
         activeGrid = frozenRows.Contains(selected) ? FrozenGrid : TableGrid;

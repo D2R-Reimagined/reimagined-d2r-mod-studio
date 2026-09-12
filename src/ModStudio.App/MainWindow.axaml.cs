@@ -70,6 +70,7 @@ public partial class MainWindow : Window
             if (operation != null) { operation.Cancel(); ShowError(new Exception("Canceling the current operation. Close again when it has finished.")); return; }
             if (!await MayLeaveAsync()) return;
             if (controller.Running && await ChooseAsync("A game process is still running", "Closing Studio leaves that process running.", "Leave running and close", "Cancel") != "Leave running and close") return;
+            try { SaveOpenFiles(); } catch (Exception ex) { ShowError(ex); return; }
             closingApproved = true; terminal.Dispose(); watcher?.Dispose(); recoveryTimer.Stop(); runStateTimer.Stop(); controller.Dispose(); Close();
         };
         Opened += async (_, _) =>
@@ -178,8 +179,11 @@ public partial class MainWindow : Window
     private async void TutorialClicked(object? sender, RoutedEventArgs e) => await new QuickStartWindow().ShowDialog(this);
     public async Task LoadProjectAsync(string root)
     {
-        Require(operation == null, "Wait for the current operation before switching projects."); watcher?.Dispose();
-        project = await Task.Run(() => ModProject.Open(root)); terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
+        Require(operation == null, "Wait for the current operation before switching projects.");
+        var nextProject = await Task.Run(() => ModProject.Open(root));
+        if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
+        watcher?.Dispose();
+        project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; explorerEntries = entries; FilterExplorer(); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
@@ -192,6 +196,7 @@ public partial class MainWindow : Window
             {
                 var preferences = StudioPreferences.Load(StudioPreferences.DefaultFile);
                 preferences.Remember(project.Root, StudioPreferences.DefaultFile);
+                await RestoreOpenFilesAsync();
                 await ApplyDetectedGameDefaultsAsync();
                 if (!preferences.HasIntroduced(project.Root)) await ShowSettingsAsync();
             }
@@ -672,6 +677,23 @@ public partial class MainWindow : Window
             await CloseTabAsync(previewTab!);
             await abandonedLoad;
             Require(tabs.Count == 0, "A closed loading tab reopened after loading.");
+            await OpenDocumentAsync(previewA);
+            await OpenDocumentAsync(previewB, true);
+            Documents.SelectedItem = tabs[0];
+            SaveOpenFiles(); tabs.Clear(); previewTab = null;
+            await RestoreOpenFilesAsync();
+            Require(tabs.Select(TabFile).SequenceEqual(new[] { System.IO.Path.GetFullPath(previewA), System.IO.Path.GetFullPath(previewB) }) && Documents.SelectedItem == tabs[0] && previewTab == tabs[1], "Session restore lost tab order, selected file, or preview state.");
+            await CloseTabAsync(tabs[1]); SaveOpenFiles(); tabs.Clear(); previewTab = null;
+            await RestoreOpenFilesAsync();
+            Require(tabs.Count == 1 && TabFile(tabs[0]) == System.IO.Path.GetFullPath(previewA), "Session restore reopened a closed file.");
+            var missingSessionFile = System.IO.Path.Combine(output, "removed-session-file.txt");
+            File.WriteAllText(missingSessionFile, "temporary");
+            await OpenDocumentAsync(missingSessionFile); SaveOpenFiles();
+            tabs.Clear(); previewTab = null; File.Delete(missingSessionFile);
+            await RestoreOpenFilesAsync();
+            Require(tabs.Count == 1 && TabFile(tabs[0]) == System.IO.Path.GetFullPath(previewA), "A missing session file prevented remaining files from reopening.");
+            await CloseTabAsync(tabs[0]); SaveOpenFiles(); await RestoreOpenFilesAsync();
+            Require(tabs.Count == 0, "An empty session reopened old files.");
             tabs.Clear(); previewTab = null;
             foreach (var name in new[] { "sounds", "cubemain", "skills" })
             {
@@ -736,8 +758,12 @@ public partial class MainWindow : Window
                 await Task.Delay(600); // outside the double-click window, so the press starts a drag rather than an edit; layout may have scrolled, so re-measure
                 DataGridCell? LiveCell(int row, DataGridColumn column)
                 {
-                    var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r.DataContext is RowView rv && rv.Row == row);
+                    var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView rv && rv.Row == row); if (container == null) return null;
                     var cell = column.GetCellContent(container)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                    // A scrolling cell may be geometrically inside the grid but hidden under a frozen column.
+                    // Only use coordinates that actually hit this cell, matching a real user's click.
+                    if (cell != null && (cell.TranslatePoint(new Point(cell.Bounds.Width / 2, 15), pane.TableGrid) is not { } center ||
+                        pane.TableGrid.InputHitTest(center) is not Visual hitVisual || !hitVisual.GetSelfAndVisualAncestors().Contains(cell))) return null;
                     return cell != null && cell.TranslatePoint(new Point(cell.Bounds.Width, 0), pane.TableGrid) is { X: var right } && right <= pane.TableGrid.Bounds.Width - 20 && cell.TranslatePoint(new Point(), pane.TableGrid) is { X: >= 0 } ? cell : null;
                 }
                 // Columns are virtualized: drag across two neighbouring columns that are realized and fully visible for both rows.
@@ -754,6 +780,92 @@ public partial class MainWindow : Window
                     await pane.CopyAsync(); var block = await cellClipboard.TryGetTextAsync();
                     Require(block != null && block.Count(ch => ch == '\n') == 1 && block.Count(ch => ch == '\t') == 2, "Copying a block did not produce tab-separated rows.");
                 }
+                // Typing starts editing the current cell without a second click; Enter writes the value into every selected cell.
+                pane.TableGrid.Focus(); this.KeyTextInput("7"); await Task.Delay(120);
+                var typedEditor = pane.TableGrid.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(t => t.IsVisible && t.Text == "7");
+                Require(typedEditor != null && typedEditor.CaretIndex == 1, "Typing into a selected cell did not start editing with the typed text.");
+                string DisplayedCell(int row, int col) => ((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Single(r => r.Row == row)[col];
+                Require(pane.SelectedCells.All(c => DisplayedCell(c.Row, c.Col) == "7"), "Typing did not update the entire drag selection before commit.");
+                Require(pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Count(t => t.IsVisible && t.Text == "7") == 4, "Every selected cell must visibly show an editor with the live value.");
+                if (name == "sounds")
+                {
+                    using var liveBitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96));
+                    liveBitmap.Render(this); liveBitmap.Save(System.IO.Path.Combine(output, "live-multi-cell-edit.png"), PngBitmapEncoderOptions.Default);
+                }
+                this.KeyTextInput("8"); await Task.Delay(60);
+                Require(pane.SelectedCells.All(c => DisplayedCell(c.Row, c.Col) == "78"), "Further typing did not update the entire selection live.");
+                this.KeyPress(Key.Back, RawInputModifiers.None, PhysicalKey.Backspace, null); await Task.Delay(60);
+                Require(pane.SelectedCells.All(c => DisplayedCell(c.Row, c.Col) == "7"), "Backspace did not update the entire selection live.");
+                var canceledTargets = pane.SelectedCells.ToArray(); var canceledRevision = pane.Document.Revision;
+                this.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null); await Task.Delay(100);
+                Require(pane.Document.Revision == canceledRevision && canceledTargets.All(c => DisplayedCell(c.Row, c.Col) == pane.Document.Table.Cell(c.Row, cols[c.Col])), "Escape failed to restore the original values without adding an undo step.");
+                // A single cell typed character by character is one undo step: undo restores the value from before editing, not one letter.
+                {
+                pane.SelectCell(clickedRow, startIndex); pane.TableGrid.Focus(); var singleBefore = pane.Document.Table.Cell(clickedRow, cols[startIndex]);
+                this.KeyTextInput("a"); await Task.Delay(120); this.KeyTextInput("b"); await Task.Delay(30); this.KeyTextInput("c"); await Task.Delay(30);
+                this.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null); await Task.Delay(120);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "abc", "Typing several characters into one cell did not commit the whole value.");
+                pane.Document.Undo(); pane.RefreshRowValues(clickedRow); await Task.Delay(50);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == singleBefore, $"Undo removed a single character instead of the whole typed value (now '{pane.Document.Table.Cell(clickedRow, cols[startIndex])}').");
+                }
+                pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, shift: true);
+                pane.TableGrid.Focus(); this.KeyTextInput("7"); await Task.Delay(120);
+                this.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null); await Task.Delay(120);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "7" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) == "7" && pane.Document.Table.Cell(clickedRow, cols[nextIndex]) == "7", "Committing a typed edit did not fill the other selected cells.");
+                pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) != "7" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) != "7", "Undo did not revert the typed multi-cell edit.");
+                // Double-clicking a cell inside the block opens it for editing without collapsing the selection; Enter fills the block.
+                pane.Jump(secondRowIndex, cols[nextIndex]); await Task.Delay(600);
+                var visibleForDoubleClick = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
+                Require(visibleForDoubleClick.Length >= 2, "Fewer than two scrolling columns are visible for the double-click test.");
+                startColumn = visibleForDoubleClick[^2]; nextColumn = visibleForDoubleClick[^1]; startIndex = pane.ColumnIndexOf(startColumn); nextIndex = pane.ColumnIndexOf(nextColumn);
+                pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, shift: true); await Task.Delay(60);
+                var inside = Centre(LiveCell(secondRowIndex, nextColumn)); Require(pane.SelectedCells.Count == 4, "Block selection was lost before the double-click test.");
+                this.MouseDown(inside, MouseButton.Left, RawInputModifiers.None); this.MouseUp(inside, MouseButton.Left, RawInputModifiers.None);
+                this.MouseDown(inside, MouseButton.Left, RawInputModifiers.None); this.MouseUp(inside, MouseButton.Left, RawInputModifiers.None); await Task.Delay(120);
+                var blockEditor = pane.TableGrid.GetVisualDescendants().OfType<TextBox>().FirstOrDefault(t => t.IsVisible && !t.IsReadOnly);
+                Require(pane.SelectedCells.Count == 4 && blockEditor != null, "Double-clicking inside the block collapsed the selection or did not open the editor.");
+                blockEditor!.Focus(); blockEditor.SelectAll(); // headless input does not move keyboard focus on pointer clicks the way the desktop backends do
+                this.KeyTextInput("5"); await Task.Delay(60); this.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null); await Task.Delay(150);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "5" && pane.Document.Table.Cell(clickedRow, cols[nextIndex]) == "5" && pane.Document.Table.Cell(secondRowIndex, cols[startIndex]) == "5", "Editing via double-click did not fill the other selected cells.");
+                pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                // Ctrl+click two scattered cells, type, then commit by clicking elsewhere: both cells must take the value.
+                pane.Jump(secondRowIndex, cols[startIndex]); await Task.Delay(600); // the second row is the lower neighbour; jumping to it keeps both on screen
+                // Refresh rebuilt the column objects and scrolled; pick two columns that are on screen now.
+                var visibleAfterJump = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
+                Require(visibleAfterJump.Length >= 2, $"Fewer than two scrolling columns are visible for the Ctrl+click typing test: rows realized {string.Join(",", pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Select(r => (r.DataContext as RowView)?.Row))}; need {clickedRow},{secondRowIndex}; first-row visible {pane.TableGrid.Columns.Count(c => LiveCell(clickedRow, c) != null)}, second-row visible {pane.TableGrid.Columns.Count(c => LiveCell(secondRowIndex, c) != null)}.");
+                startColumn = visibleAfterJump[^2]; nextColumn = visibleAfterJump[^1]; startIndex = pane.ColumnIndexOf(startColumn); nextIndex = pane.ColumnIndexOf(nextColumn);
+                Point Centre(DataGridCell? c) => (c ?? throw new InvalidDataException("A cell for the Ctrl+click typing test is not on screen.")).TranslatePoint(new Point(c.Bounds.Width / 2, 15), this)!.Value;
+                var a = Centre(LiveCell(clickedRow, startColumn)); this.MouseDown(a, MouseButton.Left, RawInputModifiers.None); this.MouseUp(a, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
+                var b = Centre(LiveCell(secondRowIndex, nextColumn)); this.MouseDown(b, MouseButton.Left, RawInputModifiers.Control); this.MouseUp(b, MouseButton.Left, RawInputModifiers.Control); await Task.Delay(60);
+                Require(pane.SelectedCells.Count == 2, "Ctrl+click did not build a two-cell selection for the typing test.");
+                this.KeyTextInput("9"); await Task.Delay(120);
+                Require(pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Any(t => t.IsVisible && t.Text == "9"), "Typing after Ctrl+click did not start editing.");
+                Require(pane.SelectedCells.All(c => DisplayedCell(c.Row, c.Col) == "9") && DisplayedCell(secondRowIndex, startIndex) != "9", "Live typing did not update exactly the Ctrl+clicked cells.");
+                Require(pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Count(t => t.IsVisible && t.Text == "9") == 2, "Both Ctrl+clicked cells must visibly show the live editor value.");
+                await Task.Delay(600);
+                var away = Centre(LiveCell(secondRowIndex, startColumn)); this.MouseDown(away, MouseButton.Left, RawInputModifiers.None); this.MouseUp(away, MouseButton.Left, RawInputModifiers.None); await Task.Delay(150);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "9" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) == "9" && pane.Document.Table.Cell(secondRowIndex, cols[startIndex]) != "9", "Committing by clicking away did not write the typed value into every Ctrl+clicked cell.");
+                pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) != "9", "Undo did not revert the Ctrl+click multi-edit.");
+                // Match the reported case: drag down one column, type 1, then click another cell.
+                pane.Jump(secondRowIndex, cols[startIndex]); await Task.Delay(600);
+                var verticalRows = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
+                    .Where(r => r.DataContext is RowView { IsPlaceholder: false } && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is { Y: > 50 } point && point.Y < pane.TableGrid.Bounds.Height - 40)
+                    .OrderBy(r => r.TranslatePoint(new Point(), pane.TableGrid)!.Value.Y).Take(3).Select(r => ((RowView)r.DataContext!).Row).ToArray();
+                var verticalColumn = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).First(c => verticalRows.All(r => LiveCell(r, c) != null));
+                int verticalIndex = pane.ColumnIndexOf(verticalColumn);
+                var verticalStart = Centre(LiveCell(verticalRows[0], verticalColumn)); var verticalEnd = Centre(LiveCell(verticalRows[^1], verticalColumn));
+                this.MouseDown(verticalStart, MouseButton.Left, RawInputModifiers.None); this.MouseMove(verticalEnd, RawInputModifiers.LeftMouseButton); this.MouseUp(verticalEnd, MouseButton.Left, RawInputModifiers.None);
+                pane.TableGrid.Focus(); this.KeyTextInput("1"); await Task.Delay(120);
+                Require(pane.SelectedCells.Count == 3 && pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Count(t => t.IsVisible && t.Text == "1") == 3, "A vertical selection did not visibly edit all three cells live.");
+                var clickAwayColumn = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).First(c => c != verticalColumn && LiveCell(verticalRows[^1], c) != null);
+                var clickAway = Centre(LiveCell(verticalRows[^1], clickAwayColumn));
+                this.MouseDown(clickAway, MouseButton.Left, RawInputModifiers.None); this.MouseUp(clickAway, MouseButton.Left, RawInputModifiers.None); await Task.Delay(150);
+                Require(verticalRows.All(r => pane.Document.Table.Cell(r, cols[verticalIndex]) == "1" && DisplayedCell(r, verticalIndex) == "1"), $"Clicking away erased a typed value in the vertical selection: {string.Join(", ", verticalRows.Select(r => $"{r}: model='{pane.Document.Table.Cell(r, cols[verticalIndex])}', display='{DisplayedCell(r, verticalIndex)}'"))}; editors: {string.Join(",", pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Where(t => t.IsVisible).Select(t => t.Text))}.");
+                Require(verticalRows.All(r => LiveCell(r, verticalColumn)!.GetVisualDescendants().OfType<TextBlock>().Any(t => t.IsVisible && t.Text == "1")), "Committed vertical cells do not visibly retain the value after clicking away.");
+                pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, control: true); pane.SelectCell(clickedRow, nextIndex, control: true); pane.SelectCell(secondRowIndex, startIndex, control: true);
                 pane.ApplyToSelection("bulk", null);
                 Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "bulk" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) == "bulk", "Bulk edit did not reach every selected cell.");
                 pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
@@ -770,8 +882,8 @@ public partial class MainWindow : Window
                 pane.Document.Undo(); pane.Document.Undo(); pane.Document.Undo(); pane.Document.Undo(); pane.Refresh();
                 Require(pane.Document.Table.Records.Count == countBefore, "Undo did not restore the table after row insertion.");
                 pane.Jump(clickedRow, field); await Task.Delay(60);
-                InspectorTabs.SelectedIndex = 1; await Task.Delay(100);
-                Require(RowEditorFields.ItemCount == pane.Document.Table.Columns.Length, "Row editor omitted columns outside the table window.");
+                InspectorTabs.SelectedIndex = 1; await SettleRowEditorAsync();
+                Require(RowEditorFields.ItemCount == pane.Document.Table.Columns.Length, $"Row editor omitted columns outside the table window in {name}: {RowEditorFields.ItemCount}/{pane.Document.Table.Columns.Length} fields; selected row {pane.SelectedRow}, editor row {rowEditorRow}, filter '{RowEditorSearch.Text}'.");
                 var rowInput = RowEditorFields.GetVisualDescendants().OfType<TextBox>().First(t => !t.IsReadOnly);
                 var rowField = Avalonia.Automation.AutomationProperties.GetName(rowInput)!;
                 var rowBefore = pane.Document.Table.Cell(pane.SelectedRow, rowField);

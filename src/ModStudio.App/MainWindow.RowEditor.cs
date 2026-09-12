@@ -49,6 +49,11 @@ public partial class MainWindow
                 TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
             Avalonia.Automation.AutomationProperties.SetName(input, field.Column);
             input.Bind(TextBox.TextProperty, new Binding(nameof(RowEditorField.Value)) { Source = field, Mode = BindingMode.TwoWay });
+            // The binding pushes every keystroke; group them so undo restores the value from before the field was focused.
+            Document? grouped = null;
+            input.GotFocus += (_, _) => { grouped?.EndEditGroup(); grouped = Active?.Document; grouped?.BeginEditGroup(); };
+            input.LostFocus += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
+            input.DetachedFromVisualTree += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
             panel.Children.Add(input);
             // Hovering the label or the input shows what the column means, from the bundled data guide.
             if (field.Guide != null) ToolTip.SetTip(panel, ColumnGuideTooltip.Create(field.Table, field.Column, field.Guide));

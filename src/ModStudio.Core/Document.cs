@@ -62,7 +62,7 @@ public sealed class Document
     private void Notify() { Revision++; IsDirty = state != savedState; Changed?.Invoke(); }
     private void Record(Action reverse)
     {
-        var previous = state; state = ++nextState;
+        var previous = state; state = ++nextState; editGroupRows = null; // any other history entry ends the mergeable run
         (replaying ? redo : undo).Push(() => { reverse(); state = previous; IsDirty = state != savedState; Changed?.Invoke(); });
         if (!replaying) redo.Clear();
     }
@@ -77,16 +77,35 @@ public sealed class Document
         raw = text; modelChanged = false; PendingSource = true; Diagnostics = [new(FilePath, "Source changed; apply or validate before table editing.", "Info")]; Notify();
     }
     public void ApplySource() { if (modelChanged) _ = Text; Parse(); Changed?.Invoke(); }
+    private int editGroupDepth;
+    private Dictionary<int, JsonNode>? editGroupRows;
+    /// <summary>
+    /// Starts an edit session: every SetCells until EndEditGroup collapses into one undo step that restores the rows as they
+    /// were when the session began. Text editors push a change per keystroke; users expect undo per committed value.
+    /// </summary>
+    public void BeginEditGroup() => editGroupDepth++;
+    public void EndEditGroup() { if (editGroupDepth > 0 && --editGroupDepth == 0) editGroupRows = null; }
+    public bool InEditGroup => editGroupDepth > 0;
     public void SetCells(IEnumerable<(int Row, string Column, string Value)> changes)
     {
         Require(Table != null && !PendingSource, "Apply valid source before editing cells.");
         var edits = changes.Where(e => Table!.Cell(e.Row, e.Column) != e.Value).ToArray(); if (edits.Length == 0) return;
         Require(edits.All(e => !LockedRows.Contains(e.Row) && !LockedColumns.Contains(e.Column)), "A selected row or column is locked against edits.");
         // Validate every cell before mutating the live document.
-        var affected = edits.Select(e => e.Row).Distinct().ToDictionary(i => i, i => Table!.Records[i]!.DeepClone());
+        var before = edits.Select(e => e.Row).Distinct().ToDictionary(i => i, i => Table!.Records[i]!.DeepClone());
         try { foreach (var e in edits) Table!.SetCell(e.Row, e.Column, e.Value); }
-        catch { foreach (var p in affected) Table!.Records[p.Key] = p.Value; throw; }
-        Record(() => RestoreRows(affected)); modelChanged = true; Diagnostics = Validated(); Notify();
+        catch { foreach (var p in before) Table!.Records[p.Key] = p.Value; throw; }
+        if (editGroupDepth > 0 && editGroupRows != null && !historyPlayback)
+        {
+            // Same edit session: widen the existing undo step instead of adding one. Rows first touched now keep their pre-session state.
+            foreach (var p in before) editGroupRows.TryAdd(p.Key, p.Value);
+        }
+        else
+        {
+            Record(() => RestoreRows(before));
+            if (editGroupDepth > 0 && !historyPlayback) editGroupRows = before;
+        }
+        modelChanged = true; Diagnostics = Validated(); Notify();
     }
     private List<Diagnostic> Validated()
     {

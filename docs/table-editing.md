@@ -11,7 +11,7 @@ The table view behaves like a spreadsheet on top of Avalonia''s row-based DataGr
 
 ## Editing many cells at once
 
-- Edit any one of the selected cells (double-click or F2, then Enter): the committed value is written into every selected cell that is not locked.
+- Just start typing: the current cell opens for editing with what you typed (no second click; F2 or double-click still work to edit the existing text). Every selected editable cell displays the same text as you type, erase, or paste. Enter or clicking away commits the group as one undo step; Escape cancels and restores the original values. Locked cells and catalog identity fields stay unchanged.
 - Delete clears every selected cell. The row menu has the same **Clear cells** action.
 - Paste with one value on the clipboard fills every selected cell; a multi-cell block pastes from the current cell across rows and columns, appending rows at the bottom when it runs past the last one.
 - Ctrl+C copies the selected cell, the bounding rectangle of a multi-cell selection (tab-separated, unselected cells inside the rectangle blank), or the full displayed rows when rows were picked by their header. The grid''s built-in whole-row copy is disabled (`ClipboardCopyMode = None`) so a single click + Ctrl+C really copies one cell.
@@ -21,5 +21,5 @@ The table view behaves like a spreadsheet on top of Avalonia''s row-based DataGr
 - The blank line marked **＋** at the bottom of every game table creates a row as soon as something is typed into it; a fresh blank line appears below.
 - Right-click a row for **Add row above / below** (one per selected row) and **Delete row(s)**. Rows that came from the imported game data cannot be deleted (clear their cells instead); rows added in Studio can.
 - New rows get a random `sourceId`, later rows keep theirs (profile overrides stay attached), and only the physical `order` is renumbered. Inserting before original rows adds a warning to Problems, because in tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) that shifts existing IDs.
-- Insert, delete and multi-cell edits are single undo steps; typing into the blank row is two (create, then set).
+- Undo works per committed value, not per keystroke: the grid and the Row Editor bracket each edit in a `Document` edit session (`BeginEditGroup`/`EndEditGroup`), so typing "something" into a blank cell and leaving it undoes back to blank in one step. Insert, delete and multi-cell edits are single undo steps; typing into the blank row is two (create, then set).
 - String catalogs (`source/strings`) do not support row insertion yet: their identities are protected. Add entries in Source view.

@@ -35,6 +35,20 @@ internal static class RowEditingTests
         doc.Undo(); check(doc.Table.Records.Count == 6 && doc.Table.Cell(1, "name") == "Inserted" && doc.Table.Cell(5, "name") == "", "Undo restores deleted rows at their slots");
         doc.Redo(); check(doc.Table.Records.Count == 4, "Redo deletes them again");
 
+        // Keystroke-level edits inside one edit session collapse into a single undo step.
+        doc.Save(); doc.BeginEditGroup();
+        foreach (var partial in new[] { "s", "so", "som", "some", "somet", "something" }) doc.SetCells([(0, "value", partial)]);
+        doc.SetCells([(3, "name", "grouped")]);
+        doc.EndEditGroup();
+        check(doc.Table.Cell(0, "value") == "something" && doc.IsDirty, "Grouped edits apply immediately");
+        doc.Undo(); check(doc.Table.Cell(0, "value") == "1" && doc.Table.Cell(3, "name") == "Tail" && !doc.IsDirty, "One undo restores everything typed during the edit session");
+        doc.Redo(); check(doc.Table.Cell(0, "value") == "something" && doc.Table.Cell(3, "name") == "grouped", "One redo re-applies the whole session");
+        doc.Undo();
+        doc.BeginEditGroup(); doc.SetCells([(0, "value", "a")]); doc.InsertRows(doc.Table.Records.Count); doc.SetCells([(0, "value", "ab")]); doc.EndEditGroup();
+        doc.Undo(); check(doc.Table.Cell(0, "value") == "a", "A row insertion inside a session starts a new undo step"); doc.Undo(); doc.Undo();
+        check(doc.Table.Cell(0, "value") == "1" && doc.Table.Records.Count == 4, "Steps around the insertion undo in order");
+        doc.SetCells([(0, "value", "outside")]); doc.SetCells([(0, "value", "outside2")]); doc.Undo();
+        check(doc.Table.Cell(0, "value") == "outside", "Edits outside a session still undo individually"); doc.Undo();
         doc.LockedRows.Add(1); throws(() => doc.InsertRows(1), "Inserting above a locked row is refused"); doc.LockedRows.Clear();
         doc.InsertRows(doc.Table.Records.Count); check(!doc.Diagnostics.Any(d => d.Severity == "Warning"), "Appending at the bottom never triggers the order advisory");
         var edited = Json(doc.Table.Records); var broken = JsonNode.Parse(edited)!.AsArray(); broken.RemoveAt(0); for (int i = 0; i < broken.Count; i++) broken[i]!["order"] = i;

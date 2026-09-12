@@ -19,8 +19,8 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
       - name: Restore
@@ -35,7 +35,7 @@ jobs:
         run: dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/example-project artifacts/ui-smoke
       - name: Package self-contained application and CLI
         run: ./scripts/publish.ps1 -Runtime '${{ matrix.rid }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: studio-${{ matrix.rid }}

@@ -83,10 +83,12 @@ public static class GameInstallDetector
         readRegistry ??= ReadRegistry;
         var roots = new List<string>();
         void AddRoot(string? root) { if (!string.IsNullOrWhiteSpace(root) && !roots.Contains(root.Trim(), StringComparer.OrdinalIgnoreCase)) roots.Add(root.Trim()); }
+        // Honor injected registry readers on every platform, as RegistryCandidates does.
+        // The default reader returns null outside Windows.
+        AddRoot(readRegistry(@"HKEY_CURRENT_USER\SOFTWARE\Valve\Steam|SteamPath")?.Replace('/', Path.DirectorySeparatorChar));
+        AddRoot(readRegistry(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam|InstallPath"));
         if (OperatingSystem.IsWindows())
         {
-            AddRoot(readRegistry(@"HKEY_CURRENT_USER\SOFTWARE\Valve\Steam|SteamPath")?.Replace('/', Path.DirectorySeparatorChar));
-            AddRoot(readRegistry(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam|InstallPath"));
             var x86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             if (!string.IsNullOrWhiteSpace(x86)) AddRoot(Path.Combine(x86, "Steam"));
         }

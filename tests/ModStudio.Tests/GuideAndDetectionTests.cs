@@ -31,9 +31,9 @@ internal static class GuideAndDetectionTests
         // Project locales
         var project = new ModProject(Path.Combine(root, "locales"), "loc", "Loc"); Directory.CreateDirectory(project.Root);
         check(project.Locales().SequenceEqual(ModProject.GameLocales) && ModProject.GameLocales[0] == "enUS", "Projects without catalogs offer the game's locales");
-        write(Path.Combine(project.Root, "source/strings/item-names/schema.json"), new JsonObject { ["locales"] = new JsonArray("enUS", "deDE") }.ToJsonString());
         write(Path.Combine(project.Root, "source/strings/ui/schema.json"), new JsonObject { ["locales"] = new JsonArray("deDE", "frFR") }.ToJsonString());
-        check(project.Locales().SequenceEqual(["enUS", "deDE", "frFR"]), "Catalog locales are merged in declaration order");
+        write(Path.Combine(project.Root, "source/strings/item-names/schema.json"), new JsonObject { ["locales"] = new JsonArray("enUS", "deDE") }.ToJsonString());
+        check(project.Locales().SequenceEqual(["enUS", "deDE", "frFR"]), "Catalogs are sorted by path before locales are merged in declaration order");
 
         // Steam library parsing
         var steam = Path.Combine(root, "steam"); var library = Path.Combine(root, "library");
@@ -48,8 +48,10 @@ internal static class GuideAndDetectionTests
         var empty = Path.Combine(root, "empty-game"); Directory.CreateDirectory(empty);
         string? Registry(string key) => key.Contains("Uninstall\\Diablo II Resurrected|") && key.StartsWith("HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node") ? game
             : key.Contains("Steam App 2181070") ? empty : key.EndsWith("|SteamPath") ? steam : null;
+        check(GameInstallDetector.SteamLibraries(Registry).Contains(library), "Injected Steam registry paths expand configured libraries on every platform");
+        check(GameInstallDetector.SteamLibraries(key => key.EndsWith("|InstallPath") ? steam : null).Contains(library), "Machine Steam registry paths expand configured libraries on every platform");
         var found = GameInstallDetector.Detect(Registry);
-        check(found.Count >= 2 && found[0].Directory == game && found[0].Source.Contains("registry") && found[0].Executables.SequenceEqual(["D2R.exe", "D2RLoader.exe"]), "Registry install location is reported first with its launchers");
+        check(found.Count >= 1 && found[0].Directory == game && found[0].Source.Contains("registry") && found[0].Executables.SequenceEqual(["D2R.exe", "D2RLoader.exe"]), "Registry install location is reported first with its launchers");
         check(found.Any(f => f.Directory == steamGame && f.Source.Contains("Steam")) && found.All(f => f.Directory != empty), "Configured Steam libraries are searched and folders without executables are skipped");
         check(found.Select(f => f.Directory).Distinct(StringComparer.OrdinalIgnoreCase).Count() == found.Count, "Detected installations are unique");
 

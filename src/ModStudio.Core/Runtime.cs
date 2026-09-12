@@ -80,7 +80,7 @@ public static class DeploymentService
     private const string Transaction = ".studio-transaction";
     public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null, bool overwriteDestination = false)
     {
-        using var buildLock = BuildCache.Lock(project);
+        using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
         var buildManifest = Inside(project.Cache, "builds/current/build.json");
         Require(File.Exists(buildManifest) && JsonSerializer.Deserialize<BuildResult>(File.ReadAllText(buildManifest), Pretty)?.Id == build.Id, "Build was replaced or did not finish. Rebuild before deploying.");
         Require(build.ProjectId == project.Id && build.ModName == project.Name, "Build belongs to a different project.");
@@ -98,21 +98,25 @@ public static class DeploymentService
         }
         var next = build.Files.ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
         Require(next.Count == build.Files.Count && build.Files.All(f => !f.Path.StartsWith(".studio-", StringComparison.OrdinalIgnoreCase)), "Invalid build ownership paths.");
+        // Enumerate the build output and the deployed folder once; every hash check below reuses those entries instead of stat'ing each path again.
+        var outputs = FileEntries(build.Output).ToDictionary(f => Relative(build.Output, f.FullName), StringComparer.OrdinalIgnoreCase);
+        var deployed = FileEntries(target).ToDictionary(f => Relative(target, f.FullName), StringComparer.OrdinalIgnoreCase);
+        string? DeployedHash(string relative) => deployed.TryGetValue(relative, out var file) ? BuildCache.FileHash(file) : null;
         foreach (var file in build.Files)
         {
-            token.ThrowIfCancellationRequested(); var source = Inside(build.Output, file.Path); Require(File.Exists(source) && BuildCache.FileHash(source) == file.Sha256, "Build output changed; rebuild before deploying.");
-            var dest = Inside(target, file.Path);
-            if (!overwriteDestination && File.Exists(dest) && previous?.Files.All(f => !f.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) != false)
-                Require(BuildCache.FileHash(dest) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Enable Overwrite destination in Run settings or use a separate mod folder.");
+            token.ThrowIfCancellationRequested(); SafeRelative(file.Path);
+            Require(outputs.TryGetValue(file.Path, out var source) && BuildCache.FileHash(source) == file.Sha256, "Build output changed; rebuild before deploying.");
+            if (!overwriteDestination && deployed.ContainsKey(file.Path) && previous?.Files.All(f => !f.Path.Equals(file.Path, StringComparison.OrdinalIgnoreCase)) != false)
+                Require(DeployedHash(file.Path) == file.Sha256, $"Unowned destination file would be overwritten: {file.Path}. Enable Overwrite destination in Run settings or use a separate mod folder.");
         }
         foreach (var owned in previous?.Files ?? [])
         {
             if (overwriteDestination && next.ContainsKey(owned.Path)) continue;
-            var dest = Inside(target, owned.Path); if (File.Exists(dest)) Require(BuildCache.FileHash(dest) == owned.Sha256, $"Deployed file was edited outside Studio: {owned.Path}. Preserve/import it before deploying.");
+            SafeRelative(owned.Path); if (deployed.ContainsKey(owned.Path)) Require(DeployedHash(owned.Path) == owned.Sha256, $"Deployed file was edited outside Studio: {owned.Path}. Preserve/import it before deploying.");
         }
         var ownership = JsonSerializer.SerializeToUtf8Bytes(new DeploymentManifest(project.Id, build.Id, build.Profile, build.Files), Pretty);
         var all = build.Files.Select(f => f.Path).Concat(previous?.Files.Select(f => f.Path) ?? []).Append(Owner).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var entries = all.Select(relative => new JournalEntry(relative, File.Exists(Inside(target, relative)) ? Hash(File.ReadAllBytes(Inside(target, relative))) : null, relative == Owner ? Hash(ownership) : next.GetValueOrDefault(relative)?.Sha256)).Where(e => e.Before != e.After).ToList();
+        var entries = all.Select(relative => new JournalEntry(relative, DeployedHash(relative), relative == Owner ? Hash(ownership) : next.GetValueOrDefault(relative)?.Sha256)).Where(e => e.Before != e.After).ToList();
         Directory.CreateDirectory(transaction);
         try
         {
@@ -138,6 +142,7 @@ public static class DeploymentService
             }
             // The owner manifest is the last committed file. Recovery can always roll back a partial commit.
             Directory.Delete(transaction, true);
+            BuildCache.SaveFingerprints(project, target);
         }
         catch
         {

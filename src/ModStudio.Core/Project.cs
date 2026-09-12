@@ -36,10 +36,12 @@ public sealed record ModProject(string Root, string Id, string Name)
         return new(root, Hash(root)[..24], name);
     }
     public static void ValidateName(string name) => Require(Regex.IsMatch(name, "^[A-Za-z0-9_-]{1,80}$"), "Mod name must use 1–80 letters, digits, underscores or hyphens.");
-    public IEnumerable<string> SourceFiles()
+    public IEnumerable<string> SourceFiles() => SourceEntries().Select(f => f.FullName);
+    /// <summary>Build inputs with their enumerated size and write time, so change detection needs no further syscalls per file.</summary>
+    public IEnumerable<FileInfo> SourceEntries()
     {
-        foreach (var folder in new[] { "source", "data", "compatibility" }) foreach (var file in Files(Path.Combine(Root, folder))) yield return file;
-        foreach (var name in new[] { "modinfo.json", "mod-project.json" }) if (File.Exists(Path.Combine(Root, name))) yield return Path.Combine(Root, name);
+        foreach (var folder in new[] { "source", "data", "compatibility" }) foreach (var file in FileEntries(Path.Combine(Root, folder))) yield return file;
+        foreach (var name in new[] { "modinfo.json", "mod-project.json" }) if (new FileInfo(Path.Combine(Root, name)) is { Exists: true } file) yield return file;
     }
 }
 

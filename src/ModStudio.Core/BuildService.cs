@@ -12,7 +12,7 @@ public static class BuildService
     public static BuildResult Build(ModProject project, string profile, CancellationToken token = default, Action<string>? progress = null)
     {
         Require(project.Profiles.Contains(profile), "Unknown runtime profile.");
-        using var buildLock = BuildCache.Lock(project);
+        using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
         var id = Guid.NewGuid().ToString("N"); var folder = Inside(project.Cache, "builds/current");
         var snapshot = Inside(folder, "snapshot"); var output = Inside(folder, "output");
         Directory.CreateDirectory(output); Directory.CreateDirectory(snapshot); var hashes = new Dictionary<string, string>();
@@ -25,19 +25,25 @@ public static class BuildService
         try
         {
             progress?.Invoke("Checking source changes…");
-            foreach (var file in project.SourceFiles())
+            // One enumeration of the previous snapshot answers "is this copy current?" for every source file without a stat each.
+            var captured = FileEntries(snapshot).ToDictionary(f => Relative(snapshot, f.FullName), StringComparer.Ordinal);
+            foreach (var file in project.SourceEntries())
             {
-                token.ThrowIfCancellationRequested(); hashes[file] = BuildCache.FileHash(file);
-                var target = Inside(snapshot, Relative(project.Root, file));
-                if (BuildCache.CopyChanged(file, target, hashes[file]))
-                    Require(BuildCache.FileHash(target) == hashes[file], "Source changed while capturing build. Retry.");
+                token.ThrowIfCancellationRequested(); hashes[file.FullName] = BuildCache.FileHash(file);
+                var relative = Relative(project.Root, file.FullName); var target = Inside(snapshot, relative);
+                if (BuildCache.CopyChanged(file.FullName, target, hashes[file.FullName], captured.GetValueOrDefault(relative)))
+                    Require(BuildCache.FileHash(target) == hashes[file.FullName], "Source changed while capturing build. Retry.");
+                captured.Remove(relative);
             }
-            var sourcePaths = hashes.Keys.Select(f => Relative(project.Root, f)).ToHashSet(StringComparer.Ordinal);
-            foreach (var old in Files(snapshot)) if (!sourcePaths.Contains(Relative(snapshot, old))) File.Delete(old);
+            foreach (var old in captured.Values) old.Delete();
             // Remove empty table directories too, so deleted tables cannot be resurrected by the cache.
             foreach (var dir in Directory.GetDirectories(snapshot, "*", SearchOption.AllDirectories).OrderByDescending(p => p.Length))
                 if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
-            Require(project.SourceFiles().Count() == hashes.Count && hashes.All(p => File.Exists(p.Key) && BuildCache.FileHash(p.Key) == p.Value), "Source changed while capturing build. Retry.");
+            // A second enumeration must find the same files with the same fingerprints, or a save landed mid-capture.
+            int recounted = 0;
+            foreach (var file in project.SourceEntries()) { recounted++; Require(hashes.TryGetValue(file.FullName, out var hash) && BuildCache.FileHash(file) == hash, "Source changed while capturing build. Retry."); }
+            Require(recounted == hashes.Count, "Source changed while capturing build. Retry.");
+            progress?.Invoke($"Captured {hashes.Count} source files.");
             var profilePath = Inside(snapshot, $"compatibility/{profile}/profile.json");
             var settings = File.Exists(profilePath) ? Read(profilePath) : new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full" };
             Require(settings.I("schemaVersion") == 1 && settings.S("id") == profile, "Invalid profile schema or identity.");
@@ -118,20 +124,20 @@ public static class BuildService
             }
             foreach (var rule in rules) if (!tableNames.Contains(rule.S("table"))) diagnostics.Add(new(Inside(project.Root, Relative(snapshot, profilePath)), "Unknown override table: " + rule.S("table")));
             if (diagnostics.Count > 0) throw new BuildFailure(diagnostics);
-            var semantic = Semantics.Check(new ModProject(snapshot, project.Id, project.Name), token: token);
-            var semanticDiagnostics = semantic.Diagnostics.Select(d => d with { File = Inside(project.Root, Relative(snapshot, d.File)) }).ToList();
+            var semanticDiagnostics = CheckedSemantics(project, snapshot, Inside(folder, "semantics.json"), hashes, token);
             if (semanticDiagnostics.Any(d => d.Severity == "Error")) throw new BuildFailure(semanticDiagnostics);
             foreach (var textFile in Files(Path.Combine(snapshot, "source/text")))
             {
                 var text = Read(textFile); Require(text.I("schemaVersion") == 1, "Unknown text asset schema.");
                 Emit(dataPrefix + text.S("target"), Utf8.GetBytes(text.S("content")));
             }
-            foreach (var file in Files(Path.Combine(snapshot, "data")))
+            var emitted = FileEntries(output).ToDictionary(f => Relative(output, f.FullName), StringComparer.OrdinalIgnoreCase);
+            foreach (var file in FileEntries(Path.Combine(snapshot, "data")))
             {
-                token.ThrowIfCancellationRequested(); if (new[] { ".bat", ".ps1", ".py", ".mjs", ".bak", ".log" }.Contains(Path.GetExtension(file).ToLowerInvariant())) continue;
-                var relative = dataPrefix + Relative(Path.Combine(snapshot, "data"), file);
+                token.ThrowIfCancellationRequested(); if (new[] { ".bat", ".ps1", ".py", ".mjs", ".bak", ".log" }.Contains(file.Extension.ToLowerInvariant())) continue;
+                var relative = dataPrefix + Relative(Path.Combine(snapshot, "data"), file.FullName);
                 Require(generated.Add(relative), "Duplicate generated target: " + relative);
-                if (BuildCache.CopyChanged(file, Inside(output, relative), BuildCache.FileHash(file))) written++;
+                if (BuildCache.CopyChanged(file.FullName, Inside(output, relative), BuildCache.FileHash(file), emitted.GetValueOrDefault(relative))) written++;
             }
             var assetTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var asset in (JsonArray?)settings["assetOverrides"] ?? [])
@@ -156,15 +162,44 @@ public static class BuildService
             }
             Emit(project.Name + ".mpq/modinfo.json", File.Exists(modInfoPath) ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
             token.ThrowIfCancellationRequested();
+            progress?.Invoke("Writing build manifest…");
             foreach (var old in Files(output)) if (!generated.Contains(Relative(output, old))) File.Delete(old);
-            var entries = Files(output).Select(f => new BuildFile(Relative(output, f), BuildCache.FileHash(f), new FileInfo(f).Length)).ToList();
+            var entries = FileEntries(output).Select(f => new BuildFile(Relative(output, f.FullName), BuildCache.FileHash(f), f.Length)).ToList();
             var result = new BuildResult(id, profile, project.Id, project.Name, output, entries, snapshot, semanticDiagnostics);
             AtomicWrite(Inside(folder, "build.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result, Pretty));
             AtomicWrite(cacheFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(cache, Pretty));
+            BuildCache.SaveFingerprints(project);
             BuildCache.RemoveOldBuilds(project, progress);
             progress?.Invoke($"Built {entries.Count} files · {profile} · {id[..8]} · {compiled} tables converted, {reused} reused, {written} output files written"); return result;
         }
         catch { if (File.Exists(manifest)) File.Delete(manifest); throw; }
+    }
+    /// <summary>
+    /// Runs the semantic check against the snapshot, unless the rules and every table they read are unchanged since the
+    /// cached result. Keyed on the source hashes already computed for the capture, so editing an unrelated table costs nothing.
+    /// </summary>
+    private static List<Diagnostic> CheckedSemantics(ModProject project, string snapshot, string cacheFile, Dictionary<string, string> sourceHashes, CancellationToken token)
+    {
+        var snapshotProject = new ModProject(snapshot, project.Id, project.Name);
+        string key;
+        try
+        {
+            var rules = Semantics.Rules(snapshotProject);
+            var involved = rules.Select(r => r.Table).Concat(rules.SelectMany(r => r.ReferenceTables ?? [])).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
+                .SelectMany(name => new[] { $"source/tables/{name}/records.json", $"source/tables/{name}/schema.json" }).Append("source/semantics.json");
+            key = Hash(typeof(BuildService).Module.ModuleVersionId + string.Join("\n", involved.Select(relative => relative + "=" + sourceHashes.GetValueOrDefault(Inside(project.Root, relative), "missing"))));
+        }
+        catch (Exception e) when (e is not OperationCanceledException) { key = ""; } // invalid rules: Check reports the problem itself, uncached
+        try
+        {
+            if (key.Length > 0 && File.Exists(cacheFile) && System.Text.Json.JsonSerializer.Deserialize<CachedSemantics>(File.ReadAllText(cacheFile), Pretty) is { } saved && saved.Key == key)
+                return saved.Diagnostics.Select(d => d with { File = Inside(project.Root, d.File) }).ToList();
+        }
+        catch (Exception e) when (e is System.Text.Json.JsonException or InvalidDataException) { }
+        var semantic = Semantics.Check(snapshotProject, token: token);
+        var relativeDiagnostics = semantic.Diagnostics.Select(d => d with { File = Relative(snapshot, d.File) }).ToList();
+        if (key.Length > 0) AtomicWrite(cacheFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new CachedSemantics(key, relativeDiagnostics, semantic.Rules, semantic.Cells), Pretty));
+        return relativeDiagnostics.Select(d => d with { File = Inside(project.Root, d.File) }).ToList();
     }
     private static JsonNode Template(JsonNode node, string version)
     {

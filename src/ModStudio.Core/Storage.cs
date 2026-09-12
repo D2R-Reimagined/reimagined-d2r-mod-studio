@@ -26,26 +26,55 @@ public static class Storage
         parent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent)); child = Path.GetFullPath(child);
         return child.Equals(parent, comparison) || child.StartsWith(parent + Path.DirectorySeparatorChar, comparison);
     }
+    private static readonly AsyncLocal<HashSet<string>?> verifiedDirectories = new();
+    /// <summary>
+    /// While the returned scope is alive, directories that NoLinks has verified are not stat'ed again by later checks on the
+    /// same logical thread. Build and deployment resolve thousands of paths under a handful of roots; walking every ancestor for
+    /// each of them was several seconds of syscalls per build. Files are never memoized: they can be replaced at any time.
+    /// </summary>
+    public static IDisposable PathChecks()
+    {
+        var previous = verifiedDirectories.Value;
+        verifiedDirectories.Value = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        return new Scope(() => verifiedDirectories.Value = previous);
+    }
+    private sealed class Scope(Action dispose) : IDisposable { public void Dispose() => dispose(); }
     public static void NoLinks(string path)
     {
+        var verified = verifiedDirectories.Value;
         for (var current = Path.GetFullPath(path); !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
-            if (File.Exists(current) || Directory.Exists(current))
-                Require((File.GetAttributes(current) & FileAttributes.ReparsePoint) == 0, $"Linked paths are not supported: {current}");
+        {
+            if (verified != null && verified.Contains(current)) return; // its ancestors were verified in this scope too
+            var attributes = new FileInfo(current).Attributes; // one stat for files and directories; -1 when nothing exists
+            if ((int)attributes == -1) continue;
+            Require((attributes & FileAttributes.ReparsePoint) == 0, $"Linked paths are not supported: {current}");
+            if (verified != null && (attributes & FileAttributes.Directory) != 0) verified.Add(current);
+        }
     }
+    /// <summary>Rejects relative paths that could leave a root: absolute, drive-qualified, backslashed, empty or dot segments.</summary>
+    public static void SafeRelative(string relative) =>
+        Require(!string.IsNullOrWhiteSpace(relative) && !relative.Contains('\\') && !relative.Contains(':') && !Path.IsPathRooted(relative) && relative.Split('/').All(p => p is not ("" or "." or "..")), $"Unsafe path: {relative}");
     public static string Inside(string root, string relative)
     {
-        Require(!string.IsNullOrWhiteSpace(relative) && !relative.Contains('\\') && !relative.Contains(':') && !Path.IsPathRooted(relative) && relative.Split('/').All(p => p is not ("" or "." or "..")), $"Unsafe path: {relative}");
+        SafeRelative(relative);
         var result = Path.GetFullPath(Path.Combine(root, relative));
         Require(Contains(root, result), "Path escapes its root."); NoLinks(result); return result;
     }
-    public static IEnumerable<string> Files(string root)
+    public static IEnumerable<string> Files(string root) => FileEntries(root).Select(f => f.FullName);
+    /// <summary>Every file below a root, in ordinal path order, with the size and write time the enumeration already carries.</summary>
+    public static IEnumerable<FileInfo> FileEntries(string root)
     {
         NoLinks(root); if (!Directory.Exists(root)) yield break;
-        foreach (var entry in Directory.EnumerateFileSystemEntries(root).Order(StringComparer.Ordinal))
+        foreach (var file in FileEntries(new DirectoryInfo(root))) yield return file;
+    }
+    private static IEnumerable<FileInfo> FileEntries(DirectoryInfo directory)
+    {
+        // The enumeration already carries each entry's attributes, so no extra stat per file; the root was checked with its ancestors.
+        foreach (var entry in directory.EnumerateFileSystemInfos().OrderBy(e => e.FullName, StringComparer.Ordinal))
         {
-            NoLinks(entry);
-            if (Directory.Exists(entry)) { foreach (var child in Files(entry)) yield return child; }
-            else yield return entry;
+            Require((entry.Attributes & FileAttributes.ReparsePoint) == 0, $"Linked paths are not supported: {entry.FullName}");
+            if (entry is DirectoryInfo child) { foreach (var file in FileEntries(child)) yield return file; }
+            else if (entry is FileInfo file) yield return file;
         }
     }
     public static void AtomicWrite(string file, byte[] bytes, string? expectedHash = null, bool requireAbsent = false)

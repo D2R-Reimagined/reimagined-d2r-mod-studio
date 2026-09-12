@@ -52,16 +52,19 @@ public partial class MainWindow : Window
         ProjectTree.ItemTemplate = new FuncTreeDataTemplate<ProjectEntry>((entry, _) =>
         {
             var label = new TextBlock { Text = entry.Name, Margin = new(2, 4), TextTrimming = TextTrimming.CharacterEllipsis };
+            var entryMenu = new ContextMenu();
+            entryMenu.Items.Add(CreateOpenLocationItem(entry.Path, entry.Directory));
+            label.ContextMenu = entryMenu;
             if (entry.SchemaPath != null)
             {
                 ToolTip.SetTip(label, "Open table · right-click to edit schema");
                 var editSchema = new MenuItem { Header = "Edit schema…" };
                 editSchema.Click += async (_, _) => { try { await OpenDocumentAsync(entry.SchemaPath); } catch (Exception e) { ShowError(e); } };
-                label.ContextMenu = new ContextMenu { ItemsSource = new[] { editSchema } };
+                entryMenu.Items.Add(editSchema);
             }
             return label;
         }, entry => entry.Children);
-        recoveryTimer.Tick += (_, _) => SaveRecovery(); recoveryTimer.Start();
+        recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start();
         KeyDown += async (_, e) => { if ((e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) && e.Key == Key.S) { await SaveAllAsync(); e.Handled = true; } };
         Closing += async (_, e) =>
@@ -183,7 +186,7 @@ public partial class MainWindow : Window
         var nextProject = await Task.Run(() => ModProject.Open(root));
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose();
-        project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
+        project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; explorerEntries = entries; FilterExplorer(); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
@@ -244,7 +247,24 @@ public partial class MainWindow : Window
         close.Click += async (_, e) => { e.Handled = true; await CloseTabAsync(tab); };
         close.DoubleTapped += (_, e) => e.Handled = true;
         header.Children.Add(close); tab.Header = header;
+        var filePath = (tab.Content as EditorPane)?.Document.FilePath ?? tab.Tag as string;
+        if (filePath != null) header.ContextMenu = new ContextMenu { ItemsSource = new[] { CreateOpenLocationItem(filePath) } };
         ToolTip.SetTip(tab, preview ? "Temporary preview · Double-click this tab to keep it open" : tab.Content is EditorPane p ? p.Document.FilePath : tab.Tag);
+    }
+    private MenuItem CreateOpenLocationItem(string path, bool directory = false)
+    {
+        var item = new MenuItem { Header = "Open File Location" };
+        item.Click += (_, _) =>
+        {
+            try
+            {
+                var folder = directory ? System.IO.Path.GetFullPath(path) : System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path))!;
+                if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("File location is unavailable: " + folder);
+                Process.Start(new ProcessStartInfo { FileName = folder, UseShellExecute = true });
+            }
+            catch (Exception e) { ShowError(e); }
+        };
+        return item;
     }
     private readonly HashSet<TabItem> closingTabs = [];
     private async Task CloseTabAsync(TabItem tab)
@@ -359,7 +379,7 @@ public partial class MainWindow : Window
                 catch (Exception ex) { ShowError(ex); }
             };
             DockPanel.SetDock(rawButton, Dock.Top); binaryPanel.Children.Add(rawButton); binaryPanel.Children.Add(binaryView); binary.Content = binaryPanel;
-            var closeBinary = new MenuItem { Header = "Close preview" }; closeBinary.Click += async (_, _) => await CloseTabAsync(binary); binary.ContextMenu = new ContextMenu { ItemsSource = new[] { closeBinary } };
+            var closeBinary = new MenuItem { Header = "Close preview" }; closeBinary.Click += async (_, _) => await CloseTabAsync(binary); binary.ContextMenu = new ContextMenu { ItemsSource = new[] { CreateOpenLocationItem(file), closeBinary } };
             if (openingProject != project) return null;
             if (loadingTab == null) AddDocumentTab(binary, preview); return null;
         }
@@ -371,10 +391,10 @@ public partial class MainWindow : Window
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
-        var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { reload, close }; tab.ContextMenu = menu;
+        var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { CreateOpenLocationItem(file), reload, close }; tab.ContextMenu = menu;
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
-        document.Changed += () => { if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); };
+        document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); };
         var recoveryFile = RecoveryFile(document);
         if (File.Exists(recoveryFile) && !Program.Arguments.Contains("--smoke"))
         {
@@ -387,7 +407,13 @@ public partial class MainWindow : Window
     }
     private static string Label(Document doc) => (doc.IsDirty ? "● " : "") + (System.IO.Path.GetFileName(doc.FilePath) == "records.json" ? System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(doc.FilePath)) : System.IO.Path.GetFileName(doc.FilePath));
     private string RecoveryFile(Document doc) => Inside(project!.Cache, "recovery/" + Hash(doc.FilePath) + ".json");
-    private void SaveRecovery()
+    private readonly Dictionary<Document, DateTime> lastEdit = [];
+    private static readonly TimeSpan RecoveryIdle = TimeSpan.FromSeconds(2);
+    /// <summary>
+    /// Writes recovery for dirty documents. Recovery serializes the whole table on the UI thread, which is a visible pause on
+    /// large tables, so the periodic timer only takes documents that have been idle for a moment; closing takes everything.
+    /// </summary>
+    private void SaveRecovery(bool idleOnly = false)
     {
         if (project == null) return;
         foreach (var pane in tabs.Select(t => t.Content).OfType<EditorPane>())
@@ -395,6 +421,7 @@ public partial class MainWindow : Window
             var doc = pane.Document;
             if (!doc.IsDirty && recoveredRevision.Remove(doc)) { try { File.Delete(RecoveryFile(doc)); } catch (Exception e) { ShowError(e); } }
             if (!doc.IsDirty || recoveredRevision.GetValueOrDefault(doc, -1) == doc.Revision) continue;
+            if (idleOnly && lastEdit.TryGetValue(doc, out var edited) && DateTime.UtcNow - edited < RecoveryIdle) continue;
             try { doc.Recover(RecoveryFile(doc)); recoveredRevision[doc] = doc.Revision; } catch (Exception e) { ShowError(e); }
         }
     }
@@ -958,8 +985,17 @@ public partial class MainWindow : Window
             Require(lastInput.Text == lastBefore, "Virtualized last field shows stale content.");
             lastInput.Text = lastBefore + " virtualized edit"; await Task.Delay(60);
             Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore + " virtualized edit", "Last virtualized column did not save its edit.");
-            widePane.Document.Undo(); widePane.Refresh(); await Task.Delay(100);
-            Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore, "Virtualized row edit undo failed.");
+            var fieldsBeforeUndo = RowEditorFields.ItemsSource; var refreshesBeforeUndo = rowEditorRefreshCount;
+            widePane.Undo(); await Task.Delay(100);
+            Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore && lastInput.Text == lastBefore, "Virtualized row edit undo failed, or the Row Editor did not pick up the restored value.");
+            Require(ReferenceEquals(fieldsBeforeUndo, RowEditorFields.ItemsSource) && rowEditorRefreshCount == refreshesBeforeUndo, "Undo rebuilt the Row Editor fields instead of refreshing them in place.");
+            // Focusing a Row Editor field brings its cell into the table window and selects it, while the field keeps keyboard focus.
+            widePane.Jump(203, widePane.Document.Table.Columns[0]); await Task.Delay(100);
+            Require(!widePane.VisibleColumns().Contains(widePane.Document.Table.Columns.Length - 1), "The last column should start outside the table window.");
+            lastInput.Focus(); await Task.Delay(120);
+            Require(lastInput.IsFocused && widePane.SelectedColumn == lastField.Column && widePane.SelectedRow == 203 && widePane.VisibleColumns().Contains(widePane.Document.Table.Columns.Length - 1)
+                && widePane.SelectedCells.SequenceEqual([(203, widePane.Document.Table.Columns.Length - 1)]) && widePane.TableGrid.CurrentColumn is { } revealed && widePane.ColumnIndexOf(revealed) == widePane.Document.Table.Columns.Length - 1,
+                $"Focusing a Row Editor field did not reveal its cell: focused {lastInput.IsFocused}, column {widePane.SelectedColumn}, window {string.Join(",", widePane.VisibleColumns().Take(3))}…");
             InspectorTabs.SelectedIndex = 0; var hiddenFields = RowEditorFields.ItemsSource;
             widePane.Jump(204, widePane.SelectedColumn); await Task.Delay(80);
             Require(ReferenceEquals(hiddenFields, RowEditorFields.ItemsSource), "Hidden Row Editor rebuilt its fields.");

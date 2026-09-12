@@ -11,6 +11,19 @@ void Throws(Action action, string name) { try { action(); } catch { count++; Con
 void Write(string file, string text) { Directory.CreateDirectory(Path.GetDirectoryName(file)!); File.WriteAllText(file, text, Utf8); }
 try
 {
+    var layoutFile = Path.Combine(root, "layout.json");
+    var layoutSource = "{\r\n // Game layout\r\n \"fields\": { \"width\": 612, },\r\n \"children\": [],\r\n}\r\n";
+    Write(layoutFile, layoutSource);
+    var layout = new Document(layoutFile);
+    Check(!layout.PendingSource && layout.Diagnostics.Count == 0, "Game JSON accepts comments and trailing commas");
+    layout.Save();
+    Check(File.ReadAllText(layoutFile) == layoutSource, "Game JSON save preserves original source");
+    var editedLayout = layoutSource.Replace("612", "613");
+    layout.SetRaw(editedLayout); layout.Save();
+    Check(File.ReadAllText(layoutFile) == editedLayout && !layout.IsDirty, "Edited game JSON saves without rewriting comments or commas");
+    layout.SetRaw("{ \"fields\": [ }");
+    Throws(layout.Save, "Malformed game JSON still blocks save");
+    Check(File.ReadAllText(layoutFile) == editedLayout, "Malformed game JSON does not replace disk source");
     PreviewTests.Run(root, Check, Throws);
     ItemPreviewTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);

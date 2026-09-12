@@ -107,7 +107,7 @@ public sealed partial class EditorPane : Grid
         Button("Table", () => { document.ApplySource(); Storage.Require(!document.PendingSource, "Fix source syntax before returning to Table."); Source.IsVisible = false; tableHost.IsVisible = document.Table != null; Refresh(); });
         Button("Source", () => { syncing = true; Source.Text = document.Text.TrimStart('\uFEFF'); syncing = false; Source.IsVisible = true; tableHost.IsVisible = false; UpdateNote(); });
         Button("Apply source", () => { document.ApplySource(); Refresh(); });
-        Button("Undo", () => { document.Undo(); Refresh(); }); Button("Redo", () => { document.Redo(); Refresh(); });
+        Button("Undo", Undo); Button("Redo", Redo);
         Button("◀ columns", () => { offset = Math.Max(0, offset - 23); RefreshColumns(); });
         Button("columns ▶", () => { if (offset + 24 < (document.Table?.Columns.Length ?? 0)) offset += 23; RefreshColumns(); });
         Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); RefreshColumns(); });
@@ -135,18 +135,19 @@ public sealed partial class EditorPane : Grid
         Source.TextChanged += (_, _) => { if (!syncing) { try { document.SetRaw((document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "") + Source.Text); } catch (Exception ex) { error(ex); Refresh(); } } };
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
         document.Changed += UpdateNote;
-        document.Changed += () => fittedWidths.Clear();
+        // Fitted widths are recomputed when the table is re-parsed or rows come and go; single cell edits keep them, so an undo does not re-measure 24 columns.
+        document.Changed += () => { if (document.LastChangedRows == null) fittedWidths.Clear(); };
         if (document.Table == null) { Source.IsVisible = true; tableHost.IsVisible = false; }
         if (document.Table == null)
         {
             toolbar.Children.Clear();
             Button("Source", () => { Source.IsVisible = true; Refresh(); });
-            Button("Undo", () => { document.Undo(); Refresh(); }); Button("Redo", () => { document.Redo(); Refresh(); });
+            Button("Undo", Undo); Button("Redo", Redo);
             if (System.IO.Path.GetExtension(document.FilePath).Equals(".json", StringComparison.OrdinalIgnoreCase))
                 Button("Format JSON", () =>
                 {
                     var bom = document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "";
-                    using var json = System.Text.Json.JsonDocument.Parse(document.Text.TrimStart('\uFEFF'));
+                    using var json = System.Text.Json.JsonDocument.Parse(document.Text.TrimStart('\uFEFF'), Document.SourceJsonOptions);
                     var formatted = System.Text.Json.JsonSerializer.Serialize(json.RootElement, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                     if (document.Text.Contains("\r\n")) formatted = formatted.Replace("\r\n", "\n").Replace("\n", "\r\n");
                     document.SetRaw(bom + formatted); document.ApplySource(); Refresh();
@@ -168,8 +169,7 @@ public sealed partial class EditorPane : Grid
             SetRow(markdownHost, 1); Children.Add(markdownHost);
             Button("Source", () => { markdownHost.IsVisible = false; MarkdownPreview.IsVisible = false; Source.IsVisible = true; Refresh(); });
             Button("Preview", ShowMarkdownPreview);
-            Button("Undo", () => { document.Undo(); Refresh(); });
-            Button("Redo", () => { document.Redo(); Refresh(); });
+            Button("Undo", Undo); Button("Redo", Redo);
             Button("Refresh preview", ShowMarkdownPreview);
             toolbar.Children.Add(new TextBlock { Text = "GitHub-style Markdown preview", Margin = new(10, 7) });
         }
@@ -253,8 +253,8 @@ public sealed partial class EditorPane : Grid
             {
                 if (e.Key == Key.V) { await PasteAsync(); e.Handled = true; }
                 if (e.Key == Key.C) { await CopyAsync(); e.Handled = true; }
-                if (e.Key == Key.Z) { Document.Undo(); Refresh(); e.Handled = true; }
-                if (e.Key == Key.Y) { Document.Redo(); Refresh(); e.Handled = true; }
+                if (e.Key == Key.Z) { Undo(); e.Handled = true; }
+                if (e.Key == Key.Y) { Redo(); e.Handled = true; }
             }
             catch (Exception ex) { error(ex); }
         };
@@ -452,10 +452,47 @@ public sealed partial class EditorPane : Grid
             (Source.IsVisible && Document.HasEditLocks ? " · Unlock edits to change Source" : "");
     }
     public Task FilterAsync() { Refresh(); return Task.CompletedTask; }
-    public void RefreshRowValues(int row)
+    public void RefreshRowValues(int row) => RefreshRowValues([row]);
+    public void RefreshRowValues(IEnumerable<int> rows)
     {
+        var wanted = rows as IReadOnlySet<int> ?? rows.ToHashSet();
         foreach (var grid in new[] { TableGrid, FrozenGrid })
-            foreach (var item in (grid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => r.Row == row)) item.RefreshValues();
+            foreach (var item in (grid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => wanted.Contains(r.Row))) item.RefreshValues();
+    }
+    public void Undo() => Replay(Document.Undo);
+    public void Redo() => Replay(Document.Redo);
+    /// <summary>
+    /// Runs a history step and refreshes as little as it needs: a step that only put cell values back updates those rows in
+    /// place, so undoing an edit in a large table feels immediate. Anything that changed the row set, re-parsed the source, or
+    /// touched a column the view is sorted or filtered by rebuilds the view as before.
+    /// </summary>
+    private void Replay(Action step)
+    {
+        var table = Document.Table; int rows = table?.Records.Count ?? -1;
+        step();
+        var changedRows = Document.LastChangedRows; var changedColumns = Document.LastChangedColumns;
+        bool inPlace = table != null && ReferenceEquals(table, Document.Table) && !Document.PendingSource && table.Records.Count == rows && !Source.IsVisible && MarkdownPreview?.IsVisible != true
+            && changedRows != null && changedColumns != null && string.IsNullOrEmpty(filter.Text) && (sortColumn == null || !changedColumns.Contains(sortColumn));
+        if (!inPlace) { Refresh(); return; }
+        RefreshRowValues(changedRows!); QueuePaint(); UpdateNote(); selection(this);
+    }
+    /// <summary>
+    /// Brings a cell on screen and makes it the selected cell without moving keyboard focus, so the Row Editor can show where
+    /// the field it is editing lives in the table. Columns outside the current window scroll the window; filtered-out rows stay put.
+    /// </summary>
+    public void Reveal(int row, string column)
+    {
+        var table = Document.Table; if (table == null || Document.PendingSource || !tableHost.IsVisible || row < 0 || row >= table.Records.Count) return;
+        int index = table.ColumnIndex(column); if (index < 0) return;
+        if (!VisibleColumns().Contains(index)) { offset = index > 0 ? ((index - 1) / 23) * 23 : 0; RefreshColumns(); }
+        var grid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
+        var item = (grid.ItemsSource as IEnumerable<RowView>)?.FirstOrDefault(r => r.Row == row); if (item == null) return;
+        var target = grid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var i) && i == index); if (target == null) return;
+        selectedCells.Clear(); selectedCells.Add((row, index)); cellAnchor = (row, index); selectedRow = row; selectedColumn = column; activeGrid = grid;
+        refreshing = true;
+        try { grid.SelectedItem = item; grid.CurrentColumn = target; grid.ScrollIntoView(item, target); }
+        finally { refreshing = false; }
+        QueuePaint(); selection(this);
     }
     public Task SortAsync(string column) { descending = sortColumn == column && !descending; sortColumn = column; Refresh(); return Task.CompletedTask; }
     public void ToggleFrozenRows()

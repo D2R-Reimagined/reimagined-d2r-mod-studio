@@ -29,6 +29,10 @@ public sealed class Document
     public bool HasEditLocks => LockedRows.Count > 0 || LockedColumns.Count > 0;
     public bool CanUndo => undo.Count > 0;
     public bool CanRedo => redo.Count > 0;
+    /// <summary>Rows touched by the latest change when it only replaced cell values; null after a structural or raw-text change, when views must rebuild.</summary>
+    public IReadOnlyCollection<int>? LastChangedRows { get; private set; }
+    /// <summary>Columns touched by the latest cell-value change (see LastChangedRows).</summary>
+    public IReadOnlyCollection<string>? LastChangedColumns { get; private set; }
     public bool ExternalChange => !File.Exists(FilePath) || Hash(File.ReadAllBytes(FilePath)) != diskHash || (schemaHash != null && (!File.Exists(SchemaFile) || Hash(File.ReadAllBytes(SchemaFile)) != schemaHash));
     private string SchemaFile => Path.Combine(Path.GetDirectoryName(FilePath)!, "schema.json");
     public Document(string file, bool forceRaw = false)
@@ -45,6 +49,7 @@ public sealed class Document
         get { if (modelChanged && Table != null) { raw = IsTsv ? Utf8.GetString(Table.EncodeTsv()) : Json(Table.Records); modelChanged = false; } return raw; }
     }
     public bool IsTsv => FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && Table != null;
+    public static System.Text.Json.JsonDocumentOptions SourceJsonOptions => new() { AllowTrailingCommas = true, CommentHandling = System.Text.Json.JsonCommentHandling.Skip };
     private void Parse()
     {
         Diagnostics = []; Table = null;
@@ -53,7 +58,7 @@ public sealed class Document
         {
             if (schemaHash != null) Table = new((JsonObject)Read(SchemaFile), (JsonArray)(JsonNode.Parse(raw.TrimStart('\uFEFF')) ?? throw new InvalidDataException("Empty JSON.")));
             else if (FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && raw.Contains('\t')) Table = TableData.FromTsv(Utf8.GetBytes(raw), Path.GetFileNameWithoutExtension(FilePath), "global/excel/" + Path.GetFileName(FilePath));
-            else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) JsonNode.Parse(raw.TrimStart('\uFEFF'));
+            else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) JsonNode.Parse(raw.TrimStart('\uFEFF'), documentOptions: SourceJsonOptions);
             if (Table != null) Diagnostics.AddRange(Validated());
             PendingSource = false;
         }
@@ -74,9 +79,9 @@ public sealed class Document
         int suffix = 0; while (suffix < before.Length - start && suffix < text.Length - start && before[^(suffix + 1)] == text[^(suffix + 1)]) suffix++;
         var removed = before.Substring(start, before.Length - start - suffix); var inserted = text.Substring(start, text.Length - start - suffix);
         Record(() => SetRaw(Text.Remove(start, inserted.Length).Insert(start, removed)));
-        raw = text; modelChanged = false; PendingSource = true; Diagnostics = [new(FilePath, "Source changed; apply or validate before table editing.", "Info")]; Notify();
+        raw = text; modelChanged = false; PendingSource = true; Diagnostics = [new(FilePath, "Source changed; apply or validate before table editing.", "Info")]; LastChangedRows = null; LastChangedColumns = null; Notify();
     }
-    public void ApplySource() { if (modelChanged) _ = Text; Parse(); Changed?.Invoke(); }
+    public void ApplySource() { if (modelChanged) _ = Text; Parse(); LastChangedRows = null; LastChangedColumns = null; Changed?.Invoke(); }
     private int editGroupDepth;
     private Dictionary<int, JsonNode>? editGroupRows;
     /// <summary>
@@ -105,13 +110,30 @@ public sealed class Document
             Record(() => RestoreRows(before));
             if (editGroupDepth > 0 && !historyPlayback) editGroupRows = before;
         }
-        modelChanged = true; Diagnostics = Validated(); Notify();
+        CellsChanged(before.Keys, edits.Select(e => e.Column).Distinct(StringComparer.Ordinal).ToArray());
     }
     private List<Diagnostic> Validated()
     {
         var diagnostics = Table!.Validate(FilePath).ToList();
         if (Table!.RowOrderChanged) diagnostics.Add(new(FilePath, TableData.RowOrderAdvice, "Warning"));
         return diagnostics;
+    }
+    /// <summary>
+    /// Finishes a change that replaced cell values in the given rows. A table that was valid before only needs those rows
+    /// rechecked: SetCell keeps identities, slots and the row set, so the table-level checks cannot change. A full pass runs
+    /// again in any error state, so diagnostics never go stale while the table is invalid.
+    /// </summary>
+    private void CellsChanged(IReadOnlyCollection<int> rows, IReadOnlyCollection<string> columns)
+    {
+        modelChanged = true;
+        if (Diagnostics.Any(d => d.Severity == "Error") || Table!.ValidateRows(FilePath, rows).Count > 0) Diagnostics = Validated();
+        LastChangedRows = rows; LastChangedColumns = columns; Notify();
+    }
+    /// <summary>Columns whose values differ between two versions of a record.</summary>
+    private string[] ChangedColumns(JsonNode? before, JsonNode? after)
+    {
+        var key = Table!.IsCatalog ? "translations" : "fields"; var x = before?[key] as JsonObject; var y = after?[key] as JsonObject;
+        return Table.Columns.Where(column => !JsonNode.DeepEquals(x?[column], y?[column])).ToArray();
     }
     /// <summary>Inserts blank rows (optionally pre-filled) at a physical slot. Later rows keep their identities; only their slot numbers move.</summary>
     public void InsertRows(int index, int count = 1, IReadOnlyList<JsonObject?>? fields = null)
@@ -156,12 +178,14 @@ public sealed class Document
         Finish();
     }
     private void Renumber() { for (int i = 0; i < Table!.Records.Count; i++) Table.Records[i]!["order"] = i; }
-    private void Finish() { modelChanged = true; Diagnostics = Validated(); Notify(); }
+    private void Finish() { modelChanged = true; Diagnostics = Validated(); LastChangedRows = null; LastChangedColumns = null; Notify(); }
     private void RestoreRows(Dictionary<int, JsonNode> rows)
     {
         Require(Table != null && !PendingSource, "Apply source before undoing table changes.");
         var reverse = rows.Keys.ToDictionary(i => i, i => Table!.Records[i]!.DeepClone());
-        foreach (var p in rows) Table!.Records[p.Key] = p.Value.DeepClone(); Record(() => RestoreRows(reverse)); modelChanged = true; Diagnostics = Validated(); Notify();
+        var columns = rows.SelectMany(p => ChangedColumns(reverse[p.Key], p.Value)).Distinct(StringComparer.Ordinal).ToArray();
+        foreach (var p in rows) Table!.Records[p.Key] = p.Value.DeepClone(); Record(() => RestoreRows(reverse));
+        CellsChanged(rows.Keys, columns);
     }
     public void Undo()
     {

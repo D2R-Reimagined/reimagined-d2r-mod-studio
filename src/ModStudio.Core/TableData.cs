@@ -10,13 +10,17 @@ public sealed class TableData
     public JsonArray Records { get; }
     public bool IsCatalog => Schema.ContainsKey("category");
     public string[] Columns { get; }
+    private readonly Dictionary<string, int> columnIndex;
     public string Name => Schema.S(IsCatalog ? "category" : "name");
     public TableData(JsonObject schema, JsonArray records)
     {
         Schema = schema; Records = records;
         Columns = IsCatalog ? ["id", "Key", .. ((JsonArray)schema["locales"]!).Select(x => x!.GetValue<string>())] : ((JsonArray)schema["columns"]!).Select(x => x.S("key")).ToArray();
         Require(Columns.Distinct(StringComparer.Ordinal).Count() == Columns.Length, "Duplicate column keys.");
+        columnIndex = new(StringComparer.Ordinal); for (int i = 0; i < Columns.Length; i++) columnIndex[Columns[i]] = i;
     }
+    /// <summary>Position of a column key; -1 when the table has no such column.</summary>
+    public int ColumnIndex(string column) => columnIndex.TryGetValue(column, out var index) ? index : -1;
     private static readonly Regex OriginalId = new("^row-([0-9]{5})$");
     /// <summary>Slot number of an imported row (its sourceId is row-NNNNN below protectedRows); -1 for rows added in Studio.</summary>
     public int OriginalSlot(int row)
@@ -43,9 +47,11 @@ public sealed class TableData
         var value = IsCatalog ? column is "id" or "Key" ? r[column] : (r["translations"] as JsonObject)?[column] : (r["fields"] as JsonObject)?[column];
         return value is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : value?.ToJsonString(Compact) ?? "";
     }
+    /// <summary>Columns whose values SetCell refuses to change: string identities, and the runtime identity columns of a game table.</summary>
+    public bool IsIdentityColumn(string column) => IsCatalog ? column is "id" or "Key" : ((JsonArray?)Schema["identityColumns"] ?? []).Any(x => x!.GetValue<string>() == column);
     public void SetCell(int row, string column, string value)
     {
-        Require(Columns.Contains(column), $"Unknown column: {column}");
+        Require(columnIndex.ContainsKey(column), $"Unknown column: {column}");
         if (IsCatalog)
         {
             Require(column is not ("id" or "Key"), "String identities are protected; use an explicit source migration.");
@@ -54,11 +60,11 @@ public sealed class TableData
         }
         else
         {
-            Require(!((JsonArray?)Schema["identityColumns"] ?? []).Any(x => x!.GetValue<string>() == column), $"Identity column is protected: {column}");
+            Require(!IsIdentityColumn(column), $"Identity column is protected: {column}");
             Require(!value.Any(c => c is '\t' or '\r' or '\n'), "A TSV cell cannot contain tabs or newlines.");
             var fields = (JsonObject)Records[row]!["fields"]!;
             if (value.Length == 0) fields.Remove(column); else fields[column] = value;
-            Records[row]!["columnCount"] = Math.Max(Records[row].I("columnCount"), Array.IndexOf(Columns, column) + 1);
+            Records[row]!["columnCount"] = Math.Max(Records[row].I("columnCount"), columnIndex[column] + 1);
             var ordered = new JsonObject(); foreach (var key in Columns) if (fields.ContainsKey(key)) ordered[key] = fields[key]!.DeepClone();
             Records[row]!["fields"] = ordered;
         }
@@ -74,40 +80,7 @@ public sealed class TableData
             var ids = new HashSet<int>(); var keys = new HashSet<string>(StringComparer.Ordinal); var sourceIds = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < Records.Count; i++)
             {
-                try
-                {
-                    var r = Records[i] ?? throw new InvalidDataException("Null record.");
-                    Require(r.I("order", -1) == i, "Record order must match its physical slot. Do not sort source rows.");
-                    if (IsCatalog)
-                    {
-                        Require(r.I("id", -1) is >= 0 and <= 65535 && ids.Add(r.I("id")), "Invalid or duplicate string ID.");
-                        Require(r.S("Key").Length > 0 && keys.Add(r.S("Key")), "Missing or duplicate string key.");
-                        foreach (var locale in Columns.Skip(2))
-                        {
-                            var full = r["translations"]?[locale]?.GetValue<string>() ?? throw new InvalidDataException($"Missing locale {locale}");
-                            Require(!full.Contains('\0'), "NUL in translation.");
-                            if (r["standardTranslations"]?[locale] is JsonNode compact)
-                            {
-                                Require(r["standardReviewedAgainst"].S(locale) == Hash(full), $"Compact {locale} requires review.");
-                                Require(Placeholders(full).SequenceEqual(Placeholders(compact.GetValue<string>())), $"Compact {locale} changes placeholders.");
-                            }
-                        }
-                        var allowed = Columns.Skip(2).ToHashSet(StringComparer.Ordinal);
-                        foreach (var key in new[] { "translations", "standardTranslations", "standardReviewedAgainst" })
-                            if (r[key] is JsonObject o) foreach (var pair in o) Require(allowed.Contains(pair.Key), $"Unknown locale {pair.Key}");
-                    }
-                    else
-                    {
-                        // Source IDs are stable identities (profile overrides refer to them), not slots: rows can be inserted without renumbering.
-                        Require(r.S("sourceId").Length > 0 && sourceIds.Add(r.S("sourceId")), "Missing or duplicate source ID.");
-                        var width = r.I("columnCount"); Require(width > 0 && width <= Columns.Length, "Invalid row width.");
-                        foreach (var pair in r["fields"]!.AsObject())
-                        {
-                            Require(Columns.Take(width).Contains(pair.Key), $"Unknown/out-of-width column {pair.Key}.");
-                            Require(pair.Value is JsonValue v && v.TryGetValue<string>(out var text) && !text.Any(c => c is '\t' or '\r' or '\n'), $"Invalid cell {pair.Key}; values must be strings.");
-                        }
-                    }
-                }
+                try { ValidateRow(i, ids, keys, sourceIds); }
                 catch (Exception e) { Error(e.Message, i); }
             }
             if (!IsCatalog && errors.Count == 0)
@@ -118,10 +91,7 @@ public sealed class TableData
                 for (int i = 0; i < Records.Count; i++) { var slot = OriginalSlot(i); if (slot < 0) continue; originals[slot] = Records[i]; moved |= slot != i; }
                 var missing = Enumerable.Range(0, originals.Length).Where(i => originals[i] == null).ToArray();
                 if (missing.Length > 0) throw new InvalidDataException($"Original rows were removed: row-{missing[0]:D5}{(missing.Length > 1 ? $" and {missing.Length - 1} more" : "")}. Only rows added in Studio can be deleted.");
-                var identityRows = new JsonArray();
-                foreach (var r in originals)
-                    identityRows.Add(new JsonArray(new[] { r.S("sourceId") }.Concat(identityColumns.Select(k => r!["fields"].S(k))).Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()));
-                if (Schema.ContainsKey("identitySha256")) Require(Hash(identityRows.ToJsonString(Compact)) == Schema.S("identitySha256"), "Protected runtime identities changed.");
+                if (Schema.ContainsKey("identitySha256")) Require(IdentityHash(originals, identityColumns) == Schema.S("identitySha256"), "Protected runtime identities changed.");
                 RowOrderChanged = moved;
                 if (identityColumns.Length > 0)
                 {
@@ -139,6 +109,76 @@ public sealed class TableData
         }
         catch (Exception e) { Error(e.Message); }
         return errors;
+    }
+    /// <summary>
+    /// SHA-256 of the compact JSON array of [sourceId, identity values…] per original row, in original numbering. Written
+    /// straight through Utf8JsonWriter: it is byte-identical to JsonArray.ToJsonString(Compact), which the import used, without
+    /// allocating a JsonNode per row.
+    /// </summary>
+    private static string IdentityHash(JsonNode?[] originals, string[] identityColumns)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer, new() { Encoder = Compact.Encoder }))
+        {
+            writer.WriteStartArray();
+            foreach (var r in originals)
+            {
+                writer.WriteStartArray(); writer.WriteStringValue(r.S("sourceId"));
+                foreach (var k in identityColumns) writer.WriteStringValue(r!["fields"].S(k));
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
+        }
+        return Hash(buffer.WrittenSpan.ToArray());
+    }
+    /// <summary>
+    /// Checks the rows just edited, for a document whose last full validation passed. Cell edits cannot change identities,
+    /// slots or the row set (SetCell protects them), so the table-level checks and the other rows' results still hold.
+    /// </summary>
+    public IReadOnlyList<Diagnostic> ValidateRows(string file, IEnumerable<int> rows)
+    {
+        var errors = new List<Diagnostic>();
+        foreach (var i in rows)
+        {
+            try { Require(i >= 0 && i < Records.Count, "Invalid row."); ValidateRow(i, null, null, null); }
+            catch (Exception e) { errors.Add(new(file, e.Message, "Error", i)); }
+        }
+        return errors;
+    }
+    /// <summary>One record's checks. Uniqueness sets are null when a single row is rechecked after a cell edit; identities cannot change then.</summary>
+    private void ValidateRow(int i, HashSet<int>? ids, HashSet<string>? keys, HashSet<string>? sourceIds)
+    {
+        var r = Records[i] ?? throw new InvalidDataException("Null record.");
+        Require(r.I("order", -1) == i, "Record order must match its physical slot. Do not sort source rows.");
+        if (IsCatalog)
+        {
+            Require(r.I("id", -1) is >= 0 and <= 65535 && (ids?.Add(r.I("id")) ?? true), "Invalid or duplicate string ID.");
+            Require(r.S("Key").Length > 0 && (keys?.Add(r.S("Key")) ?? true), "Missing or duplicate string key.");
+            for (int c = 2; c < Columns.Length; c++)
+            {
+                var locale = Columns[c];
+                var full = r["translations"]?[locale]?.GetValue<string>() ?? throw new InvalidDataException($"Missing locale {locale}");
+                Require(!full.Contains('\0'), "NUL in translation.");
+                if (r["standardTranslations"]?[locale] is JsonNode compact)
+                {
+                    Require(r["standardReviewedAgainst"].S(locale) == Hash(full), $"Compact {locale} requires review.");
+                    Require(Placeholders(full).SequenceEqual(Placeholders(compact.GetValue<string>())), $"Compact {locale} changes placeholders.");
+                }
+            }
+            foreach (var key in new[] { "translations", "standardTranslations", "standardReviewedAgainst" })
+                if (r[key] is JsonObject o) foreach (var pair in o) Require(columnIndex.TryGetValue(pair.Key, out var c) && c >= 2, $"Unknown locale {pair.Key}");
+        }
+        else
+        {
+            // Source IDs are stable identities (profile overrides refer to them), not slots: rows can be inserted without renumbering.
+            Require(r.S("sourceId").Length > 0 && (sourceIds?.Add(r.S("sourceId")) ?? true), "Missing or duplicate source ID.");
+            var width = r.I("columnCount"); Require(width > 0 && width <= Columns.Length, "Invalid row width.");
+            foreach (var pair in r["fields"]!.AsObject())
+            {
+                Require(columnIndex.TryGetValue(pair.Key, out var c) && c < width, $"Unknown/out-of-width column {pair.Key}.");
+                Require(pair.Value is JsonValue v && v.TryGetValue<string>(out var text) && !text.Any(ch => ch is '\t' or '\r' or '\n'), $"Invalid cell {pair.Key}; values must be strings.");
+            }
+        }
     }
     public static string[] Placeholders(string text) => Regex.Matches(text, @"%%|%(?:\d+\$)?[-+#0 ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[hlL]*[diuoxXfFeEgGaAcspn]").Select(m => m.Value).Where(v => v != "%%").ToArray();
     public byte[] EncodeTsv()

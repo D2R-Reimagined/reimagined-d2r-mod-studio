@@ -57,5 +57,23 @@ internal static class RowEditingTests
         File.WriteAllText(Path.Combine(catalogDir, "schema.json"), new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }.ToJsonString());
         File.WriteAllText(Path.Combine(catalogDir, "records.json"), new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }).ToJsonString());
         throws(() => new Document(Path.Combine(catalogDir, "records.json")).InsertRows(1), "String catalogs refuse row insertion with a clear message");
+
+        // Views refresh in place when a change only replaced cell values, and rebuild after anything structural.
+        var original = File.ReadAllText(doc.FilePath); var tracked = new Document(doc.FilePath);
+        tracked.SetCells([(0, "value", "10"), (2, "value", "30")]);
+        check(tracked.LastChangedRows?.Order().SequenceEqual([0, 2]) == true && tracked.LastChangedColumns?.SequenceEqual(["value"]) == true && tracked.Diagnostics.Count == 0, "Cell edits report the rows and columns they touched");
+        tracked.Undo();
+        check(tracked.LastChangedRows?.Order().SequenceEqual([0, 2]) == true && tracked.LastChangedColumns?.SequenceEqual(["value"]) == true, "Undo reports the rows and columns it restored");
+        tracked.InsertRows(1); check(tracked.LastChangedRows == null && tracked.LastChangedColumns == null, "Row insertion reports a structural change");
+        tracked.Undo(); check(tracked.LastChangedRows == null, "Undoing a row insertion reports a structural change");
+        tracked.SetRaw(tracked.Text.Replace("\"value\": \"1\"", "\"value\": \"11\"")); tracked.ApplySource();
+        check(tracked.LastChangedRows == null && tracked.Table!.Cell(0, "value") == "11", "Source edits report a structural change");
+        // A table with an existing error keeps validating fully, so its diagnostics never go stale after a cell edit.
+        var invalid = JsonNode.Parse(Json(tracked.Table!.Records))!.AsArray(); invalid[1]!["order"] = 7;
+        File.WriteAllText(tracked.FilePath, Json(invalid)); var erroneous = new Document(tracked.FilePath);
+        check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1), "Invalid slot numbering is reported on open");
+        erroneous.SetCells([(0, "value", "12")]);
+        check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1) && erroneous.LastChangedRows?.SequenceEqual([0]) == true, "Editing an invalid table keeps its existing diagnostics");
+        File.WriteAllText(tracked.FilePath, original);
     }
 }

@@ -20,6 +20,15 @@ internal static class BuildTests
         Console.WriteLine($"Incremental fixture: cold {cold:F1} ms, unchanged {timer.Elapsed.TotalMilliseconds:F1} ms");
         check(next.Output == first.Output && Directory.GetDirectories(Inside(project.Cache, "builds")).Length == 1, "Build reuses a single current output directory");
         check(log.Last().Contains("0 tables converted, 2 reused, 0 output files written") && File.GetLastWriteTimeUtc(output) == marker, "Unchanged build reuses conversions and does not rewrite output");
+        // Hashes are remembered against size and write time, so an unchanged build reads nothing but directory listings.
+        var fingerprints = Inside(project.Cache, "hashes.json"); var assetOutput = Inside(first.Output, "Incremental.mpq/data/hd/asset.bin");
+        check(File.Exists(fingerprints) && File.ReadAllText(fingerprints).Contains(Inside(project.Root, "data/hd/asset.bin").Replace("\\", "\\\\")), "Build persists file fingerprints for later builds");
+        write(Inside(project.Root, "data/hd/asset.bin"), new string('y', 1024 * 1024)); // same size, new content
+        log.Clear(); next = BuildService.Build(project, "standard", progress: log.Add);
+        check(File.ReadAllText(assetOutput)[0] == 'y' && log.Last().Contains("1 output files written"), "Same-size asset edits are detected and copied");
+        write(Inside(project.Root, "data/hd/asset.bin"), new string('z', 1024 * 1024)); File.SetLastWriteTimeUtc(Inside(project.Root, "data/hd/asset.bin"), DateTime.UtcNow.AddMinutes(-5));
+        next = BuildService.Build(project, "standard");
+        check(File.ReadAllText(assetOutput)[0] == 'z', "A write time older than the cache guard still hashes a file whose stamp changed");
         var records = Inside(project.Root, "source/tables/first/records.json"); var doc = new Document(records); doc.SetCells([(0, "value", "3")]); doc.Save();
         log.Clear(); next = BuildService.Build(project, "standard", progress: log.Add);
         check(log.Last().Contains("1 tables converted, 1 reused, 1 output files written") && File.GetLastWriteTimeUtc(output) == marker, "Single-table edit rebuilds only its changed output");

@@ -51,7 +51,12 @@ public partial class MainWindow
             input.Bind(TextBox.TextProperty, new Binding(nameof(RowEditorField.Value)) { Source = field, Mode = BindingMode.TwoWay });
             // The binding pushes every keystroke; group them so undo restores the value from before the field was focused.
             Document? grouped = null;
-            input.GotFocus += (_, _) => { grouped?.EndEditGroup(); grouped = Active?.Document; grouped?.BeginEditGroup(); };
+            input.GotFocus += (_, _) =>
+            {
+                grouped?.EndEditGroup(); grouped = Active?.Document; grouped?.BeginEditGroup();
+                // Show the field being edited in the table too: scroll to its cell and select it, keeping focus here.
+                if (Active is { } pane && pane == rowEditorPane && rowEditorRow >= 0) pane.Reveal(rowEditorRow, field.Column);
+            };
             input.LostFocus += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
             input.DetachedFromVisualTree += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
             panel.Children.Add(input);
@@ -94,8 +99,15 @@ public partial class MainWindow
             return;
         }
         var locks = string.Join('\n', document.LockedColumns.Order()) + "|" + document.LockedRows.Contains(row);
-        if (rowEditorPane == pane && rowEditorRow == row && rowEditorRevision == document.Revision &&
-            rowEditorTable == table && rowEditorLocks == locks) return;
+        if (rowEditorPane == pane && rowEditorRow == row && rowEditorTable == table && rowEditorLocks == locks)
+        {
+            // Same row, new revision (an undo, a grid edit, a paste): refresh the values in the existing inputs instead of
+            // rebuilding hundreds of fields, which also keeps keyboard focus where the user left it.
+            if (rowEditorRevision == document.Revision) return;
+            rowEditorRevision = document.Revision;
+            foreach (var field in rowEditorAllFields) { var value = table.Cell(row, field.Column); if (field.Value != value) field.Reset(value); }
+            return;
+        }
         rowEditorPane = pane; rowEditorRow = row; rowEditorRevision = document.Revision;
         rowEditorTable = table; rowEditorLocks = locks; rowEditorRefreshCount++;
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";

@@ -1,9 +1,7 @@
 # Reimagined D2R Mod Studio
 
 ### So why the hell does this tool exist?
-Well, there are a few reasons. First off I can't stand the amount of merge conclicts that happen on the game's text files when trying to work in a 
-shared space. It becomes very difficult to view diffs and track changes. Additionally, the game's text files are not easily editable in a text editor, 
-making it difficult to make changes and preview them in-game.
+Well, there are a few reasons. First off I can't stand the amount of merge conclicts that happen on the game's text files when trying to work in a shared space. It becomes very difficult to view diffs and track changes. Having to juggle multiple tools and constantly navigate the windows explorer made me wanna scream as well
 
 ### What were the goals of this project?
 

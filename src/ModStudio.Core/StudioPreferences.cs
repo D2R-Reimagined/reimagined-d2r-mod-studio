@@ -7,6 +7,10 @@ public sealed class StudioPreferences
     public string? LastProject { get; set; }
     public string RowEditorSearch { get; set; } = "";
     public List<string> SettingsIntroduced { get; set; } = [];
+    /// <summary>Where Import mod creates new projects; distinct from the game's mods folder, which only receives deployed builds.</summary>
+    public string? ProjectsFolder { get; set; }
+    public static string DefaultProjectsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "D2R Mod Studio");
+    public string ResolvedProjectsFolder => string.IsNullOrWhiteSpace(ProjectsFolder) ? DefaultProjectsFolder : ProjectsFolder;
     public static string DefaultFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReimaginedD2RModStudio", "preferences.json");
     public static StudioPreferences Load(string file) => File.Exists(file)
         ? JsonSerializer.Deserialize<StudioPreferences>(File.ReadAllText(file)) ?? new()

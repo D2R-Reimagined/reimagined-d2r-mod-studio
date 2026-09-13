@@ -31,7 +31,7 @@ public sealed record ModProject(string Root, string Id, string Name)
             var node = Read(manifest); Require(node.I("schemaVersion") == 1, "Unsupported project version."); ValidateName(node.S("name"));
             return new(root, node.S("id"), node.S("name"));
         }
-        Require(Directory.Exists(Path.Combine(root, "source/tables")) || Directory.Exists(Path.Combine(root, "data")), "Choose a mod project root, or use Import data folder.");
+        Require(Directory.Exists(Path.Combine(root, "source/tables")) || Directory.Exists(Path.Combine(root, "data")), "Choose a mod project root, or use Import mod.");
         var info = Path.Combine(root, "modinfo.json"); var name = File.Exists(info) ? Read(info).S("name", "MyMod") : "MyMod"; ValidateName(name);
         return new(root, Hash(root)[..24], name);
     }

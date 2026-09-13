@@ -130,9 +130,9 @@ public partial class MainWindow : Window
             var legacy = await Task.Run(() => LegacyMigration.Detect(root));
             if (legacy.Any(p => p.SplitRecords) || !Directory.Exists(System.IO.Path.Combine(root, "source/tables")) && legacy.Count > 0)
             {
-                var choice = await ChooseAsync("Legacy project detected", "Migrate to table JSON with recovery/build support? Next, choose to convert this folder with a backup or create a separate copy.", "Migration options…", "Open existing", "Cancel");
-                if (choice == "Migration options…") { await MigrateAsync(root); return; }
-                if (choice != "Open existing") return;
+                var choice = await ChooseAsync("Legacy project detected", "This folder holds native mod data rather than a Studio project. Import it to edit as JSON source with recovery and build support?", "Import mod…", "Open as-is", "Cancel");
+                if (choice == "Import mod…") { await MigrateAsync(root); return; }
+                if (choice != "Open as-is") return;
             }
             await LoadProjectAsync(root);
         }
@@ -140,43 +140,38 @@ public partial class MainWindow : Window
     }
     private async void MigrateClicked(object? sender, RoutedEventArgs e)
     {
-        try { Require(operation == null, "Wait for the current operation."); if (!await MayLeaveAsync()) return; var root = await PickFolderAsync("Select a legacy project, unpacked mod, or data folder"); if (root != null) await MigrateAsync(root); }
+        try { Require(operation == null, "Wait for the current operation."); if (!await MayLeaveAsync()) return; await MigrateAsync(null); }
         catch (Exception ex) { ShowError(ex); }
     }
-    private async Task MigrateAsync(string root)
+    /// <summary>Import mod: one window collects source, name, mode, project folder and deployment target; then the progress window runs the migration.</summary>
+    private async Task MigrateAsync(string? root)
     {
         Require(operation == null, "Wait for the current operation.");
-        var candidates = await Task.Run(() => LegacyMigration.Detect(root)); Require(candidates.Count > 0, "No legacy project detected. Select a native data folder, a project containing data/, an unpacked .mpq mod folder, or individual JSON records.");
-        LegacyProject? candidate = candidates[0];
-        if (candidates.Count > 1)
-        {
-            var dialog = new Window { Title = "Choose the mod to migrate", Width = 750, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var picker = new ComboBox { ItemsSource = candidates, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-            var panel = new StackPanel { Margin = new(20), Spacing = 15 }; panel.Children.Add(picker); var next = new Button { Content = "Continue" }; next.Click += (_, _) => dialog.Close(picker.SelectedItem); panel.Children.Add(next); dialog.Content = panel;
-            candidate = await dialog.ShowDialog<LegacyProject?>(this); if (candidate == null) return;
-        }
-        var mode = await ChooseAsync("Choose migration mode", $"Project folder: {candidate.Root}\nDetected data: {candidate.DataRoot}\n\nCreate a copy leaves this project unchanged. Convert existing replaces this project after verification and keeps the entire original in a sibling backup folder.", "Create a copy", "Convert existing", "Cancel");
-        if (mode is not ("Create a copy" or "Convert existing")) return;
-        var name = await PromptAsync("Migrate project", "Mod name (used for deployment under game/mods/<name>)", candidate.Name); if (name == null) return; ModProject.ValidateName(name);
-        string destination; string? backup = null;
-        if (mode == "Convert existing")
-        {
-            destination = candidate.Root;
-            backup = candidate.Root + ".backup-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        }
-        else
-        {
-            var parent = await PickFolderAsync("Choose the PARENT folder; Studio creates a new " + name + " subfolder here"); if (parent == null) return;
-            destination = System.IO.Path.Combine(parent, name);
-        }
-        if (await ChooseAsync("Review migration", $"Mode: {mode}\nProject root: {candidate.Root}\nData folder: {candidate.DataRoot}\nDestination: {destination}" + (backup == null ? "\n\nOriginal unchanged. Additional project files go under legacy/; Git history and caches are excluded from the copy." : $"\nBackup: {backup}\n\nThe converted project keeps its original path, Git metadata and supporting files. Old .studio/builds caches stay in the backup and can be rebuilt. Do not edit the project in other tools during conversion.") + "\n\nConversion and profile builds are verified before publishing.", "Migrate", "Cancel") != "Migrate") return;
+        var preferences = StudioPreferences.Load(StudioPreferences.DefaultFile);
+        var plan = await new ImportModWindow(preferences.ResolvedProjectsFolder, root).ShowDialog<ImportPlan?>(this); if (plan == null) return;
         operation = new(); RefreshRunControls(); ImportReport? report;
         recoveryTimer.Stop(); if (watcher != null) watcher.EnableRaisingEvents = false;
-        if (backup != null) terminal.Stop();
-        try { report = await new MigrationProgressWindow(candidate, destination, name, operation, Log, backup).ShowDialog<ImportReport?>(this); }
+        if (plan.Backup != null) terminal.Stop();
+        try { report = await new MigrationProgressWindow(plan.Source, plan.Destination, plan.Name, operation, Log, plan.Backup).ShowDialog<ImportReport?>(this); }
         finally { operation.Dispose(); operation = null; recoveryTimer.Start(); if (watcher != null) watcher.EnableRaisingEvents = true; RefreshRunControls(); }
         if (report == null) return;
-        await LoadProjectAsync(report.Project.Root); Log($"Migrated {report.Tables} tables and {report.Catalogs} catalogs. See migration-report.json for verification and preserved files.");
+        if (plan.DeploymentDirectory.Length > 0 || plan.GameDirectory.Length > 0)
+        {
+            // The window already showed and confirmed the game paths, so skip the first-open Run settings introduction.
+            foreach (var profile in report.Project.Profiles)
+            {
+                var settings = RunSettings.Load(report.Project, profile);
+                if (plan.GameDirectory.Length > 0)
+                {
+                    var executables = RunSettings.DetectExecutables(plan.GameDirectory);
+                    settings = settings with { GameDirectory = plan.GameDirectory, Executable = "", LaunchTarget = executables.Contains(settings.LaunchTarget, StringComparer.OrdinalIgnoreCase) || executables.Length == 0 ? settings.LaunchTarget : executables[0] };
+                }
+                if (plan.DeploymentDirectory.Length > 0) settings = settings with { DeploymentDirectory = plan.DeploymentDirectory };
+                settings.Save(report.Project, profile);
+            }
+            if (plan.GameDirectory.Length > 0) preferences.MarkIntroduced(report.Project.Root, StudioPreferences.DefaultFile);
+        }
+        await LoadProjectAsync(report.Project.Root); Log($"Imported {report.Tables} tables and {report.Catalogs} catalogs. See migration-report.json for verification and preserved files.");
         await new QuickStartWindow().ShowDialog(this);
     }
     private async void TutorialClicked(object? sender, RoutedEventArgs e) => await new QuickStartWindow().ShowDialog(this);
@@ -466,30 +461,6 @@ public partial class MainWindow : Window
             Status.Text = "All documents saved."; await Task.CompletedTask; return true;
         }
         catch (Exception e) { SaveRecovery(); ShowError(e); return false; }
-    }
-    private async void ImportClicked(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            Require(operation == null, "Wait for the current operation."); if (!await MayLeaveAsync()) return;
-            var source = await PickFolderAsync("Select the original mod's data folder"); if (source == null) return;
-            var parent = await PickFolderAsync("Select a parent folder for the NEW project"); if (parent == null) return;
-            var name = await PromptAsync("New mod project", "Mod name (letters, digits, underscores or hyphens)", "MyMod"); if (name == null) return;
-            var destination = System.IO.Path.Combine(parent, name);
-            if (await ChooseAsync("Import data folder", $"Create {destination}\nfrom {source}\n\nThe original data remains untouched. TXT tables will be converted and verified before the new project is published.", "Import", "Cancel") != "Import") return;
-            operation = new(); BottomTabs.SelectedIndex = 1;
-            ImportReport report;
-            try { report = await Task.Run(() => ProjectImporter.Import(source, destination, name, operation.Token, Log)); }
-            finally { operation.Dispose(); operation = null; }
-            await LoadProjectAsync(report.Project.Root); Log($"Imported {report.Tables} tables, {report.Catalogs} catalogs and {report.Assets} native assets; {report.VerifiedTables} TXT files verified byte-for-byte.");
-        }
-        catch (Exception ex) { ShowError(ex); }
-    }
-    private async Task<string?> PromptAsync(string title, string label, string initial)
-    {
-        var dialog = new Window { Title = title, Width = 520, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        var box = new TextBox { Text = initial }; var panel = new StackPanel { Margin = new(20), Spacing = 12 }; panel.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap }); panel.Children.Add(box);
-        var accept = new Button { Content = "Continue" }; accept.Click += (_, _) => dialog.Close(box.Text); panel.Children.Add(accept); dialog.Content = panel; return await dialog.ShowDialog<string?>(this);
     }
     private async void SettingsClicked(object? sender, RoutedEventArgs e)
         => await ShowSettingsAsync();

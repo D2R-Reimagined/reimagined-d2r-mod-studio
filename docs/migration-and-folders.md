@@ -1,9 +1,17 @@
-# Migration and folder selection
+# Import mod and folder selection
 
-Select your project root, such as `C:/dev/d2r/d2r-reimagined-mod`. Studio finds native data at that root, in `data/`, or nested below it. It searches up to 12 directory levels, excluding build/dependency/cache folders and directory links. When several data roots exist, select the intended one; Studio does not merge them. The review shows the project root and exact native data path separately.
+**Import mod…** on the toolbar is the single entry point for anything that is not already a Studio project: a mod folder, an unpacked `.mpq` directory, a `data` folder, the game's `mods` folder, or the earlier one-file-per-record JSON format. Opening such a folder with **Open project** offers the same window.
 
-- **Create a copy:** choose a parent directory. Studio creates a new subfolder using the mod name. Additional project files are retained under `legacy/`; Git metadata and caches are excluded.
-- **Convert existing:** the verified conversion replaces the selected project at its existing path. A timestamped sibling backup keeps the entire original. Git metadata and supporting files remain in the converted project. Close other tools that are writing to the repository. Linked directories are rejected. If the final replacement fails, Studio attempts to restore the original root from the backup.
+One window collects every decision, pre-filled where possible:
+
+- **Original mod:** the folder you want to edit. Studio finds native data at that root, in `data/`, or nested below it, searching up to 12 directory levels and excluding build/dependency/cache folders and directory links. When several data roots exist, a dropdown lists them; Studio does not merge them.
+- **Mod name:** suggested from the folder; used for deployment under `mods/<name>`.
+- **Project folder (where you edit):** defaults to `<Documents>/D2R Mod Studio/<name>` (the `ProjectsFolder` preference). This must not be inside the game's `mods` folder: the project holds editable JSON source, not the files the game reads.
+- **Game mods folder (where Studio deploys):** auto-detected from the installed game as `<game>/mods/<name>` and written to Run settings for every profile after import. Leave it empty when no installation is detected and set it later in Run settings.
+- **Mode:** create a new project, or convert in place.
+
+- **Create a new project:** the original mod is left unchanged. Additional project files are retained under `legacy/`; Git metadata and caches are excluded.
+- **Convert in place:** the verified conversion replaces the selected project at its existing path. A timestamped sibling backup keeps the entire original. Git metadata and supporting files remain in the converted project. Close other tools that are writing to the repository. Linked directories are rejected. If the final replacement fails, Studio attempts to restore the original root from the backup.
 
 Both modes verify table conversion and profile builds before publication. Conversion records its backup location in `migration-report.json`. Backup folders are not removed automatically. Studio never updates external scripts to understand the new source format; review project-specific build scripts after migrating.
 

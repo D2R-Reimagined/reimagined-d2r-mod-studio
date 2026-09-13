@@ -89,7 +89,7 @@ public partial class MainWindow
     /// <summary>Selects a file in the tree, expanding its ancestors. Table entries are addressed by records.json or schema.json.</summary>
     private void RevealInExplorer(string? path)
     {
-        if (path == null || project == null) return;
+        if (path == null || project == null) return; path = System.IO.Path.GetFullPath(path);
         if (!string.IsNullOrWhiteSpace(ExplorerSearch.Text)) ExplorerSearch.Text = "";
         List<ProjectEntry>? Find(IEnumerable<ProjectEntry> entries)
         {

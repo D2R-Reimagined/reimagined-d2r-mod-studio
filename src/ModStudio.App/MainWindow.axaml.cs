@@ -49,21 +49,6 @@ public partial class MainWindow : Window
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
         ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshLaunchTargets(); };
-        ProjectTree.ItemTemplate = new FuncTreeDataTemplate<ProjectEntry>((entry, _) =>
-        {
-            var label = new TextBlock { Text = entry.Name, Margin = new(2, 4), TextTrimming = TextTrimming.CharacterEllipsis };
-            var entryMenu = new ContextMenu();
-            entryMenu.Items.Add(CreateOpenLocationItem(entry.Path, entry.Directory));
-            label.ContextMenu = entryMenu;
-            if (entry.SchemaPath != null)
-            {
-                ToolTip.SetTip(label, "Open table · right-click to edit schema");
-                var editSchema = new MenuItem { Header = "Edit schema…" };
-                editSchema.Click += async (_, _) => { try { await OpenDocumentAsync(entry.SchemaPath); } catch (Exception e) { ShowError(e); } };
-                entryMenu.Items.Add(editSchema);
-            }
-            return label;
-        }, entry => entry.Children);
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start();
         KeyDown += async (_, e) => { if ((e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) && e.Key == Key.S) { await SaveAllAsync(); e.Handled = true; } };
@@ -182,9 +167,9 @@ public partial class MainWindow : Window
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose();
         project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
-        Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name + "\n" + project.Root;
+        Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
-        explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; explorerEntries = entries; FilterExplorer(); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
+        explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; SetExplorerEntries(entries); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };
         watcher.Changed += OnExternalChange; watcher.Created += OnExternalChange; watcher.Deleted += OnExternalChange; watcher.Renamed += OnExternalChange;
         RefreshLaunchTargets(); RefreshStatus(); Status.Text = "Project ready. Single-click to preview; double-click to keep a file open.";
@@ -206,6 +191,7 @@ public partial class MainWindow : Window
         if (project == null || !Contains(project.Root, e.FullPath) || Contains(project.Cache, e.FullPath)) return;
         Dispatcher.UIThread.Post(() =>
         {
+            if (e.ChangeType != WatcherChangeTypes.Changed) QueueExplorerRefresh();
             workspaceRevision++; SemanticStatus.Text = "Files changed; run source checks again";
             RefreshItemPreview();
             _ = RefreshSemanticInspectorAsync();
@@ -222,10 +208,6 @@ public partial class MainWindow : Window
             }
         });
     }
-    private async void TreeTapped(object? sender, TappedEventArgs e) => await OpenTreeSelectionAsync(true);
-    private async void TreeDoubleTapped(object? sender, TappedEventArgs e) => await OpenTreeSelectionAsync();
-    private async void TreeKeyDown(object? sender, KeyEventArgs e) { if (e.Key == Key.Enter) { await OpenTreeSelectionAsync(); e.Handled = true; } }
-    private async Task OpenTreeSelectionAsync(bool preview = false) { if (ProjectTree.SelectedItem is ProjectEntry { Directory: false } entry) { try { await OpenDocumentAsync(entry.Path, preview); } catch (Exception e) { ShowError(e); } } }
     private void UpdateTabHeader(TabItem tab)
     {
         bool preview = tab == previewTab;
@@ -624,13 +606,28 @@ public partial class MainWindow : Window
             Require(ExplorerSearchStatus.IsVisible && !((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Any(), "Explorer search did not display the empty state.");
             ClearExplorerSearch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(250);
             Require(ReferenceEquals(unfilteredEntries, ProjectTree.ItemsSource) && !ExplorerSearchStatus.IsVisible && !ClearExplorerSearch.IsVisible, "Clearing search did not restore the original tree.");
+            // Explorer refresh keeps expansion state, reveals a newly created file, and drops deleted entries.
+            {
+                var newFolder = System.IO.Path.Combine(root, "compatibility", "smoke-notes"); var newFile = System.IO.Path.Combine(newFolder, "readme.txt");
+                Directory.CreateDirectory(newFolder); File.WriteAllText(newFile, "smoke");
+                Flatten(explorerEntries).Single(p => p.Name == "source").IsExpanded = true;
+                await RefreshExplorerAsync(newFile);
+                Require(ProjectTree.SelectedItem is ProjectEntry { Name: "readme.txt" }, "Refresh did not select the created file.");
+                Require(Flatten(explorerEntries).Single(p => p.Name == "compatibility").IsExpanded && Flatten(explorerEntries).Single(p => p.Name == "smoke-notes").IsExpanded, "Reveal did not expand the ancestors of the created file.");
+                Require(Flatten(explorerEntries).Single(p => p.Name == "source").IsExpanded, "Refresh lost the expansion state of an unrelated folder.");
+                Directory.Delete(newFolder, true); await RefreshExplorerAsync();
+                Require(!Flatten(explorerEntries).Any(p => p.Name == "smoke-notes"), "Refresh kept a deleted folder.");
+                Flatten(explorerEntries).Single(p => p.Name == "source").IsExpanded = false; FilterExplorer(); await Task.Delay(100);
+                var menu = EntryMenu(Flatten(explorerEntries).Single(p => p.Name == "skills"));
+                Require(menu.OfType<MenuItem>().Select(m => m.Header?.ToString()).Intersect(["Open Table", "Edit Schema…", "New", "Rename…", "Delete…", "Copy Path", "Copy Relative Path", "Open File Location"]).Count() == 8, "Table context menu is missing actions.");
+            }
             var projectEntries = (IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!;
             var sourceEntry = projectEntries.Single(p => p.Name == "source"); var tableEntries = sourceEntry.Children.Single(p => p.Name == "tables").Children;
             Require(tableEntries.Where(p => p.SchemaPath != null).All(p => !p.Directory && p.Children.All(c => c.Name is not ("records.json" or "schema.json"))), "Schema/records are not folded into table nodes.");
             await Task.Delay(100);
             var folder = ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().First(t => t.DataContext is ProjectEntry p && p.Name == "source");
             var toggle = folder.GetVisualDescendants().OfType<ToggleButton>().First();
-            Require(toggle.Bounds.Width >= 32 && toggle.Bounds.Height >= 32, "Folder expander target is too small.");
+            Require(toggle.Bounds.Width >= 20 && toggle.Bounds.Height >= 22, "Folder expander target is too small.");
             var click = toggle.TranslatePoint(new Point(3, toggle.Bounds.Height / 2), this)!.Value;
             this.MouseDown(click, MouseButton.Left, RawInputModifiers.None); this.MouseUp(click, MouseButton.Left, RawInputModifiers.None);
             Require(folder.IsExpanded, "Clicking the expanded chevron hit area failed.");

@@ -1,15 +1,18 @@
+using System.ComponentModel;
 using ModStudio.Core;
 
 namespace ModStudio.App;
 
-public sealed class ProjectEntry(string name, string path, bool directory, string? schemaPath = null)
+public sealed class ProjectEntry(string name, string path, bool directory, string? schemaPath = null) : INotifyPropertyChanged
 {
+    private bool isExpanded;
+    public event PropertyChangedEventHandler? PropertyChanged;
     public string Name { get; } = name;
     public string Path { get; } = path;
     public bool Directory { get; } = directory;
     public string? SchemaPath { get; } = schemaPath;
     public List<ProjectEntry> Children { get; } = [];
-    public bool IsExpanded { get; set; }
+    public bool IsExpanded { get => isExpanded; set { if (isExpanded == value) return; isExpanded = value; PropertyChanged?.Invoke(this, new(nameof(IsExpanded))); } }
 
     public static List<ProjectEntry> Filter(IEnumerable<ProjectEntry> entries, string query)
     {

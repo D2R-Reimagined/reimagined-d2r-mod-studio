@@ -14,15 +14,34 @@
    </DockPanel>
   </Border>
   <Grid Grid.Row="1" ColumnDefinitions="240,5,*,5,270">
-   <Grid RowDefinitions="Auto,Auto,Auto,*" Background="#242324">
-    <TextBlock x:Name="ProjectLabel" Text="No project open" Margin="14" Classes="muted" TextWrapping="Wrap" />
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,8">
-     <TextBox x:Name="ExplorerSearch" PlaceholderText="Find files…" ToolTip.Tip="Filter file names and relative paths. Escape clears the search." />
-     <Button x:Name="ClearExplorerSearch" Grid.Column="1" Content="×" ToolTip.Tip="Clear file search" IsVisible="False" Padding="8,4" />
+   <Grid RowDefinitions="Auto,Auto,Auto,*" Background="#1D1E1F">
+    <Grid ColumnDefinitions="*,Auto" Margin="12,8,6,4">
+     <StackPanel VerticalAlignment="Center" Spacing="1">
+      <TextBlock Text="PROJECT" FontSize="10" FontWeight="SemiBold" Foreground="#8E8578" />
+      <TextBlock x:Name="ProjectLabel" Text="No project open" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+     </StackPanel>
+     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+      <Button x:Name="RevealActiveButton" Classes="explorerTool" ToolTip.Tip="Select the active file in the tree" />
+      <Button x:Name="CollapseAllButton" Classes="explorerTool" ToolTip.Tip="Collapse all folders" />
+      <Button x:Name="RefreshExplorerButton" Classes="explorerTool" ToolTip.Tip="Refresh the file tree" />
+     </StackPanel>
+    </Grid>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,6">
+     <TextBox x:Name="ExplorerSearch" PlaceholderText="Find files…" MinHeight="28" FontSize="12" ToolTip.Tip="Filter file names and relative paths. Escape clears the search." />
+     <Button x:Name="ClearExplorerSearch" Grid.Column="1" Content="×" ToolTip.Tip="Clear file search" IsVisible="False" Padding="8,2" />
     </Grid>
     <TextBlock x:Name="ExplorerSearchStatus" Grid.Row="2" IsVisible="False" Margin="14,0,14,8" Classes="muted" Text="No matching files" />
-    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown">
-     <TreeView.Styles><Style Selector="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" /></Style></TreeView.Styles>
+    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" Background="Transparent" Padding="4,0,0,8">
+     <TreeView.Styles>
+      <Style Selector="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" /><Setter Property="MinHeight" Value="24" /><Setter Property="Padding" Value="0" /></Style>
+      <Style Selector="TreeViewItem /template/ Border#PART_LayoutRoot"><Setter Property="MinHeight" Value="24" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Margin" Value="0,0,6,0" /></Style>
+      <Style Selector="TreeViewItem:pointerover /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#2A2B2D" /></Style>
+      <Style Selector="TreeViewItem:selected /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#3A3326" /></Style>
+      <Style Selector="TreeViewItem:selected:pointerover /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#43392A" /></Style>
+      <Style Selector="TreeViewItem /template/ ToggleButton"><Setter Property="Width" Value="22" /><Setter Property="Height" Value="24" /><Setter Property="MinWidth" Value="22" /><Setter Property="MinHeight" Value="24" /><Setter Property="Margin" Value="0" /></Style>
+      <Style Selector="TreeViewItem /template/ ToggleButton /template/ Border"><Setter Property="MinWidth" Value="22" /><Setter Property="MinHeight" Value="24" /></Style>
+      <Style Selector="TreeViewItem /template/ ToggleButton /template/ Path"><Setter Property="Width" Value="9" /><Setter Property="Height" Value="9" /><Setter Property="Fill" Value="#8E8578" /></Style>
+     </TreeView.Styles>
     </TreeView>
    </Grid>
    <GridSplitter Grid.Column="1" ResizeDirection="Columns" />

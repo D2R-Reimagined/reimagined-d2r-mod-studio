@@ -77,10 +77,10 @@ public sealed class TableData
         {
             Require(Schema.I("schemaVersion") == 1, "Unsupported schema version.");
             Require(Records.Count >= Schema.I("protectedRows"), "Original row slots cannot be removed.");
-            var ids = new HashSet<int>(); var keys = new HashSet<string>(StringComparer.Ordinal); var sourceIds = new HashSet<string>(StringComparer.Ordinal);
+            var ids = new HashSet<int>(); var sourceIds = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < Records.Count; i++)
             {
-                try { ValidateRow(i, ids, keys, sourceIds); }
+                try { ValidateRow(i, ids, sourceIds); }
                 catch (Exception e) { Error(e.Message, i); }
             }
             if (!IsCatalog && errors.Count == 0)
@@ -140,20 +140,22 @@ public sealed class TableData
         var errors = new List<Diagnostic>();
         foreach (var i in rows)
         {
-            try { Require(i >= 0 && i < Records.Count, "Invalid row."); ValidateRow(i, null, null, null); }
+            try { Require(i >= 0 && i < Records.Count, "Invalid row."); ValidateRow(i, null, null); }
             catch (Exception e) { errors.Add(new(file, e.Message, "Error", i)); }
         }
         return errors;
     }
     /// <summary>One record's checks. Uniqueness sets are null when a single row is rechecked after a cell edit; identities cannot change then.</summary>
-    private void ValidateRow(int i, HashSet<int>? ids, HashSet<string>? keys, HashSet<string>? sourceIds)
+    private void ValidateRow(int i, HashSet<int>? ids, HashSet<string>? sourceIds)
     {
         var r = Records[i] ?? throw new InvalidDataException("Null record.");
         Require(r.I("order", -1) == i, "Record order must match its physical slot. Do not sort source rows.");
         if (IsCatalog)
         {
-            Require(r.I("id", -1) is >= 0 and <= 65535 && (ids?.Add(r.I("id")) ?? true), "Invalid or duplicate string ID.");
-            Require(r.S("Key").Length > 0 && (keys?.Add(r.S("Key")) ?? true), "Missing or duplicate string key.");
+            // The shipped game data has IDs above 65535 (commands.json) and repeated keys within one file (item-nameaffixes.json
+            // reuses "Jade", "of Luck"…): both must import losslessly. Only a repeated ID inside one catalog is rejected.
+            Require(r.I("id", -1) >= 0 && (ids?.Add(r.I("id")) ?? true), "Invalid or duplicate string ID.");
+            Require(r.S("Key").Length > 0, "Missing string key.");
             for (int c = 2; c < Columns.Length; c++)
             {
                 var locale = Columns[c];

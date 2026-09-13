@@ -52,7 +52,7 @@ public static class BuildService
             var modInfo = File.Exists(modInfoPath) ? Read(modInfoPath) : new JsonObject { ["name"] = project.Name, ["version"] = "1.0.0", ["savepath"] = project.Name + "/" };
             var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>()))).ToArray();
             var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + project.Name + profile + Json(settings) + string.Join("", rules.Select(Json)));
-            var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>(); var stringIds = new HashSet<int>();
+            var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>();
             void Emit(string relative, byte[] bytes)
             {
                 Require(generated.Add(relative), $"Duplicate generated target: {relative}"); var target = Inside(output, relative); if (BuildCache.WriteChanged(target, bytes)) written++;
@@ -72,7 +72,6 @@ public static class BuildService
                         if (previous.TryGetValue(cacheId, out var saved) && saved.Key == cacheKey && saved.Files.All(f => File.Exists(Inside(output, f.Path)) && BuildCache.FileHash(Inside(output, f.Path)) == f.Sha256))
                         {
                             foreach (var savedFile in saved.Files) Require(generated.Add(savedFile.Path), "Duplicate generated target: " + savedFile.Path);
-                            foreach (var stringId in saved.StringIds) Require(stringIds.Add(stringId), $"Duplicate global string ID {stringId}");
                             if (kind == "tables") tableNames.Add(saved.Name);
                             cache[cacheId] = saved; reused++; continue;
                         }
@@ -81,7 +80,7 @@ public static class BuildService
                         progress?.Invoke($"Checking {Path.GetFileName(dir)}…"); var table = TableData.Load(file); var issues = table.Validate(original); diagnostics.AddRange(issues); if (issues.Count > 0) continue;
                         if (kind == "strings")
                         {
-                            foreach (var row in table.Records) Require(stringIds.Add(row.I("id")), $"Duplicate global string ID {row.I("id")}");
+                            // String IDs are not unique across catalogs in the shipped game: chinese-overlay.json repeats IDs from item-names, skills and others, and skills/ui share 27956.
                             var target = table.Schema.S("target"); Require(target.StartsWith("local/lng/strings/", StringComparison.OrdinalIgnoreCase) && target.EndsWith(".json", StringComparison.OrdinalIgnoreCase), "Invalid string output target.");
                             Emit(dataPrefix + target, table.EncodeCatalog(settings.S("stringMode") == "standard"));
                         }

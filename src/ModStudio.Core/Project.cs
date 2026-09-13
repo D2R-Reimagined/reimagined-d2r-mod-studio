@@ -58,14 +58,20 @@ public static class ProjectImporter
         var stage = destination + ".import-" + Guid.NewGuid().ToString("N"); Directory.CreateDirectory(stage);
         int assets = 0, catalogs = 0, verified = 0; var sourceHashes = new Dictionary<string, string>();
         var tables = new Dictionary<string, TableData>(StringComparer.Ordinal); var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // A full game extract is ~150,000 files / 40 GB. Assets are copied as streams and never hashed; the consistency check at
+        // the end compares the enumeration's size and write time instead of reading everything a second time.
+        var seen = new Dictionary<string, (long Length, long Written)>(StringComparer.Ordinal);
         try
         {
-            foreach (var file in Files(dataFolder))
+            progress?.Invoke("Scanning " + dataFolder + "…");
+            var entries = FileEntries(dataFolder).ToList(); int done = 0;
+            foreach (var entry in entries)
             {
-                token.ThrowIfCancellationRequested(); var relative = Relative(dataFolder, file); progress?.Invoke(relative);
-                var bytes = File.ReadAllBytes(file); sourceHashes[file] = Hash(bytes);
+                token.ThrowIfCancellationRequested(); var file = entry.FullName; var relative = Relative(dataFolder, file); seen[file] = (entry.Length, entry.LastWriteTimeUtc.Ticks);
+                if (++done % 500 == 0 || done == entries.Count) progress?.Invoke($"Importing {done:N0} / {entries.Count:N0} files… {relative}");
                 if (Regex.IsMatch(relative, @"^global/excel/(?:base/)?[^/]+\.txt$", RegexOptions.IgnoreCase))
                 {
+                    var bytes = File.ReadAllBytes(file); sourceHashes[file] = Hash(bytes); progress?.Invoke(relative);
                     var stem = Regex.Replace(Path.GetFileNameWithoutExtension(relative).ToLowerInvariant(), "[^a-z0-9-]", "-");
                     var key = stem + ":" + Hash(bytes);
                     if (!tables.TryGetValue(key, out var table))
@@ -79,18 +85,22 @@ public static class ProjectImporter
                         if (!relative.Contains("/base/", StringComparison.OrdinalIgnoreCase)) table.Schema["name"] = stem;
                     }
                     Require(table.EncodeTsv().SequenceEqual(bytes), $"Lossy conversion: {relative}"); verified++;
+                    continue;
                 }
-                else if (relative.StartsWith("local/lng/strings/", StringComparison.OrdinalIgnoreCase) && relative.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && TryCatalog(bytes, Path.GetFileNameWithoutExtension(relative), relative) is { } catalog)
+                if (relative.StartsWith("local/lng/strings/", StringComparison.OrdinalIgnoreCase) && relative.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
                 {
-                    Require(names.Add("catalog:" + catalog.Name), $"Duplicate catalog name: {catalog.Name}");
-                    WriteJson(Inside(stage, $"source/strings/{catalog.Name}/schema.json"), catalog.Schema);
-                    WriteJson(Inside(stage, $"source/strings/{catalog.Name}/records.json"), catalog.Records); catalogs++;
+                    var bytes = File.ReadAllBytes(file); sourceHashes[file] = Hash(bytes); progress?.Invoke(relative);
+                    if (TryCatalog(bytes, Path.GetFileNameWithoutExtension(relative), relative) is { } catalog)
+                    {
+                        Require(names.Add("catalog:" + catalog.Name), $"Duplicate catalog name: {catalog.Name}");
+                        WriteJson(Inside(stage, $"source/strings/{catalog.Name}/schema.json"), catalog.Schema);
+                        WriteJson(Inside(stage, $"source/strings/{catalog.Name}/records.json"), catalog.Records); catalogs++;
+                        continue;
+                    }
                 }
-                else
-                {
-                    var target = Inside(stage, "data/" + relative); Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.WriteAllBytes(target, bytes); assets++;
-                }
+                var target = Inside(stage, "data/" + relative); Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(file, target); assets++;
             }
+            progress?.Invoke("Writing project files…");
             foreach (var table in tables.Values)
             {
                 Require(names.Add(table.Name), $"Duplicate table name: {table.Name}");
@@ -100,11 +110,14 @@ public static class ProjectImporter
             WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
             WriteJson(Inside(stage, "modinfo.json"), new JsonObject { ["name"] = name, ["version"] = "1.0.0", ["savepath"] = name + "/" });
             foreach (var profile in new[] { "standard", "d2rl" }) WriteJson(Inside(stage, $"compatibility/{profile}/profile.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full", ["tableOverrides"] = new JsonArray(), ["assetOverrides"] = new JsonArray() });
-            WriteJson(Inside(stage, "import-report.json"), new JsonObject { ["schemaVersion"] = 1, ["verifiedTables"] = verified, ["files"] = new JsonArray(sourceHashes.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(dataFolder, p.Key), ["sha256"] = p.Value }).ToArray()) });
+            WriteJson(Inside(stage, "import-report.json"), new JsonObject { ["schemaVersion"] = 1, ["verifiedTables"] = verified, ["assets"] = assets, ["files"] = new JsonArray(sourceHashes.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(dataFolder, p.Key), ["sha256"] = p.Value }).ToArray()) });
             File.WriteAllText(Inside(stage, ".gitignore"), ".studio/\nbuild/\n*.bak\n");
             File.WriteAllText(Inside(stage, ".gitattributes"), "source/**/*.json text eol=lf\n");
-            token.ThrowIfCancellationRequested();
-            Require(Files(dataFolder).Count() == sourceHashes.Count && sourceHashes.All(p => File.Exists(p.Key) && Hash(File.ReadAllBytes(p.Key)) == p.Value), "Original data changed during import. Retry from a consistent copy.");
+            token.ThrowIfCancellationRequested(); progress?.Invoke("Verifying the original data did not change…");
+            int recounted = 0;
+            foreach (var entry in FileEntries(dataFolder)) { recounted++; Require(seen.TryGetValue(entry.FullName, out var stamp) && stamp == (entry.Length, entry.LastWriteTimeUtc.Ticks), "Original data changed during import. Retry from a consistent copy."); }
+            Require(recounted == seen.Count, "Original data changed during import. Retry from a consistent copy.");
+            progress?.Invoke("Moving the project into place…");
             if (Directory.Exists(destination)) Directory.Delete(destination); Directory.Move(stage, destination);
             return new(ModProject.Open(destination), tables.Count, catalogs, assets, verified);
         }

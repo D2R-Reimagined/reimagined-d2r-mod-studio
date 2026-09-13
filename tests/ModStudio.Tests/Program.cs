@@ -59,8 +59,10 @@ try
     Write(Path.Combine(native, "global/excel/different.txt"), "name\nMain"); Write(Path.Combine(native, "global/excel/base/different.txt"), "name\nBase");
     Write(Path.Combine(native, "global/dataversionbuild.txt"), "93847"); Write(Path.Combine(native, "hd/native.bin"), "unchanged");
     Write(Path.Combine(native, "local/lng/strings/example.json"), "[{\"id\":100,\"Key\":\"Example\",\"enUS\":\"Hello %d\",\"frFR\":\"Salut %d\"}]");
+    // The shipped game repeats IDs across catalogs (chinese-overlay.json), repeats keys within one, and uses IDs above 65535 (commands.json).
+    Write(Path.Combine(native, "local/lng/strings/overlay.json"), "[{\"id\":100,\"Key\":\"Jade\",\"enUS\":\"a\",\"frFR\":\"a\"},{\"id\":251780,\"Key\":\"Jade\",\"enUS\":\"b\",\"frFR\":\"b\"}]");
     var report = ProjectImporter.Import(native, target, "TestMod"); var project = report.Project;
-    Check(report.Tables == 3 && report.Catalogs == 1 && report.VerifiedTables == 4, "Import shares only identical banks and recognizes catalogs");
+    Check(report.Tables == 3 && report.Catalogs == 2 && report.VerifiedTables == 4, "Import shares only identical banks and recognizes catalogs, including vanilla duplicate keys and large IDs");
     Check(File.ReadAllBytes(Path.Combine(native, "global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Original source never changed");
     Throws(() => ProjectImporter.Import(native, target, "TestMod"), "Import rejects occupied destinations");
     Throws(() => ProjectImporter.Import(native, Path.Combine(native, "nested"), "TestMod"), "Import rejects overlapping paths");
@@ -84,6 +86,7 @@ try
     var build = BuildService.Build(project, "standard");
     Check(File.ReadAllBytes(Path.Combine(build.Output, "TestMod.mpq/data/global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Portable compiler preserves original table bytes");
     Check(File.Exists(Path.Combine(build.Output, "TestMod.mpq/data/hd/native.bin")), "Native assets included");
+    Check(File.ReadAllText(Path.Combine(build.Output, "TestMod.mpq/data/local/lng/strings/overlay.json")).Contains("251780"), "Catalogs sharing IDs with other catalogs still build");
     var d2rl = BuildService.Build(project, "d2rl"); Check(build.Files.Select(f => f.Sha256).SequenceEqual(d2rl.Files.Select(f => f.Sha256)), "Profiles match without overrides");
     var catalogFile = Path.Combine(target, "source/strings/example/records.json"); var catalog = TableData.Load(catalogFile);
     var catalogRow = catalog.Records[0]!;

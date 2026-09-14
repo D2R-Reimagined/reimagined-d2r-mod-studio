@@ -39,7 +39,7 @@ public sealed partial class EditorPane
     }
     private bool IsEditableCell((int Row, int Col) cell) => Document.Table is { } table && cell.Row >= 0 && cell.Row < table.Records.Count &&
         cell.Col >= 0 && cell.Col < table.Columns.Length && !Document.LockedRows.Contains(cell.Row) &&
-        !Document.LockedColumns.Contains(table.Columns[cell.Col]) && !(table.IsCatalog && cell.Col < 2);
+        !Document.LockedColumns.Contains(table.Columns[cell.Col]) && !(table.IsCatalog && cell.Col < 2 && table.IsOriginalRow(cell.Row));
     private bool DeferCellEdit(int row, int col) => editingCell != null && editTargets.Length > 1 && editTargets.Contains((row, col));
     private string? PreviewCellValue(int row, int col) => DeferCellEdit(row, col) && IsEditableCell((row, col)) ? liveValue : null;
     private void LiveEditorChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
@@ -270,7 +270,7 @@ public sealed partial class EditorPane
     {
         var table = Document.Table!;
         var edits = cells.Where(c => c != except && c.Row >= 0 && c.Row < table.Records.Count && !Document.LockedRows.Contains(c.Row) && !Document.LockedColumns.Contains(table.Columns[c.Col]))
-            .Where(c => !(table.IsCatalog && c.Col < 2)).Select(c => (c.Row, table.Columns[c.Col], value)).ToArray();
+            .Where(c => !(table.IsCatalog && c.Col < 2 && table.IsOriginalRow(c.Row))).Select(c => (c.Row, table.Columns[c.Col], value)).ToArray();
         if (edits.Length == 0) return;
         Document.SetCells(edits);
         foreach (var row in edits.Select(e => e.Row).Distinct()) RefreshRowValues(row);

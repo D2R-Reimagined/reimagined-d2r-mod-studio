@@ -29,14 +29,21 @@ public sealed class TableData
         var match = OriginalId.Match(Records[row].S("sourceId"));
         return match.Success && int.Parse(match.Groups[1].Value) < Schema.I("protectedRows") ? int.Parse(match.Groups[1].Value) : -1;
     }
-    public bool IsOriginalRow(int row) => OriginalSlot(row) >= 0;
+    /// <summary>Imported rows: table rows with a slot identity, and string entries without a Studio sourceId. Their identities and slots are protected.</summary>
+    public bool IsOriginalRow(int row) => IsCatalog ? row >= 0 && row < Records.Count && Records[row].S("sourceId").Length == 0 : OriginalSlot(row) >= 0;
     /// <summary>Set by Validate when rows were inserted before imported rows. Advisory only: it matters for tables where the row number is the game ID.</summary>
     public bool RowOrderChanged { get; private set; }
     public const string RowOrderAdvice = "Rows were inserted before original rows. In tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) this shifts existing IDs; add rows at the bottom instead if that matters.";
     /// <summary>A blank table row with a fresh identity. IDs are random so rows added on different branches never collide; the physical slot is written by the caller.</summary>
     public JsonObject NewRecord(JsonObject? fields = null)
     {
-        Require(!IsCatalog, "Adding string entries is not supported yet; add them in Source view.");
+        if (IsCatalog)
+        {
+            // A new string entry gets the next free ID and an empty key/translations; Studio-added entries carry a sourceId so their id and Key stay editable.
+            var translations = new JsonObject(); foreach (var locale in Columns.Skip(2)) translations[locale] = fields?[locale] is JsonValue t && t.TryGetValue<string>(out var text) ? text : "";
+            int nextId = Records.Count == 0 ? 0 : Records.Max(r => r.I("id", -1)) + 1;
+            return new JsonObject { ["sourceId"] = "str-" + Guid.NewGuid().ToString("N")[..8], ["order"] = 0, ["id"] = nextId, ["Key"] = fields.S("Key"), ["translations"] = translations };
+        }
         var ordered = new JsonObject();
         foreach (var key in Columns) if (fields?[key] is JsonValue v && v.TryGetValue<string>(out var text) && text.Length > 0) ordered[key] = text;
         return new JsonObject { ["sourceId"] = "row-" + Guid.NewGuid().ToString("N")[..8], ["order"] = 0, ["columnCount"] = Columns.Length, ["fields"] = ordered };
@@ -54,9 +61,14 @@ public sealed class TableData
         Require(columnIndex.ContainsKey(column), $"Unknown column: {column}");
         if (IsCatalog)
         {
-            Require(column is not ("id" or "Key"), "String identities are protected; use an explicit source migration.");
             Require(!value.Contains('\0'), "Translations cannot contain NUL.");
-            Records[row]!["translations"]![column] = value;
+            if (column is "id" or "Key")
+            {
+                Require(!IsOriginalRow(row), "String identities are protected; use an explicit source migration.");
+                if (column == "id") { Require(int.TryParse(value, out var id) && id >= 0, "String IDs are non-negative integers."); Records[row]!["id"] = id; }
+                else Records[row]!["Key"] = value;
+            }
+            else Records[row]!["translations"]![column] = value;
         }
         else
         {
@@ -149,7 +161,6 @@ public sealed class TableData
     private void ValidateRow(int i, HashSet<int>? ids, HashSet<string>? sourceIds)
     {
         var r = Records[i] ?? throw new InvalidDataException("Null record.");
-        Require(r.I("order", -1) == i, "Record order must match its physical slot. Do not sort source rows.");
         if (IsCatalog)
         {
             // The shipped game data has IDs above 65535 (commands.json) and repeated keys within one file (item-nameaffixes.json
@@ -243,6 +254,19 @@ public sealed class TableData
     /// <summary>The document form; the caller owns the copies, so an in-memory table stays attached to its own file root.</summary>
     public JsonObject ToFile() => new() { ["schema"] = Schema.DeepClone(), ["records"] = Records.DeepClone() };
     public static void Write(string file, TableData table) => WriteJson(file, table.ToFile());
-    public static TableData FromFile(JsonNode node, string file) { Require(IsTableFile(node), "Not a table file: " + file); return new((JsonObject)node["schema"]!, (JsonArray)node["records"]!); }
+    /// <summary>
+    /// Loads a table file. Array position is the physical slot; "order" is only a convenience for readers and is rewritten to
+    /// match, so entries inserted or removed by hand in Source view (or an external editor) load cleanly. Returns whether any
+    /// slot number was corrected, so the caller can treat the model as changed.
+    /// </summary>
+    public static TableData FromFile(JsonNode node, string file, out bool renumbered)
+    {
+        Require(IsTableFile(node), "Not a table file: " + file);
+        var records = (JsonArray)node["records"]!; renumbered = false;
+        for (int i = 0; i < records.Count; i++)
+            if (records[i] is JsonObject r && r.I("order", -1) != i) { r["order"] = i; renumbered = true; }
+        return new((JsonObject)node["schema"]!, records);
+    }
+    public static TableData FromFile(JsonNode node, string file) => FromFile(node, file, out _);
     public static TableData Load(string file) => FromFile(Read(file), file);
 }

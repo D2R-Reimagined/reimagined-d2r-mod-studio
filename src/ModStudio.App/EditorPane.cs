@@ -266,8 +266,8 @@ public sealed partial class EditorPane : Grid
         var rows = SelectedRowsForCommands();
         string noun = rows.Length == 1 ? "row" : $"{rows.Length} rows";
         int cellCount = selectedCells.Count(c => c.Row >= 0);
-        bool addable = !Document.Table!.IsCatalog && !Document.PendingSource;
-        bool deletable = addable && rows.Length > 0 && rows.All(r => !Document.Table.IsOriginalRow(r) && !Document.LockedRows.Contains(r));
+        var table = Document.Table!; bool addable = !Document.PendingSource;
+        bool deletable = addable && rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r) && !Document.LockedRows.Contains(r));
         bool frozen = rows.All(frozenRows.Contains);
         bool locked = rows.All(Document.LockedRows.Contains);
         MenuItem Item(string label, Action action, bool enabled = true)
@@ -285,11 +285,11 @@ public sealed partial class EditorPane : Grid
         var clear = new MenuItem { Header = cellCount > 1 ? $"Clear {cellCount} cells" : "Clear cell", IsEnabled = cellCount > 0 && !Document.PendingSource };
         clear.Click += (_, _) => { try { activeGrid = grid; ApplyToSelection("", null); } catch (Exception ex) { error(ex); } };
         int rowsToAdd = Math.Max(1, rows.Length); string added = rowsToAdd == 1 ? "row" : $"{rowsToAdd} rows";
-        int above = rows.Length > 0 ? rows.Min() : Document.Table.Records.Count, below = rows.Length > 0 ? rows.Max() + 1 : Document.Table.Records.Count;
+        int above = rows.Length > 0 ? rows.Min() : table.Records.Count, below = rows.Length > 0 ? rows.Max() + 1 : table.Records.Count;
         return new ContextMenu { ItemsSource = new Control[] {
             Item($"Add {added} above", () => InsertRows(above, rowsToAdd), addable && rows.Length > 0),
             Item($"Add {added} below", () => InsertRows(below, rowsToAdd), addable),
-            Item(rows.Length > 0 && rows.All(r => !Document.Table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
+            Item(rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
             new Separator(),
             Item($"{(frozen ? "Unfreeze" : "Freeze")} {noun}", ToggleFrozenRows, frozen || frozenRows.Union(rows).Count() <= 5),
             Item($"{(locked ? "Unlock" : "Lock")} {noun} against edits", ToggleRowLocks),
@@ -366,7 +366,7 @@ public sealed partial class EditorPane : Grid
                 grid.FrozenColumnCount = 0; grid.Columns.Clear();
                 foreach (var i in VisibleColumns())
                 {
-                    var column = new LiveCellColumn(this, i) { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
+                    var column = new LiveCellColumn(this, i) { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.LockedColumns.Contains(Document.Table.Columns[i]) };
                     column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
                         var label = new TextBlock { Text = Header(i, sortMark: false), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
                         // Documented columns show the data-guide card; others keep their complete name.
@@ -421,7 +421,7 @@ public sealed partial class EditorPane : Grid
         if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
         // A blank line at the bottom creates a new row as soon as something is typed into it.
         var views = rows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit));
-        TableGrid.ItemsSource = (table.IsCatalog ? views : views.Append(new RowView(Document, -1, error, MaterializePlaceholder))).ToArray();
+        TableGrid.ItemsSource = views.Append(new RowView(Document, -1, error, MaterializePlaceholder)).ToArray();
         FrozenGrid.ItemsSource = frozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
         FrozenGrid.IsVisible = frozenRows.Count > 0; FrozenGrid.Height = frozenRows.Count * 30 + 34;
         TableGrid.HeadersVisibility = FrozenGrid.IsVisible ? DataGridHeadersVisibility.Row : DataGridHeadersVisibility.All;
@@ -559,7 +559,6 @@ public sealed partial class EditorPane : Grid
         int missing = start + block.Length - displayed.Count;
         if (missing > 0)
         {
-            Storage.Require(!Document.Table.IsCatalog, "Paste exceeds the displayed rows.");
             int first = Document.Table.Records.Count; Document.InsertRows(first, missing); ShiftSelection(first, missing);
             displayed.AddRange(Enumerable.Range(first, missing));
         }

@@ -59,7 +59,7 @@ public sealed class Document
             else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
             {
                 var node = JsonNode.Parse(raw.TrimStart('\uFEFF'), documentOptions: SourceJsonOptions);
-                if (TableData.IsTableFile(node)) { tableRoot = (JsonObject)node!; Table = TableData.FromFile(node!, FilePath); }
+                if (TableData.IsTableFile(node)) { tableRoot = (JsonObject)node!; Table = TableData.FromFile(node!, FilePath, out var renumbered); modelChanged |= renumbered; }
             }
             if (Table != null) Diagnostics.AddRange(Validated());
             PendingSource = false;
@@ -186,8 +186,7 @@ public sealed class Document
     public void MoveRows(IEnumerable<int> rows, int target)
     {
         Require(Table != null && !PendingSource, "Apply valid source before moving rows.");
-        Require(!Table!.IsCatalog, "String entries keep their order; edit them in Source view.");
-        var moving = rows.Distinct().Order().ToArray(); int count = Table.Records.Count;
+        var moving = rows.Distinct().Order().ToArray(); int count = Table!.Records.Count;
         Require(moving.Length > 0 && moving.All(r => r >= 0 && r < count), "Invalid row.");
         Require(target >= 0 && target <= count, "Invalid row position.");
         Require(moving.All(r => !LockedRows.Contains(r)), "A selected row is locked against edits.");

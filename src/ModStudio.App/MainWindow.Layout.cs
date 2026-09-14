@@ -8,6 +8,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.VisualTree;
+using System.Text.Json.Nodes;
 using ModStudio.Core;
 using static ModStudio.Core.Storage;
 
@@ -184,5 +185,32 @@ public partial class MainWindow
         Require(Flatten(explorerEntries).Any(e => e.Name == "legacy-smoke.json" && e.IsTable), "Converted table is not listed in the explorer.");
         var pane = (await OpenDocumentAsync(file))!; Require(pane.Document.Table?.Cell(0, "name") == "A", "Converted table did not open in the table editor.");
         await CloseTabAsync(tabs.First(t => t.Content == pane)); File.Delete(file); await RefreshExplorerAsync();
+    }
+
+    /// <summary>String catalogs get the same blank bottom row as game tables; typing into it creates an entry whose id and Key are editable.</summary>
+    private async Task SmokeCatalogRowsAsync()
+    {
+        var file = TableData.FileFor(project!, "strings", "smoke-strings");
+        TableData.Write(file, new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "smoke-strings", ["locales"] = new JsonArray("enUS"), ["target"] = "local/lng/strings/smoke-strings.json" },
+            new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 7, ["Key"] = "existing", ["translations"] = new JsonObject { ["enUS"] = "Existing" } })));
+        try
+        {
+            var pane = (await OpenDocumentAsync(file))!; await Task.Delay(100);
+            var views = (IEnumerable<RowView>)pane.TableGrid.ItemsSource!;
+            Require(views.Last().IsPlaceholder && views.Count() == 2, "String catalog has no blank row at the bottom.");
+            views.Last()[2] = "New text"; await Task.Delay(100);
+            var table = pane.Document.Table!;
+            Require(table.Records.Count == 2 && table.Cell(1, "enUS") == "New text" && table.Cell(1, "id") == "8" && !table.IsOriginalRow(1), "Typing into the blank catalog row did not create an entry.");
+            pane.Refresh(); // as the grid does after the edit commits
+            Require(((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Count(v => v.IsPlaceholder) == 1 && ((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Count() == 3, "A fresh blank row did not appear after adding a string entry.");
+            pane.SelectCell(1, 1); pane.ApplyToSelection("added_key", null);
+            Require(table.Cell(1, "Key") == "added_key" && pane.Document.Diagnostics.Count == 0, "The new entry's key was not editable.");
+            pane.SelectCell(0, 1); pane.ApplyToSelection("renamed", null);
+            Require(table.Cell(0, "Key") == "existing", "An imported string key was editable.");
+            pane.Document.Undo(); pane.Document.Undo(); pane.Document.Undo(); pane.Refresh(); // key, text, then the row itself
+            Require(table.Records.Count == 1 && !pane.Document.IsDirty, "Undo did not remove the added string entry.");
+            await CloseTabAsync(tabs.First(t => t.Content == pane));
+        }
+        finally { File.Delete(file); }
     }
 }

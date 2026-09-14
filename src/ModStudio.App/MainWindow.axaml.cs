@@ -436,7 +436,7 @@ public partial class MainWindow : Window
         if (Active != pane) return; inspectorUpdating = true;
         var table = pane.Document.Table; SelectionLabel.Text = table == null ? pane.Document.FilePath : $"{table.Name} · row {pane.SelectedRow}\n{table.Records.Count:N0} records · {table.Columns.Length} columns";
         FieldPicker.ItemsSource = table?.Columns; FieldPicker.SelectedItem = table?.Columns.Contains(pane.SelectedColumn) == true ? pane.SelectedColumn : table?.Columns.FirstOrDefault(); inspectorUpdating = false; FieldSelected(null, null!);
-        InspectorInfo.Text = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; IDs and keys remain stable. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
+        InspectorInfo.Text = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; imported IDs and keys remain stable, entries added in Studio can set theirs. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
         RefreshRowEditor(pane); RefreshItemPreview();
     }
     private void FieldSelected(object? sender, SelectionChangedEventArgs e) { if (!inspectorUpdating) { CellValue.Text = Active?.Document.Table is { } table && Active.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string field ? table.Cell(Active.SelectedRow, field) : ""; _ = RefreshSemanticInspectorAsync(); } }
@@ -600,6 +600,7 @@ public partial class MainWindow : Window
             await SmokeItemPreviewsAsync(output);
             await SmokeLayoutAsync(output);
             await SmokeReorderAsync(root);
+            await SmokeCatalogRowsAsync();
             var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
             File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
             new RunSettings(GameDirectory: detectedGame).Save(project!, Profile); RefreshLaunchTargets();

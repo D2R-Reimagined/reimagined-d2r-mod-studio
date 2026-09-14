@@ -115,7 +115,7 @@ public partial class MainWindow
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
         rowEditorAllFields = table.Columns.Select(column =>
         {
-            bool identity = table.IsCatalog ? column is "id" or "Key" : identities.Contains(column);
+            bool identity = table.IsCatalog ? column is "id" or "Key" && table.IsOriginalRow(row) : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
             return new RowEditorField(column, column + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
                 table.Cell(row, column), identity || locked, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>

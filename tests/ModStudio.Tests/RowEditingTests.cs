@@ -55,7 +55,17 @@ internal static class RowEditingTests
         check(new TableData((JsonObject)doc.Table.Schema.DeepClone(), broken).Validate("x").Any(d => d.Message.Contains("Original rows were removed")), "Validation names removed original rows");
         var catalogDir = Path.Combine(root, "row-editing/source/strings"); Directory.CreateDirectory(catalogDir);
         TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } })));
-        throws(() => new Document(Path.Combine(catalogDir, "ui.json")).InsertRows(1), "String catalogs refuse row insertion with a clear message");
+        var strings = new Document(Path.Combine(catalogDir, "ui.json"));
+        strings.InsertRows(1);
+        check(strings.Table!.Records.Count == 2 && strings.Table.Cell(1, "id") == "2" && strings.Table.Cell(1, "Key") == "" && strings.Table.Cell(1, "enUS") == "" && !strings.Table.IsOriginalRow(1) && strings.Table.IsOriginalRow(0), "New string entries get the next free ID, empty key and translations, and are not original");
+        check(strings.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1 && d.Message.Contains("key")), "A new string entry is flagged until it has a key");
+        strings.SetCells([(1, "Key", "Added"), (1, "enUS", "Added text"), (1, "id", "40")]);
+        check(strings.Table.Cell(1, "Key") == "Added" && strings.Table.Cell(1, "id") == "40" && strings.Diagnostics.Count == 0, "Studio-added entries can set their key and ID and become valid");
+        throws(() => strings.SetCells([(0, "Key", "Renamed")]), "Imported string keys stay protected"); throws(() => strings.SetCells([(1, "id", "x")]), "String IDs must be integers");
+        throws(() => strings.DeleteRows([0]), "Imported string entries cannot be deleted"); strings.DeleteRows([1]); check(strings.Table.Records.Count == 1, "Added string entries can be deleted");
+        strings.Undo(); check(strings.Table.Records.Count == 2 && strings.Table.Cell(1, "Key") == "Added", "Undo restores a deleted string entry");
+        var encoded = System.Text.Json.Nodes.JsonNode.Parse(Utf8.GetString(strings.Table.EncodeCatalog(false)).TrimStart('\uFEFF'))!.AsArray();
+        check(encoded.Count == 2 && encoded[1]!["id"]!.GetValue<int>() == 40 && encoded[1]!["Key"]!.GetValue<string>() == "Added" && encoded[1]!["sourceId"] == null, "Added entries build into the game catalog without Studio metadata");
 
         // Views refresh in place when a change only replaced cell values, and rebuild after anything structural.
         var original = File.ReadAllText(doc.FilePath); var tracked = new Document(doc.FilePath);
@@ -68,9 +78,13 @@ internal static class RowEditingTests
         tracked.SetRaw(tracked.Text.Replace("\"value\": \"1\"", "\"value\": \"11\"")); tracked.ApplySource();
         check(tracked.LastChangedRows == null && tracked.Table!.Cell(0, "value") == "11", "Source edits report a structural change");
         // A table with an existing error keeps validating fully, so its diagnostics never go stale after a cell edit.
-        var invalid = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); invalid["records"]![1]!["order"] = 7;
+        // Hand-edited source may insert or drop entries without renumbering "order": array position wins and the numbers are repaired on load.
+        var renumber = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); renumber["records"]![1]!["order"] = 7;
+        File.WriteAllText(tracked.FilePath, Json(renumber)); var repaired = new Document(tracked.FilePath);
+        check(repaired.Diagnostics.All(d => d.Severity != "Error") && repaired.Table!.Records[1]!["order"]!.GetValue<int>() == 1 && repaired.Text.Contains("\"order\": 1"), "Stale slot numbers are corrected on open instead of reported");
+        var invalid = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); invalid["records"]![1]!["sourceId"] = invalid["records"]![0]!["sourceId"]!.GetValue<string>();
         File.WriteAllText(tracked.FilePath, Json(invalid)); var erroneous = new Document(tracked.FilePath);
-        check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1), "Invalid slot numbering is reported on open");
+        check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1), "Duplicate source IDs are reported on open");
         erroneous.SetCells([(0, "value", "12")]);
         check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1) && erroneous.LastChangedRows?.SequenceEqual([0]) == true, "Editing an invalid table keeps its existing diagnostics");
         File.WriteAllText(tracked.FilePath, original);

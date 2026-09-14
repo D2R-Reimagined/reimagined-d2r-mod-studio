@@ -38,7 +38,7 @@ public partial class EditorPane
     private void RowDragPressed(object? sender, PointerPressedEventArgs e)
     {
         rowDragSource = -1;
-        if (Document.Table == null || Document.PendingSource || Document.Table.IsCatalog || e.Source is not Visual visual || !e.GetCurrentPoint(TableGrid).Properties.IsLeftButtonPressed) return;
+        if (Document.Table == null || Document.PendingSource || e.Source is not Visual visual || !e.GetCurrentPoint(TableGrid).Properties.IsLeftButtonPressed) return;
         if (!visual.GetSelfAndVisualAncestors().OfType<DataGridRowHeader>().Any()) return;
         if (visual.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault()?.DataContext is not RowView { IsPlaceholder: false } row) return;
         rowDragSource = row.Row; rowDragOrigin = e.GetPosition(TableGrid); rowDragging = false;

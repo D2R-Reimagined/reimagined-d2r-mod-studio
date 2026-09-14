@@ -46,6 +46,7 @@ internal static class ReorderTests
         var catalogDir = Path.Combine(root, "reorder/source/strings"); Directory.CreateDirectory(catalogDir);
         TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }, new JsonObject { ["order"] = 1, ["id"] = 2, ["Key"] = "j", ["translations"] = new JsonObject { ["enUS"] = "w" } })));
         var catalog = new Document(Path.Combine(catalogDir, "ui.json"));
-        throws(() => catalog.MoveRows([0], 2), "String catalogs refuse row moves"); throws(() => catalog.MoveColumn(0, 1), "String catalogs refuse column moves");
+        catalog.MoveRows([0], 2); check(catalog.Table!.Cell(0, "Key") == "j" && catalog.Diagnostics.Count == 0, "String entries can be reordered");
+        throws(() => catalog.MoveColumn(0, 1), "String catalogs refuse column moves");
     }
 }

@@ -766,38 +766,62 @@ public partial class MainWindow : Window
                 Require(pane.Document.LockedRows.Contains(200) && pane.Source.IsReadOnly, "Row lock does not protect Source.");
                 pane.ToggleRowLocks(); pane.ToggleFrozenRows(); pane.ToggleFrozenColumn(pane.Document.Table.Columns[1]);
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
-                await Task.Delay(100);
-                var clickableRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r.DataContext is RowView rv && rv.Row != 200 && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is Point point && point.Y > 50 && point.Y < pane.TableGrid.Bounds.Height - 40);
-                var clickableCell = pane.TableGrid.Columns.First(c => c.Header?.ToString()?.Contains(field, StringComparison.Ordinal) == true).GetCellContent(clickableRow)!.GetVisualAncestors().OfType<DataGridCell>().First();
-                var cellPoint = clickableCell.TranslatePoint(new Point(clickableCell.Bounds.Width / 2, 15), this)!.Value;
-                this.MouseDown(cellPoint, MouseButton.Left, RawInputModifiers.None); this.MouseUp(cellPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
-                Require(pane.SelectedRow == ((RowView)clickableRow.DataContext!).Row && pane.SelectedColumn == field, "Mouse cell selection failed to update the inspector selection.");
-                // Spreadsheet-style cell selection: click, Ctrl+click, drag, bulk edit, and the blank row at the bottom.
-                var cols = pane.Document.Table.Columns; int fieldIndex = Array.IndexOf(cols, field); int clickedRow = ((RowView)clickableRow.DataContext!).Row;
-                Require(pane.SelectedCells.Count == 1 && pane.SelectedCells.Contains((clickedRow, fieldIndex)), $"Click did not select exactly one cell: [{string.Join(" ", pane.SelectedCells)}] expected ({clickedRow}, {fieldIndex}).");
-                await Task.Delay(80);
-                Require(clickableCell.Background is SolidColorBrush { Color: var paint } && paint == Color.Parse("#4A4123"), "Selected cell is not painted.");
-                var rowRectangle = clickableRow.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Rectangle>().FirstOrDefault(r => r.Name == "BackgroundRectangle");
-                Require(rowRectangle != null && rowRectangle.Opacity == 0, "Row-wide selection highlight still hides which cells are selected.");
-                var secondRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r != clickableRow && r.DataContext is RowView { IsPlaceholder: false } rv && rv.Row != 200 && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is Point p2 && p2.Y > 50 && p2.Y < pane.TableGrid.Bounds.Height - 40);
-                var fieldColumn = pane.TableGrid.Columns.First(c => c.Header?.ToString()?.Contains(field, StringComparison.Ordinal) == true);
-                var secondCell = fieldColumn.GetCellContent(secondRow)!.GetVisualAncestors().OfType<DataGridCell>().First();
-                var secondPoint = secondCell.TranslatePoint(new Point(secondCell.Bounds.Width / 2, 15), this)!.Value;
-                this.MouseDown(secondPoint, MouseButton.Left, RawInputModifiers.Control); this.MouseUp(secondPoint, MouseButton.Left, RawInputModifiers.Control); await Task.Delay(60);
-                int secondRowIndex = ((RowView)secondRow.DataContext!).Row;
-                Require(pane.SelectedCells.Count == 2 && pane.SelectedCells.Contains((secondRowIndex, fieldIndex)) && pane.SelectedCells.Contains((clickedRow, fieldIndex)), "Ctrl+click did not add a second cell.");
-                // Drag across the two right-most columns: after the Jump they are scrolled into view, unlike the columns just right of the frozen one.
-                await Task.Delay(600); // outside the double-click window, so the press starts a drag rather than an edit; layout may have scrolled, so re-measure
                 DataGridCell? LiveCell(int row, DataGridColumn column)
                 {
                     var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView rv && rv.Row == row); if (container == null) return null;
                     var cell = column.GetCellContent(container)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
-                    // A scrolling cell may be geometrically inside the grid but hidden under a frozen column.
-                    // Only use coordinates that actually hit this cell, matching a real user's click.
-                    if (cell != null && (cell.TranslatePoint(new Point(cell.Bounds.Width / 2, 15), pane.TableGrid) is not { } center ||
-                        pane.TableGrid.InputHitTest(center) is not Visual hitVisual || !hitVisual.GetSelfAndVisualAncestors().Contains(cell))) return null;
-                    return cell != null && cell.TranslatePoint(new Point(cell.Bounds.Width, 0), pane.TableGrid) is { X: var right } && right <= pane.TableGrid.Bounds.Width - 20 && cell.TranslatePoint(new Point(), pane.TableGrid) is { X: >= 0 } ? cell : null;
+                    // Realized cells may be clipped or covered by a frozen column. Check the actual hit target.
+                    if (cell == null || cell.TranslatePoint(new Point(cell.Bounds.Width / 2, 15), pane.TableGrid) is not { } center ||
+                        pane.TableGrid.InputHitTest(center) is not Visual hitVisual || !hitVisual.GetSelfAndVisualAncestors().Contains(cell)) return null;
+                    return cell.TranslatePoint(new Point(cell.Bounds.Width, 0), pane.TableGrid) is { X: var right } && right <= pane.TableGrid.Bounds.Width - 20 && cell.TranslatePoint(new Point(), pane.TableGrid) is { X: >= 0 } ? cell : null;
                 }
+                var fieldColumn = pane.TableGrid.Columns.Single(c => pane.ColumnIndexOf(c) == pane.Document.Table.ColumnIndex(field));
+                async Task<int> ClickableRowAsync(int excludedRow)
+                {
+                    // Jump restores scrolling at Background priority, and the renderer updates hit testing
+                    // separately. Wait for a cell that is actually clickable before measuring mouse coordinates.
+                    var timeout = Stopwatch.StartNew();
+                    while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+                    {
+                        await Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Background);
+                        AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                        var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Select(r => r.DataContext).OfType<RowView>()
+                            .FirstOrDefault(rv => !rv.IsPlaceholder && rv.Row != excludedRow && rv.Row != 200 && LiveCell(rv.Row, fieldColumn)?.TranslatePoint(new Point(0, 15), pane.TableGrid) is { Y: > 50 } point && point.Y < pane.TableGrid.Bounds.Height - 40);
+                        if (row != null) return row.Row;
+                        await Task.Delay(10);
+                    }
+                    var targets = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Select(r =>
+                    {
+                        var cell = fieldColumn.GetCellContent(r)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                        var point = cell?.TranslatePoint(new Point(cell.Bounds.Width / 2, 15), pane.TableGrid);
+                        var hit = point is { } p ? pane.TableGrid.InputHitTest(p) as Visual : null;
+                        var hitRow = hit?.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault()?.DataContext as RowView;
+                        return $"row {(r.DataContext as RowView)?.Row}: {point}, hit {hit?.GetType().Name}/row {hitRow?.Row}";
+                    });
+                    throw new TimeoutException($"No clickable {name}/{field} cell: {string.Join("; ", targets)}.");
+                }
+                var clickedRow = await ClickableRowAsync(200);
+                var clickableCell = LiveCell(clickedRow, fieldColumn)!;
+                var cellPoint = clickableCell.TranslatePoint(new Point(clickableCell.Bounds.Width / 2, 15), this)!.Value;
+                this.MouseDown(cellPoint, MouseButton.Left, RawInputModifiers.None); this.MouseUp(cellPoint, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
+                // Row containers can be recycled when selecting scrolls the grid. Keep the record identity
+                // from before the click, and re-query visuals afterwards rather than reading a reused row.
+                Require(pane.SelectedRow == clickedRow && pane.SelectedColumn == field, $"Mouse cell selection failed in {name}: expected {clickedRow}/{field}, selected {pane.SelectedRow}/{pane.SelectedColumn}.");
+                // Spreadsheet-style cell selection: click, Ctrl+click, drag, bulk edit, and the blank row at the bottom.
+                var cols = pane.Document.Table.Columns; int fieldIndex = Array.IndexOf(cols, field);
+                Require(pane.SelectedCells.Count == 1 && pane.SelectedCells.Contains((clickedRow, fieldIndex)), $"Click did not select exactly one cell: [{string.Join(" ", pane.SelectedCells)}] expected ({clickedRow}, {fieldIndex}).");
+                await Task.Delay(80);
+                Require(LiveCell(clickedRow, fieldColumn)?.Background is SolidColorBrush { Color: var paint } && paint == Color.Parse("#4A4123"), "Selected cell is not painted.");
+                var clickableRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Single(r => r.DataContext is RowView rv && rv.Row == clickedRow);
+                var rowRectangle = clickableRow.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Rectangle>().FirstOrDefault(r => r.Name == "BackgroundRectangle");
+                Require(rowRectangle != null && rowRectangle.Opacity == 0, "Row-wide selection highlight still hides which cells are selected.");
+                var secondRowIndex = await ClickableRowAsync(clickedRow);
+                var secondCell = LiveCell(secondRowIndex, fieldColumn)!;
+                var secondPoint = secondCell.TranslatePoint(new Point(secondCell.Bounds.Width / 2, 15), this)!.Value;
+                this.MouseDown(secondPoint, MouseButton.Left, RawInputModifiers.Control); this.MouseUp(secondPoint, MouseButton.Left, RawInputModifiers.Control); await Task.Delay(60);
+                Require(pane.SelectedCells.Count == 2 && pane.SelectedCells.Contains((secondRowIndex, fieldIndex)) && pane.SelectedCells.Contains((clickedRow, fieldIndex)), "Ctrl+click did not add a second cell.");
+                // Drag across the two right-most columns: after the Jump they are scrolled into view, unlike the columns just right of the frozen one.
+                await Task.Delay(600); // outside the double-click window, so the press starts a drag rather than an edit; layout may have scrolled, so re-measure
                 // Columns are virtualized: drag across two neighbouring columns that are realized and fully visible for both rows.
                 var visibleColumns = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
                 Require(visibleColumns.Length >= 2, "Fewer than two scrolling columns are visible for the drag test.");

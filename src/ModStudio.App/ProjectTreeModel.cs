@@ -3,14 +3,15 @@ using ModStudio.Core;
 
 namespace ModStudio.App;
 
-public sealed class ProjectEntry(string name, string path, bool directory, string? schemaPath = null) : INotifyPropertyChanged
+public sealed class ProjectEntry(string name, string path, bool directory, bool isTable = false) : INotifyPropertyChanged
 {
     private bool isExpanded;
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Name { get; } = name;
     public string Path { get; } = path;
     public bool Directory { get; } = directory;
-    public string? SchemaPath { get; } = schemaPath;
+    /// <summary>A table or string catalog source file (source/tables or source/strings), shown with the table icon and opened in the table editor.</summary>
+    public bool IsTable { get; } = isTable;
     public List<ProjectEntry> Children { get; } = [];
     public bool IsExpanded { get => isExpanded; set { if (isExpanded == value) return; isExpanded = value; PropertyChanged?.Invoke(this, new(nameof(IsExpanded))); } }
 
@@ -25,7 +26,7 @@ public sealed class ProjectEntry(string name, string path, bool directory, strin
                 var path = parent + node.Name;
                 var children = Visit(node.Children, path + "/");
                 if (!path.Contains(query, StringComparison.OrdinalIgnoreCase) && children.Count == 0) continue;
-                var match = new ProjectEntry(node.Name, node.Path, node.Directory, node.SchemaPath) { IsExpanded = true };
+                var match = new ProjectEntry(node.Name, node.Path, node.Directory, node.IsTable) { IsExpanded = true };
                 match.Children.AddRange(children); result.Add(match);
             }
             return result;
@@ -38,11 +39,9 @@ public sealed class ProjectEntry(string name, string path, bool directory, strin
         ProjectEntry Make(string dir)
         {
             Storage.NoLinks(dir);
-            var records = System.IO.Path.Combine(dir, "records.json");
-            var schema = System.IO.Path.Combine(dir, "schema.json");
-            var parent = System.IO.Directory.GetParent(dir);
-            var logicalTable = parent?.Name is "tables" or "strings" && parent.Parent?.Name == "source" && File.Exists(records) && File.Exists(schema);
-            var item = new ProjectEntry(System.IO.Path.GetFileName(dir), logicalTable ? records : dir, !logicalTable, logicalTable ? schema : null);
+            var name = System.IO.Path.GetFileName(dir); var parent = System.IO.Directory.GetParent(dir);
+            bool tableBank = name is "tables" or "strings" && parent?.Name == "source" && parent.Parent?.FullName == System.IO.Path.GetFullPath(root);
+            var item = new ProjectEntry(name, dir, true);
             foreach (var sub in System.IO.Directory.GetDirectories(dir).Order(StringComparer.Ordinal))
             {
                 if (System.IO.Path.GetFileName(sub) is ".git" or ".studio" or "build" or "node_modules" or ".idea") continue;
@@ -51,8 +50,7 @@ public sealed class ProjectEntry(string name, string path, bool directory, strin
             foreach (var file in System.IO.Directory.GetFiles(dir).Order(StringComparer.Ordinal))
             {
                 Storage.NoLinks(file);
-                if (logicalTable && (file == records || file == schema)) continue;
-                item.Children.Add(new(System.IO.Path.GetFileName(file), file, false));
+                item.Children.Add(new(System.IO.Path.GetFileName(file), file, false, tableBank && file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)));
             }
             return item;
         }

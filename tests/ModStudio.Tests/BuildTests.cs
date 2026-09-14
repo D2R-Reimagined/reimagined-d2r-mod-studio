@@ -29,7 +29,7 @@ internal static class BuildTests
         write(Inside(project.Root, "data/hd/asset.bin"), new string('z', 1024 * 1024)); File.SetLastWriteTimeUtc(Inside(project.Root, "data/hd/asset.bin"), DateTime.UtcNow.AddMinutes(-5));
         next = BuildService.Build(project, "standard");
         check(File.ReadAllText(assetOutput)[0] == 'z', "A write time older than the cache guard still hashes a file whose stamp changed");
-        var records = Inside(project.Root, "source/tables/first/records.json"); var doc = new Document(records); doc.SetCells([(0, "value", "3")]); doc.Save();
+        var records = TableData.FileFor(project, "tables", "first"); var doc = new Document(records); doc.SetCells([(0, "value", "3")]); doc.Save();
         log.Clear(); next = BuildService.Build(project, "standard", progress: log.Add);
         check(log.Last().Contains("1 tables converted, 1 reused, 1 output files written") && File.GetLastWriteTimeUtc(output) == marker, "Single-table edit rebuilds only its changed output");
         File.WriteAllText(output, "tampered"); log.Clear(); next = BuildService.Build(project, "standard", progress: log.Add);
@@ -37,7 +37,7 @@ internal static class BuildTests
         var sourceAsset = Inside(project.Root, "data/hd/asset.bin"); File.Delete(sourceAsset);
         next = BuildService.Build(project, "standard");
         check(!File.Exists(Inside(next.Output, "Incremental.mpq/data/hd/asset.bin")), "Incremental build removes deleted native assets");
-        var tableDir = Inside(project.Root, "source/tables/second"); File.Delete(Path.Combine(tableDir, "records.json")); File.Delete(Path.Combine(tableDir, "schema.json")); Directory.Delete(tableDir);
+        File.Delete(TableData.FileFor(project, "tables", "second"));
         next = BuildService.Build(project, "standard"); check(!File.Exists(output), "Incremental build removes deleted table outputs");
         var old = Inside(project.Cache, "builds/" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(old);
         File.WriteAllText(Inside(old, "build.json"), JsonSerializer.Serialize(next, Pretty));

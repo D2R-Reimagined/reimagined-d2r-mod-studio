@@ -221,5 +221,28 @@ public sealed class TableData
         schema["protectedRows"] = records.Count;
         return new(schema, records);
     }
-    public static TableData Load(string file) => new((JsonObject)Read(Path.Combine(Path.GetDirectoryName(file)!, "schema.json")), (JsonArray)Read(file));
+    /// <summary>An empty table whose columns come from the data guide. Rows added later are not protected, since nothing here came from the game.</summary>
+    public static TableData FromGuide(ColumnGuideFile guide, string name, string? target = null)
+    {
+        var cols = new JsonArray(); foreach (var header in guide.Headers()) cols.Add(new JsonObject { ["key"] = header, ["header"] = header });
+        var schema = new JsonObject { ["schemaVersion"] = 1, ["name"] = name, ["targets"] = new JsonArray(target ?? guide.Target), ["identityColumns"] = new JsonArray(), ["columns"] = cols, ["bom"] = false, ["newline"] = "\r\n", ["finalNewline"] = true, ["protectedRows"] = 0 };
+        return new(schema, new JsonArray());
+    }
+    /// <summary>Table name derived from a native file name the way import does: lower-case stem, unsupported characters replaced by hyphens.</summary>
+    public static string NameFor(string file) => Regex.Replace(Path.GetFileNameWithoutExtension(file).ToLowerInvariant(), "[^a-z0-9-]", "-");
+    /// <summary>Writes a new source table into a project. Fails if a table with that name already exists.</summary>
+    public static string Create(ModProject project, TableData table)
+    {
+        var name = table.Schema.S("name"); Require(Regex.IsMatch(name, "^[a-z0-9-]{1,80}$"), "Table names use lower-case letters, digits and hyphens.");
+        var file = FileFor(project, "tables", name); Require(!File.Exists(file) && !Directory.Exists(Path.ChangeExtension(file, null)), $"A table named {name} already exists.");
+        Write(file, table); return file;
+    }
+    /// <summary>Source file of a table (kind "tables") or string catalog (kind "strings"): schema and records live together in one JSON document.</summary>
+    public static string FileFor(ModProject project, string kind, string name) => Inside(project.Root, $"source/{kind}/{name}.json");
+    public static bool IsTableFile(JsonNode? node) => node is JsonObject o && o["schema"] is JsonObject && o["records"] is JsonArray;
+    /// <summary>The document form; the caller owns the copies, so an in-memory table stays attached to its own file root.</summary>
+    public JsonObject ToFile() => new() { ["schema"] = Schema.DeepClone(), ["records"] = Records.DeepClone() };
+    public static void Write(string file, TableData table) => WriteJson(file, table.ToFile());
+    public static TableData FromFile(JsonNode node, string file) { Require(IsTableFile(node), "Not a table file: " + file); return new((JsonObject)node["schema"]!, (JsonArray)node["records"]!); }
+    public static TableData Load(string file) => FromFile(Read(file), file);
 }

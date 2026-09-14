@@ -7,11 +7,11 @@ using static ModStudio.Core.Storage;
 
 try
 {
-    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | check <project> | build <project> [profile] | preview-info <file> | item-preview <project> <uniqueitems|setitems> <row> [profile] [level] [locale] | item-preview-audit <project> [profile] [level] [locale] | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
+    if (args.Length == 0) { Console.WriteLine("Reimagined D2R Mod Studio: import <data> <destination> <mod-name> | migrate <legacy-project> <destination> <mod-name> | upgrade <project> | check <project> | build <project> [profile] | preview-info <file> | item-preview <project> <uniqueitems|setitems> <row> [profile] [level] [locale] | item-preview-audit <project> [profile] [level] [locale] | benchmark <project> | compare <built-mod-root> <baseline-mod-root>"); return; }
     switch (args[0])
     {
         case "item-preview":
-            var itemProject = ModProject.Open(args[1]); var itemTable = TableData.Load(Inside(itemProject.Root, "source/tables/" + args[2] + "/records.json"));
+            var itemProject = ModProject.Open(args[1]); var itemTable = TableData.Load(TableData.FileFor(itemProject, "tables", args[2]));
             var itemRow = int.Parse(args[3]); Require(itemRow >= 0 && itemRow < itemTable.Records.Count, "Invalid item row.");
             var itemResult = new ItemPreviewResolver().Resolve(itemProject, args[2], (JsonObject)itemTable.Records[itemRow]!, args.ElementAtOrDefault(4) ?? "standard", int.Parse(args.ElementAtOrDefault(5) ?? "80"), args.ElementAtOrDefault(6) ?? "enUS", default);
             Console.WriteLine(JsonSerializer.Serialize(itemResult, Pretty)); break;
@@ -20,7 +20,7 @@ try
             var auditRows = new List<(string Table, JsonObject Row)>();
             foreach (var auditTableName in new[] { "uniqueitems", "setitems" })
             {
-                var auditFile = Inside(auditProject.Root, $"source/tables/{auditTableName}/records.json");
+                var auditFile = TableData.FileFor(auditProject, "tables", auditTableName);
                 if (!File.Exists(auditFile)) continue;
                 auditRows.AddRange(TableData.Load(auditFile).Records.OfType<JsonObject>().Select(row => (auditTableName, row)));
             }
@@ -44,7 +44,10 @@ try
         case "preview-info":
             var preview = SpecialistPreview.Load(args[1]); var pixels = preview.Decode(preview.InitialFrame);
             Console.WriteLine(JsonSerializer.Serialize(new { preview.Summary, Frames = preview.Frames.Length, pixels.Width, pixels.Height }, Pretty)); break;
+        case "upgrade":
+            Console.WriteLine(JsonSerializer.Serialize(new { Converted = ProjectLayout.Upgrade(ModProject.Open(args[1]).Root, Console.WriteLine) }, Pretty)); break;
         case "check":
+            Require(!ProjectLayout.NeedsUpgrade(args[1]), ProjectLayout.UpgradeAdvice + " Run: upgrade <project>");
             var check = Semantics.Check(ModProject.Open(args[1])); Console.WriteLine(JsonSerializer.Serialize(check, Pretty));
             if (check.Diagnostics.Any(d => d.Severity == "Error")) Environment.ExitCode = 1; break;
         case "migrate":
@@ -52,13 +55,15 @@ try
             Require(candidates.Count == 1, "Choose a single mod/data folder. Candidates: " + string.Join("; ", candidates));
             Console.WriteLine(JsonSerializer.Serialize(LegacyMigration.Migrate(candidates[0], args[2], args[3], progress: Console.WriteLine), Pretty)); break;
         case "import": Console.WriteLine(JsonSerializer.Serialize(ProjectImporter.Import(args[1], args[2], args[3], progress: Console.WriteLine), Pretty)); break;
-        case "build": Console.WriteLine(JsonSerializer.Serialize(BuildService.Build(ModProject.Open(args[1]), args.ElementAtOrDefault(2) ?? "standard", progress: Console.WriteLine), Pretty)); break;
+        case "build":
+            Require(!ProjectLayout.NeedsUpgrade(args[1]), ProjectLayout.UpgradeAdvice + " Run: upgrade <project>");
+            Console.WriteLine(JsonSerializer.Serialize(BuildService.Build(ModProject.Open(args[1]), args.ElementAtOrDefault(2) ?? "standard", progress: Console.WriteLine), Pretty)); break;
         case "benchmark":
             var report = new JsonArray();
             foreach (var name in new[] { "sounds", "cubemain", "skills" })
             {
                 GC.Collect(); var before = GC.GetTotalMemory(true); var timer = Stopwatch.StartNew();
-                var doc = new Document(Path.Combine(args[1], "source/tables", name, "records.json")); timer.Stop();
+                var doc = new Document(Path.Combine(args[1], "source/tables", name + ".json")); timer.Stop();
                 report.Add(new JsonObject { ["table"] = name, ["rows"] = doc.Table?.Records.Count, ["columns"] = doc.Table?.Columns.Length, ["loadAndValidateMs"] = timer.Elapsed.TotalMilliseconds, ["managedBytesAdded"] = GC.GetTotalMemory(false) - before, ["errors"] = doc.Diagnostics.Count });
             }
             Console.WriteLine(Json(report)); break;

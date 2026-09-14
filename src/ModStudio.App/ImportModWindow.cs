@@ -21,9 +21,9 @@ public sealed class ImportModWindow : Window
 {
     private static readonly IBrush Accent = new SolidColorBrush(Color.Parse("#D8BC86")), Muted = new SolidColorBrush(Color.Parse("#B9AD97")), Warn = new SolidColorBrush(Color.Parse("#E39A6B"));
     private readonly TextBox source = new() { PlaceholderText = "Mod folder, unpacked .mpq, data folder or legacy project" }, name = new(), destination = new(), deployment = new();
-    private readonly TextBlock sourceStatus = Note(), destinationStatus = Note(), deploymentStatus = Note(), summary = new() { TextWrapping = TextWrapping.Wrap }, error = new() { TextWrapping = TextWrapping.Wrap, Foreground = Warn, IsVisible = false };
+    private readonly TextBlock sourceStatus = Note("Choose the mod you want to edit. Studio finds the native data inside it."), destinationStatus = Note(), deploymentStatus = Note(), summary = new() { TextWrapping = TextWrapping.Wrap }, error = new() { TextWrapping = TextWrapping.Wrap, Foreground = Warn, IsVisible = false };
     private readonly ComboBox candidates = new() { HorizontalAlignment = HorizontalAlignment.Stretch, IsVisible = false };
-    private readonly RadioButton copy = new() { Content = "Create a new project (recommended)", IsChecked = true, GroupName = "mode" }, convert = new() { Content = "Convert this folder in place, keeping a timestamped backup beside it", GroupName = "mode" };
+    private readonly RadioButton convert = new() { Content = "Convert this folder in place, keeping a timestamped backup beside it (recommended)", IsChecked = true, GroupName = "mode" }, copy = new() { Content = "Create a new project in a separate folder", GroupName = "mode" };
     private readonly Button import = new() { Content = "Import", Classes = { "accent" } };
     private readonly DispatcherTimer detectTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly string projectsFolder;
@@ -44,7 +44,7 @@ public sealed class ImportModWindow : Window
         panel.Children.Add(Row("Original mod", source, Browse("Select the mod to import", path => source.Text = path)));
         panel.Children.Add(candidates); panel.Children.Add(sourceStatus);
         panel.Children.Add(Row("Mod name", name, null));
-        var modes = new StackPanel { Spacing = 4 }; modes.Children.Add(copy); modes.Children.Add(convert); panel.Children.Add(modes);
+        var modes = new StackPanel { Spacing = 4 }; modes.Children.Add(convert); modes.Children.Add(copy); panel.Children.Add(modes);
         panel.Children.Add(Row("Project folder\n(where you edit)", destination, Browse("Choose where the project should live", path => { destinationEdited = true; destination.Text = ChooseInside(path, name.Text ?? ""); })));
         panel.Children.Add(destinationStatus);
         panel.Children.Add(Row("Game mods folder\n(where Studio deploys)", deployment, Browse("Choose the game's mods/<mod-name> folder", path => { deploymentEdited = true; deployment.Text = path; })));
@@ -73,7 +73,7 @@ public sealed class ImportModWindow : Window
         Refresh();
     }
 
-    private static TextBlock Note() => new() { TextWrapping = TextWrapping.Wrap, Foreground = Muted, FontSize = 12, Margin = new(150, -8, 0, 0) };
+    private static TextBlock Note(string text = "") => new() { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = Muted, FontSize = 12, Margin = new(150, -8, 0, 0) };
     private static Grid Row(string label, TextBox box, Button? browse)
     {
         var row = new Grid { ColumnDefinitions = new("150,*,Auto") };
@@ -131,6 +131,8 @@ public sealed class ImportModWindow : Window
         updating = true;
         var modName = name.Text?.Trim() ?? ""; var selected = Selected; var inPlace = convert.IsChecked == true;
         convert.IsEnabled = selected is { SplitRecords: false } || selected == null;
+        // Old one-file-per-record projects can only be imported as a copy; fall back before the rest of the form reads the mode.
+        if (!convert.IsEnabled && convert.IsChecked == true) { updating = false; copy.IsChecked = true; return; }
         if (!destinationEdited) destination.Text = inPlace && selected != null ? selected.Root : Path.Combine(projectsFolder, modName);
         destination.IsEnabled = !inPlace;
         var install = installations.FirstOrDefault();

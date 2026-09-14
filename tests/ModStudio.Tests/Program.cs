@@ -29,6 +29,8 @@ try
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);
     RowEditingTests.Run(root, Check, Throws);
+    ReorderTests.Run(root, Check, Throws);
+    LayoutTests.Run(root, Check, Throws);
     BuildTests.Run(root, Check, Throws, Write);
     await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
@@ -66,7 +68,7 @@ try
     Check(File.ReadAllBytes(Path.Combine(native, "global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Original source never changed");
     Throws(() => ProjectImporter.Import(native, target, "TestMod"), "Import rejects occupied destinations");
     Throws(() => ProjectImporter.Import(native, Path.Combine(native, "nested"), "TestMod"), "Import rejects overlapping paths");
-    var records = Path.Combine(target, "source/tables/example/records.json"); var doc = new Document(records);
+    var records = Path.Combine(target, "source/tables/example.json"); var doc = new Document(records);
     Check(doc.Table!.EncodeTsv().SequenceEqual(Utf8.GetBytes(tsv)), "BOM, CRLF, trailing blanks, short rows and duplicate headers round trip");
     Check(doc.Table.Cell(0, "column-2") == "0" && doc.Table.Cell(0, "name#3") == "", "Zero and empty remain distinct");
     var before = doc.Text; doc.SetCells([(0, "value", "180"), (2, "name", "Expansion edited")]); Check(doc.IsDirty && doc.Table.Cell(0, "value") == "180", "Bulk cell editing");
@@ -81,14 +83,14 @@ try
     Throws(doc.Save, "Invalid raw source cannot replace disk");
     var recovery = Path.Combine(root, "recovery.json"); doc.Recover(recovery); var recovered = new Document(records); recovered.RestoreRecovery(recovery); Check(recovered.Text == "[ broken", "Recovery retains invalid text");
     doc.Undo(); Check(doc.Table != null && !doc.PendingSource, "Undo invalid source restores table");
-    doc.SetCells([(0, "value", "200")]); Write(records, "[]"); Throws(doc.Save, "External changes block overwrite"); Throws(() => new Document(records).RestoreRecovery(recovery), "Stale recovery cannot overwrite a newer disk revision");
+    doc.SetCells([(0, "value", "200")]); Write(records, "{}"); Throws(doc.Save, "External changes block overwrite"); Throws(() => new Document(records).RestoreRecovery(recovery), "Stale recovery cannot overwrite a newer disk revision");
     Write(records, before); doc = new Document(records);
     var build = BuildService.Build(project, "standard");
     Check(File.ReadAllBytes(Path.Combine(build.Output, "TestMod.mpq/data/global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Portable compiler preserves original table bytes");
     Check(File.Exists(Path.Combine(build.Output, "TestMod.mpq/data/hd/native.bin")), "Native assets included");
     Check(File.ReadAllText(Path.Combine(build.Output, "TestMod.mpq/data/local/lng/strings/overlay.json")).Contains("251780"), "Catalogs sharing IDs with other catalogs still build");
     var d2rl = BuildService.Build(project, "d2rl"); Check(build.Files.Select(f => f.Sha256).SequenceEqual(d2rl.Files.Select(f => f.Sha256)), "Profiles match without overrides");
-    var catalogFile = Path.Combine(target, "source/strings/example/records.json"); var catalog = TableData.Load(catalogFile);
+    var catalogFile = Path.Combine(target, "source/strings/example.json"); var catalog = TableData.Load(catalogFile);
     var catalogRow = catalog.Records[0]!;
     catalogRow["standardTranslations"] = new JsonObject { ["enUS"] = "Short %d" };
     catalogRow["standardReviewedAgainst"] = new JsonObject { ["enUS"] = Hash("Hello %d") };

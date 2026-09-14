@@ -6,10 +6,10 @@ internal static class RowEditingTests
 {
     public static void Run(string root, Action<bool, string> check, Action<Action, string> throws)
     {
-        var dir = Path.Combine(root, "row-editing/source/tables/example"); Directory.CreateDirectory(dir);
+        var dir = Path.Combine(root, "row-editing/source/tables"); Directory.CreateDirectory(dir);
         var table = TableData.FromTsv(Utf8.GetBytes("name\tvalue\r\nA\t1\r\nB\t2\r\nC\t3\r\n"), "example", "global/excel/example.txt");
-        File.WriteAllText(Path.Combine(dir, "schema.json"), Json(table.Schema)); File.WriteAllText(Path.Combine(dir, "records.json"), Json(table.Records));
-        var doc = new Document(Path.Combine(dir, "records.json"));
+        TableData.Write(Path.Combine(dir, "example.json"), table);
+        var doc = new Document(Path.Combine(dir, "example.json"));
         bool Clean() => doc.Diagnostics.All(d => d.Severity != "Error");
         int[] Orders() => doc.Table!.Records.Select(r => r!["order"]!.GetValue<int>()).ToArray();
 
@@ -53,10 +53,9 @@ internal static class RowEditingTests
         doc.InsertRows(doc.Table.Records.Count); check(!doc.Diagnostics.Any(d => d.Severity == "Warning"), "Appending at the bottom never triggers the order advisory");
         var edited = Json(doc.Table.Records); var broken = JsonNode.Parse(edited)!.AsArray(); broken.RemoveAt(0); for (int i = 0; i < broken.Count; i++) broken[i]!["order"] = i;
         check(new TableData((JsonObject)doc.Table.Schema.DeepClone(), broken).Validate("x").Any(d => d.Message.Contains("Original rows were removed")), "Validation names removed original rows");
-        var catalogDir = Path.Combine(root, "row-editing/source/strings/ui"); Directory.CreateDirectory(catalogDir);
-        File.WriteAllText(Path.Combine(catalogDir, "schema.json"), new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }.ToJsonString());
-        File.WriteAllText(Path.Combine(catalogDir, "records.json"), new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }).ToJsonString());
-        throws(() => new Document(Path.Combine(catalogDir, "records.json")).InsertRows(1), "String catalogs refuse row insertion with a clear message");
+        var catalogDir = Path.Combine(root, "row-editing/source/strings"); Directory.CreateDirectory(catalogDir);
+        TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } })));
+        throws(() => new Document(Path.Combine(catalogDir, "ui.json")).InsertRows(1), "String catalogs refuse row insertion with a clear message");
 
         // Views refresh in place when a change only replaced cell values, and rebuild after anything structural.
         var original = File.ReadAllText(doc.FilePath); var tracked = new Document(doc.FilePath);
@@ -69,7 +68,7 @@ internal static class RowEditingTests
         tracked.SetRaw(tracked.Text.Replace("\"value\": \"1\"", "\"value\": \"11\"")); tracked.ApplySource();
         check(tracked.LastChangedRows == null && tracked.Table!.Cell(0, "value") == "11", "Source edits report a structural change");
         // A table with an existing error keeps validating fully, so its diagnostics never go stale after a cell edit.
-        var invalid = JsonNode.Parse(Json(tracked.Table!.Records))!.AsArray(); invalid[1]!["order"] = 7;
+        var invalid = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); invalid["records"]![1]!["order"] = 7;
         File.WriteAllText(tracked.FilePath, Json(invalid)); var erroneous = new Document(tracked.FilePath);
         check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1), "Invalid slot numbering is reported on open");
         erroneous.SetCells([(0, "value", "12")]);

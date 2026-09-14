@@ -18,21 +18,33 @@ internal static class GuideAndDetectionTests
         check(ColumnGuide.Find("armor", "invfile") != null && ColumnGuide.Find("weapons", "1or2handed") != null, "Shared item fields are appended to armor/weapons pages");
         check(ColumnGuide.Url("uniqueitems", "prop3") == "https://eezstreet.github.io/d2rdoc/files/uniqueitems.html#prop3" && ColumnGuide.Url("magicsuffix").Contains("/files/MagicSuffix.html"), "Guide links keep the site's page casing and field anchors");
 
+        // New tables from the guide or a native file
+        var headers = uniques!.Headers();
+        check(ColumnGuide.Files.Count > 80 && ColumnGuide.Files.Any(f => f.Key == "uniqueitems") && uniques.Target == "global/excel/UniqueItems.txt" && ColumnGuide.Files.Select(f => f.Key.ToLowerInvariant()).SequenceEqual(ColumnGuide.Files.Select(f => f.Key.ToLowerInvariant()).Order(StringComparer.Ordinal)), "Guide lists every documented table with a build target, sorted regardless of key casing");
+        check(headers.Contains("prop1") && headers.Contains("prop12") && headers.Contains("index") && !headers.Any(h => h.Contains('#')) && Array.IndexOf(headers, "index") < Array.IndexOf(headers, "prop1"), "Guide headers expand numbered families in documented order");
+        var fromGuide = TableData.FromGuide(uniques, "uniqueitems");
+        check(fromGuide.Columns.SequenceEqual(headers) && fromGuide.Records.Count == 0 && fromGuide.Schema.I("protectedRows") == 0 && fromGuide.EncodeTsv().Length > 0, "Guide-based tables are empty, unprotected and encodable");
+        var newTables = new ModProject(Path.Combine(root, "new-tables"), "nt", "NewTables"); Directory.CreateDirectory(newTables.Root);
+        var created = TableData.Create(newTables, fromGuide);
+        check(File.Exists(created) && created == TableData.FileFor(newTables, "tables", "uniqueitems") && TableData.Load(created).Columns.SequenceEqual(headers) && TableData.IsTableFile(Storage.Read(created)), "Create writes the table as source/tables/<name>.json");
+        bool duplicateRejected = false; try { TableData.Create(newTables, fromGuide); } catch (InvalidDataException) { duplicateRejected = true; }
+        check(duplicateRejected && TableData.NameFor("C:/x/UniqueItems.txt") == "uniqueitems" && TableData.NameFor("Odd Name.txt") == "odd-name", "Create rejects existing tables and names follow import rules");
+
         // Guide-derived reference navigation
         var guideRule = Semantics.GuideReference("skills", "srvmissilea");
         check(guideRule is { ReferenceTables: ["missiles"], ReferenceColumn: "Missile" } && Semantics.GuideReference("skills", "skilldesc") is { ReferenceTables: ["skilldesc"] }, "Data guide reference types become navigation rules");
         check(Semantics.GuideReference("skills", "reqlevel") == null && Semantics.GuideReference("nope", "x") == null, "Non-reference columns produce no guide rule");
         var refProject = new ModProject(Path.Combine(root, "guide-refs"), "refs", "Refs"); Directory.CreateDirectory(refProject.Root);
         var missiles = TableData.FromTsv(Storage.Utf8.GetBytes("missile\tvelocity\narrow\t10\nfirebolt\t20\n"), "missiles", "global/excel/missiles.txt");
-        write(Path.Combine(refProject.Root, "source/tables/missiles/schema.json"), Storage.Json(missiles.Schema)); write(Path.Combine(refProject.Root, "source/tables/missiles/records.json"), Storage.Json(missiles.Records));
+        TableData.Write(TableData.FileFor(refProject, "tables", "missiles"), missiles);
         var hits = Semantics.References(refProject, guideRule!, "firebolt");
         check(hits.Count == 1 && hits[0].Row == 1 && hits[0].Column == "missile", "References match the guide's column name case-insensitively against the project's header");
 
         // Project locales
         var project = new ModProject(Path.Combine(root, "locales"), "loc", "Loc"); Directory.CreateDirectory(project.Root);
         check(project.Locales().SequenceEqual(ModProject.GameLocales) && ModProject.GameLocales[0] == "enUS", "Projects without catalogs offer the game's locales");
-        write(Path.Combine(project.Root, "source/strings/ui/schema.json"), new JsonObject { ["locales"] = new JsonArray("deDE", "frFR") }.ToJsonString());
-        write(Path.Combine(project.Root, "source/strings/item-names/schema.json"), new JsonObject { ["locales"] = new JsonArray("enUS", "deDE") }.ToJsonString());
+        write(Path.Combine(project.Root, "source/strings/ui.json"), new JsonObject { ["schema"] = new JsonObject { ["locales"] = new JsonArray("deDE", "frFR") }, ["records"] = new JsonArray() }.ToJsonString());
+        write(Path.Combine(project.Root, "source/strings/item-names.json"), new JsonObject { ["schema"] = new JsonObject { ["locales"] = new JsonArray("enUS", "deDE") }, ["records"] = new JsonArray() }.ToJsonString());
         check(project.Locales().SequenceEqual(["enUS", "deDE", "frFR"]), "Catalogs are sorted by path before locales are merged in declaration order");
 
         // Steam library parsing

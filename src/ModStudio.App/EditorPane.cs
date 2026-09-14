@@ -96,7 +96,7 @@ public sealed partial class EditorPane : Grid
         HorizontalScrollBarVisibility = ScrollBarVisibility.Visible, VerticalScrollBarVisibility = ScrollBarVisibility.Visible
     };
 
-    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Func<Task>? editSchema = null, Action<EditorPane>? save = null)
+    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Action<EditorPane>? save = null)
     {
         Document = document; error = onError; selection = onSelection; activeGrid = TableGrid;
         Source.SyntaxHighlighting = SourceCodeEditing.Highlighting(document.FilePath);
@@ -122,7 +122,6 @@ public sealed partial class EditorPane : Grid
             Item("Lock / unlock current column against edits", ToggleColumnLock),
             Item("Unlock all edits", () => { document.LockedRows.Clear(); document.LockedColumns.Clear(); Refresh(); }) };
         view.Click += (_, _) => menu.Open(view); toolbar.Children.Add(view);
-        if (editSchema != null) Button("Schema…", () => { _ = editSchema(); });
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
         filter.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } e.Handled = true; } };
         Children.Add(toolbar);
@@ -134,6 +133,7 @@ public sealed partial class EditorPane : Grid
         SetRow(note, 2); note.Margin = new(10, 5); Children.Add(note);
         Source.TextChanged += (_, _) => { if (!syncing) { try { document.SetRaw((document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "") + Source.Text); } catch (Exception ex) { error(ex); Refresh(); } } };
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
+        WireReordering();
         document.Changed += UpdateNote;
         // Fitted widths are recomputed when the table is re-parsed or rows come and go; single cell edits keep them, so an undo does not re-measure 24 columns.
         document.Changed += () => { if (document.LastChangedRows == null) fittedWidths.Clear(); };
@@ -318,10 +318,10 @@ public sealed partial class EditorPane : Grid
         try { (source == mainBar ? frozenBar : mainBar).Value = source.Value; } finally { synchronizingBars = false; }
     }
     public int[] VisibleColumns() => Document.Table == null ? [] : frozenColumns.Where(i => i < Document.Table.Columns.Length).Concat(Enumerable.Range(offset, Math.Min(24, Math.Max(0, Document.Table.Columns.Length - offset)))).Distinct().ToArray();
-    private string Header(int column)
+    private string Header(int column, bool sortMark = true)
     {
         var name = Document.Table!.Columns[column];
-        return (frozenColumns.Contains(column) ? "▣ " : "") + name + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (name == sortColumn ? descending ? " ▼" : " ▲" : "");
+        return (frozenColumns.Contains(column) ? "▣ " : "") + name + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
     }
     private double FitColumn(int index)
     {
@@ -360,7 +360,7 @@ public sealed partial class EditorPane : Grid
         bool previous = refreshing; refreshing = true; var selectedColumn = SelectedColumn;
         try
         {
-            columnMap.Clear();
+            columnMap.Clear(); TableGrid.CanUserReorderColumns = !Document.Table.IsCatalog;
             foreach (var grid in new[] { TableGrid, FrozenGrid })
             {
                 grid.FrozenColumnCount = 0; grid.Columns.Clear();
@@ -368,9 +368,14 @@ public sealed partial class EditorPane : Grid
                 {
                     var column = new LiveCellColumn(this, i) { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.Table.IsCatalog && i < 2 || Document.LockedColumns.Contains(Document.Table.Columns[i]) };
                     column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
-                        var label = new TextBlock { Text = Header(i), TextTrimming = TextTrimming.CharacterEllipsis };
+                        var label = new TextBlock { Text = Header(i, sortMark: false), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
                         // Documented columns show the data-guide card; others keep their complete name.
-                        ColumnGuideTooltip.Attach(label, Document.Table, Document.Table.Columns[i], Document.Table.Columns[i]); return label;
+                        ColumnGuideTooltip.Attach(label, Document.Table, Document.Table.Columns[i], Document.Table.Columns[i]);
+                        if (Document.Table.Columns[i] != sortColumn) return label;
+                        // The sort chevron sits at the far edge so a narrow column trims the name, never the indicator.
+                        var chevron = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(descending ? "M0,0 L3.5,4 L7,0" : "M0,4 L3.5,0 L7,4"), Stroke = new SolidColorBrush(Color.Parse("#D8BC86")), StrokeThickness = 1.5, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round, Width = 7, Height = 4, Stretch = Stretch.None, Margin = new Thickness(4, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+                        DockPanel.SetDock(chevron, Dock.Right);
+                        return new DockPanel { Children = { chevron, label } };
                     });
                     columnMap[column] = i; grid.Columns.Add(column);
                     column.PropertyChanged += (_, e) =>

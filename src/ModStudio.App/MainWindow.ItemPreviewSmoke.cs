@@ -17,16 +17,15 @@ public partial class MainWindow
         void Table(string name, string text)
         {
             var table = TableData.FromTsv(Utf8.GetBytes(text), name, "global/excel/" + name + ".txt");
-            var dir = System.IO.Path.Combine(project!.Root, "source/tables", name); Require(!Directory.Exists(dir), "Item smoke needs a fresh fixture: " + dir); Directory.CreateDirectory(dir);
-            File.WriteAllText(System.IO.Path.Combine(dir, "records.json"), Json(table.Records)); File.WriteAllText(System.IO.Path.Combine(dir, "schema.json"), Json(table.Schema));
+            var file = TableData.FileFor(project!, "tables", name); Require(!File.Exists(file), "Item smoke needs a fresh fixture: " + file); TableData.Write(file, table);
         }
         Table("uniqueitems", "index\tcode\tlvl req\tprop1\tmin1\tmax1\tvery_long_column_name_for_preview_testing\nFirst\thax\t5\tstr\t2\t4\t0\nSecond\thax\t9\tstr\t8\t8\t1\n");
         Table("weapons", "code\tnamestr\tmindam\tmaxdam\tlevelreq\n" + "hax\thax\t3\t6\t1\n");
         Table("properties", "code\tfunc1\tstat1\nstr\t1\tstrength\n");
         Table("itemstatcost", "Stat\tdescfunc\tdescstrpos\nstrength\t19\tstrength\n");
-        var dir = System.IO.Path.Combine(project!.Root, "source/strings/preview-test"); Directory.CreateDirectory(dir);
-        File.WriteAllText(System.IO.Path.Combine(dir, "records.json"), new JsonArray(new[] { ("First", "First Unique"), ("Second", "Second Unique"), ("hax", "Hand Axe"), ("strength", "%+d to Strength") }.Select(x => (JsonNode)new JsonObject { ["Key"] = x.Item1, ["translations"] = new JsonObject { ["enUS"] = x.Item2 } }).ToArray()).ToJsonString());
-        var pane = (await OpenDocumentAsync(System.IO.Path.Combine(project.Root, "source/tables/uniqueitems/records.json"), true))!;
+        var catalogFile = TableData.FileFor(project!, "strings", "preview-test");
+        TableData.Write(catalogFile, new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "preview-test", ["locales"] = new JsonArray("enUS"), ["target"] = "local/lng/strings/preview-test.json" }, new JsonArray(new[] { ("First", "First Unique"), ("Second", "Second Unique"), ("hax", "Hand Axe"), ("strength", "%+d to Strength") }.Select(x => (JsonNode)new JsonObject { ["Key"] = x.Item1, ["translations"] = new JsonObject { ["enUS"] = x.Item2 } }).ToArray())));
+        var pane = (await OpenDocumentAsync(TableData.FileFor(project!, "tables", "uniqueitems"), true))!;
         Require(itemPreviewTab.IsVisible, "Unique item table did not reveal the preview tab.");
         InspectorTabs.SelectedItem = itemPreviewTab;
         await PendingItemPreview; // Filesystem notifications can invalidate the first request.
@@ -48,7 +47,7 @@ public partial class MainWindow
             using (var guideImage = new RenderTargetBitmap(new PixelSize((int)Math.Ceiling(guideCard.Bounds.Width), (int)Math.Ceiling(guideCard.Bounds.Height)), new Vector(96, 96)))
             { guideImage.Render(guideCard); guideImage.Save(System.IO.Path.Combine(output, "column-guide.png"), PngBitmapEncoderOptions.Default); }
         ToolTip.SetIsOpen(codeHeader!, false);
-        Require(itemLocale.ItemsSource is IEnumerable<string> localeChoices && localeChoices.SequenceEqual(project.Locales()) && itemLocale.SelectedItem as string == "enUS", "Locale picker does not offer the project's catalog locales.");
+        Require(itemLocale.ItemsSource is IEnumerable<string> localeChoices && localeChoices.SequenceEqual(project!.Locales()) && itemLocale.SelectedItem as string == "enUS", "Locale picker does not offer the project's catalog locales.");
         InspectorTabs.SelectedIndex = 1; await Task.Delay(200);
         var guidedField = RowEditorFields.GetVisualDescendants().OfType<StackPanel>().FirstOrDefault(p => ToolTip.GetTip(p) is Control && p.GetLogicalDescendants().OfType<TextBox>().Any(t => Avalonia.Automation.AutomationProperties.GetName(t) == "prop1"));
         Require(guidedField != null, "Row editor field for prop1 has no data-guide card.");
@@ -94,21 +93,17 @@ public partial class MainWindow
         Require(!ToolTip.GetIsOpen(anchor), "Closed item tab retained its tooltip.");
         Require(!itemPreviewTab.IsVisible && InspectorTabs.SelectedIndex == 0, "Leaving item tables did not hide preview and select Details.");
         Table("setitems", "index\titem\tset\nFirst\thax\tTestSet\n");
-        var setPane = await OpenDocumentAsync(System.IO.Path.Combine(project.Root, "source/tables/setitems/records.json"));
+        var setPane = await OpenDocumentAsync(TableData.FileFor(project!, "tables", "setitems"));
         Require(itemPreviewTab.IsVisible, "Set item table did not reveal the preview tab.");
         InspectorTabs.SelectedItem = itemPreviewTab;
         var setPreview = PendingItemPreview;
-        var schemaPane = await OpenDocumentAsync(System.IO.Path.Combine(project.Root, "source/tables/setitems/schema.json"));
+        var schemaPane = await OpenDocumentAsync(System.IO.Path.Combine(project!.Root, "modinfo.json"));
         await setPreview;
-        Require(!itemPreviewTab.IsVisible && InspectorTabs.SelectedIndex == 0, "Schema view retained the item-only inspector tab.");
+        Require(!itemPreviewTab.IsVisible && InspectorTabs.SelectedIndex == 0, "A plain JSON document retained the item-only inspector tab.");
         await CloseTabAsync(tabs.First(t => t.Content == setPane));
         await CloseTabAsync(tabs.First(t => t.Content == schemaPane));
         // Remove fixture-only dependencies so the existing build smoke uses its original source set.
-        foreach (var name in new[] { "uniqueitems", "setitems", "weapons", "properties", "itemstatcost" })
-        {
-            var folder = Inside(project.Root, "source/tables/" + name);
-            File.Delete(System.IO.Path.Combine(folder, "records.json")); File.Delete(System.IO.Path.Combine(folder, "schema.json")); Directory.Delete(folder);
-        }
-        File.Delete(System.IO.Path.Combine(dir, "records.json")); Directory.Delete(dir);
+        foreach (var name in new[] { "uniqueitems", "setitems", "weapons", "properties", "itemstatcost" }) File.Delete(TableData.FileFor(project, "tables", name));
+        File.Delete(catalogFile);
     }
 }

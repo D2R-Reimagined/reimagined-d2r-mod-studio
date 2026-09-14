@@ -61,14 +61,14 @@ public static class BuildService
             foreach (var kind in new[] { "tables", "strings" })
             {
                 var sourceRoot = Path.Combine(snapshot, "source", kind); if (!Directory.Exists(sourceRoot)) continue;
-                foreach (var dir in Directory.GetDirectories(sourceRoot).Order(StringComparer.Ordinal))
+                Require(!ProjectLayout.NeedsUpgrade(snapshot), ProjectLayout.UpgradeAdvice);
+                foreach (var file in Directory.GetFiles(sourceRoot, "*.json").Order(StringComparer.Ordinal))
                 {
-                    token.ThrowIfCancellationRequested(); var file = Path.Combine(dir, "records.json"); var original = Inside(project.Root, Relative(snapshot, file));
+                    token.ThrowIfCancellationRequested(); var original = Inside(project.Root, Relative(snapshot, file));
                     try
                     {
-                        Require(!Directory.Exists(Path.Combine(dir, "records")), "Individual records/ folders must be consolidated before opening this project.");
-                        var cacheId = Relative(snapshot, dir);
-                        var cacheKey = Hash(contextKey + BuildCache.FileHash(file) + BuildCache.FileHash(Path.Combine(dir, "schema.json")));
+                        var cacheId = Relative(snapshot, file);
+                        var cacheKey = Hash(contextKey + BuildCache.FileHash(file));
                         if (previous.TryGetValue(cacheId, out var saved) && saved.Key == cacheKey && saved.Files.All(f => File.Exists(Inside(output, f.Path)) && BuildCache.FileHash(Inside(output, f.Path)) == f.Sha256))
                         {
                             foreach (var savedFile in saved.Files) Require(generated.Add(savedFile.Path), "Duplicate generated target: " + savedFile.Path);
@@ -77,7 +77,7 @@ public static class BuildService
                         }
                         var beforeTargets = generated.ToHashSet(StringComparer.OrdinalIgnoreCase);
                         compiled++;
-                        progress?.Invoke($"Checking {Path.GetFileName(dir)}…"); var table = TableData.Load(file); var issues = table.Validate(original); diagnostics.AddRange(issues); if (issues.Count > 0) continue;
+                        progress?.Invoke($"Checking {Path.GetFileNameWithoutExtension(file)}…"); var table = TableData.Load(file); var issues = table.Validate(original); diagnostics.AddRange(issues); if (issues.Count > 0) continue;
                         if (kind == "strings")
                         {
                             // String IDs are not unique across catalogs in the shipped game: chinese-overlay.json repeats IDs from item-names, skills and others, and skills/ui share 27956.
@@ -185,7 +185,7 @@ public static class BuildService
         {
             var rules = Semantics.Rules(snapshotProject);
             var involved = rules.Select(r => r.Table).Concat(rules.SelectMany(r => r.ReferenceTables ?? [])).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
-                .SelectMany(name => new[] { $"source/tables/{name}/records.json", $"source/tables/{name}/schema.json" }).Append("source/semantics.json");
+                .Select(name => $"source/tables/{name}.json").Append("source/semantics.json");
             key = Hash(typeof(BuildService).Module.ModuleVersionId + string.Join("\n", involved.Select(relative => relative + "=" + sourceHashes.GetValueOrDefault(Inside(project.Root, relative), "missing"))));
         }
         catch (Exception e) when (e is not OperationCanceledException) { key = ""; } // invalid rules: Check reports the problem itself, uncached

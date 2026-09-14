@@ -29,6 +29,19 @@ public sealed record ColumnGuideEntry(string Name, string Description, string[]?
 }
 public sealed record ColumnGuideFile(string Key, string Title, string Overview, ColumnGuideEntry[] Fields)
 {
+    /// <summary>Column headers in documented order, with numbered families (prop#, min#) expanded through their alternative names.</summary>
+    public string[] Headers()
+    {
+        var headers = new List<string>();
+        foreach (var field in Fields)
+        {
+            var numbered = field.Name.Contains('#') ? (field.AltNames ?? []).Where(alt => !alt.Contains('#')).ToArray() : [];
+            headers.AddRange(numbered.Length > 0 ? numbered : [field.Name.Contains('#') ? field.Name.Replace("#", "1") : field.Name]);
+        }
+        return headers.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+    /// <summary>The native file this page documents, as a build target under the data root.</summary>
+    public string Target => "global/excel/" + (Title.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ? Title : Key + ".txt");
     private Dictionary<string, ColumnGuideEntry>? index;
     public ColumnGuideEntry? Find(string column)
     {
@@ -62,6 +75,8 @@ public static class ColumnGuide
             ?? throw new InvalidDataException("Column guide resource is empty.");
     }
     public static string Generated => bundle.Value.Generated;
+    /// <summary>Every documented game table, sorted by key: the catalog offered when creating a new table.</summary>
+    public static IReadOnlyList<ColumnGuideFile> Files => bundle.Value.Files.Values.OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase).ToArray();
     public static string Commit => bundle.Value.Commit;
     /// <summary>Guide page for a table name such as "uniqueitems" or a target like "global/excel/UniqueItems.txt".</summary>
     public static ColumnGuideFile? File(string? table)

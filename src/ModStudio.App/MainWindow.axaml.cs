@@ -43,7 +43,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeLayout(); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
@@ -85,7 +85,7 @@ public partial class MainWindow : Window
         if (runningBuild != null && !controller.Running && operation == null) RunState.Text = "Last game: " + runningBuild + " · exited";
     }
     private void Log(string text) => Dispatcher.UIThread.Post(() => { Output.Text = ((Output.Text ?? "") + text + Environment.NewLine); if (Output.Text.Length > 60000) Output.Text = Output.Text[^50000..]; Status.Text = text; });
-    private void ShowError(Exception e) { Status.Text = e.Message; Output.Text += e.Message + Environment.NewLine; BottomTabs.SelectedIndex = 1; }
+    private void ShowError(Exception e) { Status.Text = e.Message; Output.Text += e.Message + Environment.NewLine; ShowBottomTab(1); }
     private async Task<string?> PickFolderAsync(string title)
     {
         var result = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false }); return result.FirstOrDefault()?.TryGetLocalPath();
@@ -100,6 +100,23 @@ public partial class MainWindow : Window
         var stack = new StackPanel { Margin = new(20), Spacing = 16 }; stack.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
         var buttons = new WrapPanel(); foreach (var option in options) { var button = new Button { Content = option }; button.Click += (_, _) => dialog.Close(option); buttons.Children.Add(button); }
         stack.Children.Add(buttons); dialog.Content = stack; return await dialog.ShowDialog<string?>(this);
+    }
+    /// <summary>
+    /// Projects written before single-file tables keep a folder per table. They are converted in place after the user agrees;
+    /// declining leaves the project untouched and unopened, since the editor, build and checks only read the current layout.
+    /// </summary>
+    private async Task<bool> UpgradeLayoutIfNeededAsync(ModProject candidate)
+    {
+        var folders = await Task.Run(() => ProjectLayout.LegacyTableFolders(candidate.Root));
+        if (folders.Count == 0) return true;
+        var choice = Program.Arguments.Contains("--smoke") ? "Convert" : await ChooseAsync("Convert project layout",
+            $"{candidate.Name} stores each table as a folder with schema.json and records.json ({folders.Count} tables). Studio now keeps each table in a single file, source/tables/<name>.json, with the schema inside it.\n\n" +
+            "Convert now? Each folder is rewritten as one file and the old files are removed. Anything else inside a table folder is kept. Commit or back up first if you want to be able to compare.",
+            "Convert", "Not now");
+        if (choice != "Convert") { Status.Text = "Project not opened: convert its tables to the single-file layout first."; return false; }
+        int converted = await Task.Run(() => ProjectLayout.Upgrade(candidate.Root, message => Dispatcher.UIThread.Post(() => Status.Text = message)));
+        Log($"Converted {converted} tables to single-file layout in {candidate.Root}");
+        return true;
     }
     private async Task<bool> MayLeaveAsync()
     {
@@ -164,6 +181,7 @@ public partial class MainWindow : Window
     {
         Require(operation == null, "Wait for the current operation before switching projects.");
         var nextProject = await Task.Run(() => ModProject.Open(root));
+        if (!await UpgradeLayoutIfNeededAsync(nextProject)) return;
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose();
         project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
@@ -199,7 +217,7 @@ public partial class MainWindow : Window
             foreach (var tab in tabs)
             {
                 if (tab.Content is not EditorPane pane) continue;
-                if (pane.Document.FilePath == e.FullPath || e is RenamedEventArgs renamed && pane.Document.FilePath == renamed.OldFullPath || System.IO.Path.Combine(System.IO.Path.GetDirectoryName(pane.Document.FilePath)!, "schema.json") == e.FullPath)
+                if (pane.Document.FilePath == e.FullPath || e is RenamedEventArgs renamed && pane.Document.FilePath == renamed.OldFullPath)
                 {
                     try { if (!pane.Document.ExternalChange) continue; } catch (IOException) { }
                     Status.Text = "File changed on disk. Use Reload from the document tab before saving: " + System.IO.Path.GetFileName(pane.Document.FilePath);
@@ -212,7 +230,6 @@ public partial class MainWindow : Window
     {
         bool preview = tab == previewTab;
         var label = tab.Content is EditorPane pane ? Label(pane.Document) : System.IO.Path.GetFileName(tab.Tag as string);
-        if (tab.Content is not EditorPane && label == "records.json") label = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(tab.Tag as string));
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         header.Children.Add(new TextBlock { Text = label + (preview ? " · preview" : ""), FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
             FontStyle = preview ? FontStyle.Italic : FontStyle.Normal,
@@ -363,8 +380,7 @@ public partial class MainWindow : Window
         Status.Text = "Loading " + System.IO.Path.GetFileName(file) + "…";
         var document = await Task.Run(() => new Document(file));
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
-        var schemaFile = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(file)!, "schema.json");
-        var pane = new EditorPane(document, ShowError, UpdateInspector, System.IO.Path.GetFileName(file) == "records.json" && File.Exists(schemaFile) ? async () => { try { await OpenDocumentAsync(schemaFile); } catch (Exception e) { ShowError(e); } } : null, SavePane);
+        var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane);
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
@@ -382,7 +398,8 @@ public partial class MainWindow : Window
         }
         RefreshStatus(); Status.Text = $"Opened {Label(document)} · {document.Table?.Records.Count ?? 0:N0} rows"; return pane;
     }
-    private static string Label(Document doc) => (doc.IsDirty ? "● " : "") + (System.IO.Path.GetFileName(doc.FilePath) == "records.json" ? System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(doc.FilePath)) : System.IO.Path.GetFileName(doc.FilePath));
+    /// <summary>Tab title: table files show their table name, everything else its file name.</summary>
+    private static string Label(Document doc) => (doc.IsDirty ? "● " : "") + (doc.Table != null && doc.FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileNameWithoutExtension(doc.FilePath) : System.IO.Path.GetFileName(doc.FilePath));
     private string RecoveryFile(Document doc) => Inside(project!.Cache, "recovery/" + Hash(doc.FilePath) + ".json");
     private readonly Dictionary<Document, DateTime> lastEdit = [];
     private static readonly TimeSpan RecoveryIdle = TimeSpan.FromSeconds(2);
@@ -535,7 +552,7 @@ public partial class MainWindow : Window
                 if (!settings.SaveBeforePlay && await ChooseAsync("Unsaved documents", "Save all documents before this build?", "Save and continue", "Cancel") != "Save and continue") return;
                 if (!await SaveAllAsync()) return;
             }
-            buildDiagnostics.Clear(); RefreshStatus(); BottomTabs.SelectedIndex = 1; operation = new();
+            buildDiagnostics.Clear(); RefreshStatus(); ShowBottomTab(1); operation = new();
             try
             {
                 var revisions = tabs.Select(t => t.Content).OfType<EditorPane>().ToDictionary(p => p.Document, p => p.Document.Revision);
@@ -546,7 +563,7 @@ public partial class MainWindow : Window
             }
             finally { operation.Dispose(); operation = null; }
         }
-        catch (BuildFailure e) { buildDiagnostics.AddRange(e.Diagnostics); RefreshStatus(); BottomTabs.SelectedIndex = 0; Status.Text = "Build blocked. Select a problem to locate its source."; }
+        catch (BuildFailure e) { buildDiagnostics.AddRange(e.Diagnostics); RefreshStatus(); ShowBottomTab(0); Status.Text = "Build blocked. Select a problem to locate its source."; }
         catch (Exception e) { ShowError(e); }
     }
     private async Task SmokeAsync()
@@ -581,6 +598,8 @@ public partial class MainWindow : Window
             await LoadProjectAsync(root); var results = new List<object>();
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeItemPreviewsAsync(output);
+            await SmokeLayoutAsync(output);
+            await SmokeReorderAsync(root);
             var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
             File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
             new RunSettings(GameDirectory: detectedGame).Save(project!, Profile); RefreshLaunchTargets();
@@ -598,10 +617,10 @@ public partial class MainWindow : Window
             ExplorerSearch.Text = "SOUNDS"; await Task.Delay(400); UpdateLayout();
             var filteredRoots = ((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).ToArray();
             var filteredTable = filteredRoots.Single(e => e.Name == "source").Children.Single(e => e.Name == "tables").Children.Single();
-            Require(filteredTable.Name == "sounds" && filteredTable.SchemaPath != null && !filteredTable.Directory, "Explorer search did not preserve logical table metadata or exclude unrelated files.");
-            Require(ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().Any(item => item.DataContext is ProjectEntry { Name: "sounds" }), "Search ancestors were not expanded to reveal the matching file.");
+            Require(filteredTable.Name == "sounds.json" && filteredTable.IsTable && !filteredTable.Directory, "Explorer search did not preserve table metadata or exclude unrelated files.");
+            Require(ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().Any(item => item.DataContext is ProjectEntry { Name: "sounds.json" }), "Search ancestors were not expanded to reveal the matching file.");
             ExplorerSearch.Text = "source\\tables\\cube"; await Task.Delay(250);
-            Require(((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Single().Children.Single().Children.Single().Name == "cubemain", "Explorer relative-path search failed.");
+            Require(((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Single().Children.Single().Children.Single().Name == "cubemain.json", "Explorer relative-path search failed.");
             ExplorerSearch.Text = "missing-file-xyz"; await Task.Delay(250);
             Require(ExplorerSearchStatus.IsVisible && !((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Any(), "Explorer search did not display the empty state.");
             ClearExplorerSearch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(250);
@@ -617,13 +636,19 @@ public partial class MainWindow : Window
                 Require(Flatten(explorerEntries).Single(p => p.Name == "source").IsExpanded, "Refresh lost the expansion state of an unrelated folder.");
                 Directory.Delete(newFolder, true); await RefreshExplorerAsync();
                 Require(!Flatten(explorerEntries).Any(p => p.Name == "smoke-notes"), "Refresh kept a deleted folder.");
+                // A guide-based table opens as an empty, editable grid and shows up as a table file.
+                var gemsRecords = TableData.Create(project!, TableData.FromGuide(ColumnGuide.File("gems")!, "gems"));
+                await RefreshExplorerAsync(gemsRecords); await OpenDocumentAsync(gemsRecords); await Task.Delay(200);
+                Require(ProjectTree.SelectedItem is ProjectEntry { Name: "gems.json", IsTable: true } && Active is { } gemsPane && gemsPane.Document.Table is { } gemsTable && gemsTable.Records.Count == 0 && gemsTable.Columns.Length > 10, "New guide table did not open as an empty table.");
+                Require(tabs.OfType<TabItem>().Any(t => t.Header is StackPanel h && h.Children.OfType<TextBlock>().Any(x => x.Text?.StartsWith("gems") == true && !x.Text.Contains(".json"))), "Table tab title should be the table name.");
+                await CloseTabAsync((TabItem)Documents.SelectedItem!); File.Delete(gemsRecords); await RefreshExplorerAsync();
                 Flatten(explorerEntries).Single(p => p.Name == "source").IsExpanded = false; FilterExplorer(); await Task.Delay(100);
-                var menu = EntryMenu(Flatten(explorerEntries).Single(p => p.Name == "skills"));
-                Require(menu.OfType<MenuItem>().Select(m => m.Header?.ToString()).Intersect(["Open Table", "Edit Schema…", "New", "Rename…", "Delete…", "Copy Path", "Copy Relative Path", "Open File Location"]).Count() == 8, "Table context menu is missing actions.");
+                var menu = EntryMenu(Flatten(explorerEntries).Single(p => p.Name == "skills.json"));
+                Require(menu.OfType<MenuItem>().Select(m => m.Header?.ToString()).Intersect(["Open Table", "New", "Rename…", "Delete…", "Copy Path", "Copy Relative Path", "Open File Location"]).Count() == 7, "Table context menu is missing actions.");
             }
             var projectEntries = (IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!;
             var sourceEntry = projectEntries.Single(p => p.Name == "source"); var tableEntries = sourceEntry.Children.Single(p => p.Name == "tables").Children;
-            Require(tableEntries.Where(p => p.SchemaPath != null).All(p => !p.Directory && p.Children.All(c => c.Name is not ("records.json" or "schema.json"))), "Schema/records are not folded into table nodes.");
+            Require(tableEntries.Count(p => p.IsTable) >= 3 && tableEntries.Where(p => p.IsTable).All(p => !p.Directory && p.Name.EndsWith(".json")), "Table files are not marked as tables.");
             await Task.Delay(100);
             var folder = ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().First(t => t.DataContext is ProjectEntry p && p.Name == "source");
             var toggle = folder.GetVisualDescendants().OfType<ToggleButton>().First();
@@ -633,8 +658,8 @@ public partial class MainWindow : Window
             Require(folder.IsExpanded, "Clicking the expanded chevron hit area failed.");
             await Task.Delay(80);
             var tablesFolder = ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().First(t => t.DataContext is ProjectEntry p && p.Name == "tables"); tablesFolder.IsExpanded = true;
-            var previewA = System.IO.Path.Combine(root, "source/tables/sounds/schema.json");
-            var previewB = System.IO.Path.Combine(root, "source/tables/skills/schema.json");
+            var previewA = System.IO.Path.Combine(root, "source/tables/sounds.json");
+            var previewB = System.IO.Path.Combine(root, "source/tables/skills.json");
             var loadingPreview = OpenDocumentAsync(previewA, true);
             Require(previewTab?.Content is StackPanel loadingPanel && loadingPanel.Children.OfType<ProgressBar>().Any(), "Loading tab did not appear immediately.");
             await loadingPreview;
@@ -692,7 +717,7 @@ public partial class MainWindow : Window
             tabs.Clear(); previewTab = null;
             foreach (var name in new[] { "sounds", "cubemain", "skills" })
             {
-                var timer = Stopwatch.StartNew(); var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables", name, "records.json"));
+                var timer = Stopwatch.StartNew(); var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables", name + ".json"));
                 Require(pane != null, "No table pane."); pane!.Jump(Math.Min(200, pane.Document.Table!.Records.Count - 1));
                 await Task.Delay(300);
                 var realizedRows = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Count();
@@ -1011,6 +1036,14 @@ public partial class MainWindow : Window
             var rowInputRight = RowEditorFields.GetVisualDescendants().OfType<TextBox>().First();
             Require(rowInputRight.TranslatePoint(new Point(rowInputRight.Bounds.Width, 0), rowEditorScroll)!.Value.X <= rowScrollbar.TranslatePoint(new Point(0,0), rowEditorScroll)!.Value.X, "Row editor scrollbar overlaps input fields.");
             InspectorTabs.SelectedIndex = 0;
+            var newTable = new NewTableWindow(project!); _ = newTable.ShowDialog<TableData?>(this); await Task.Delay(150);
+            using (var newTableBitmap = new RenderTargetBitmap(new PixelSize(720, (int)Math.Max(newTable.Bounds.Height, 600)), new Vector(96,96)))
+            { newTableBitmap.Render(newTable); newTableBitmap.Save(System.IO.Path.Combine(output, "new-table.png"), PngBitmapEncoderOptions.Default); }
+            newTable.Close(null);
+            var importWindow = new ImportModWindow(StudioPreferences.DefaultProjectsFolder); _ = importWindow.ShowDialog<ImportPlan?>(this); await Task.Delay(150);
+            using (var importBitmap = new RenderTargetBitmap(new PixelSize(760, (int)Math.Max(importWindow.Bounds.Height, 600)), new Vector(96,96)))
+            { importBitmap.Render(importWindow); importBitmap.Save(System.IO.Path.Combine(output, "import-mod.png"), PngBitmapEncoderOptions.Default); }
+            importWindow.Close(null);
             var tutorial = new QuickStartWindow(); var tutorialDialog = tutorial.ShowDialog(this); await Task.Delay(100);
             using (var tutorialBitmap = new RenderTargetBitmap(new PixelSize(720,640), new Vector(96,96)))
             { tutorialBitmap.Render(tutorial); tutorialBitmap.Save(System.IO.Path.Combine(output, "quick-start.png"), PngBitmapEncoderOptions.Default); }
@@ -1067,7 +1100,7 @@ public partial class MainWindow : Window
             { mdBitmap.Render(this); mdBitmap.Save(System.IO.Path.Combine(output, "markdown-preview.png"), PngBitmapEncoderOptions.Default); }
             markdownPane.Document.Undo(); markdownPane.Refresh();
             Require(!markdownPane.MarkdownPreview.Markdown!.Contains("Unsaved preview text"), "Markdown preview did not refresh after undo.");
-            var uniqueFile = System.IO.Path.Combine(root, "source/tables/uniqueitems/records.json");
+            var uniqueFile = System.IO.Path.Combine(root, "source/tables/uniqueitems.json");
             if (File.Exists(uniqueFile))
             {
                 var unique = await OpenDocumentAsync(uniqueFile); unique!.Jump(0, "code"); unique.ToggleFrozenRows(); unique.ToggleFrozenColumn("code");
@@ -1089,6 +1122,7 @@ public partial class MainWindow : Window
                 targetPane.Document.Undo(); await Task.Delay(250); await RefreshSemanticInspectorAsync();
                 Require(ReferenceList.ItemsSource is List<ReferenceHit> { Count: > 0 }, "Undo did not refresh the reference inspector.");
             }
+            await SmokeLayoutUpgradeAsync(root);
             File.WriteAllText(System.IO.Path.Combine(output, "ui-smoke.json"), JsonSerializer.Serialize(results, Pretty));
         }
         catch (Exception e)

@@ -41,7 +41,7 @@ public static class Semantics
         if (entry?.RefFile == null) return null;
         return new(table, column, ReferenceTables: [entry.RefFile.ToLowerInvariant()], ReferenceColumn: entry.RefField ?? "code");
     }
-    public static string TableFile(ModProject project, string name) => Inside(project.Root, $"source/tables/{name}/records.json");
+    public static string TableFile(ModProject project, string name) => TableData.FileFor(project, "tables", name);
     public static List<ReferenceHit> References(ModProject project, SemanticRule rule, string value, IReadOnlyDictionary<string, TableData>? buffers = null, CancellationToken token = default)
     {
         var result = new List<ReferenceHit>();

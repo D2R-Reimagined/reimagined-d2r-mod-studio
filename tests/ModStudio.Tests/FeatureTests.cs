@@ -37,6 +37,8 @@ internal static class FeatureTests
         var nestedRoot = Path.Combine(root, "nested-project");
         write(Path.Combine(nestedRoot, "content/mods/Nested/Nested.mpq/data/global/excel/example.txt"), "name\tvalue\nExample\t1\n");
         write(Path.Combine(nestedRoot, "scripts/build.js"), "original script"); write(Path.Combine(nestedRoot, ".git/config"), "original git metadata");
+        var slashCandidate = LegacyMigration.Detect(nestedRoot + Path.DirectorySeparatorChar).Single();
+        check(slashCandidate.Root == nestedRoot && !slashCandidate.Root.EndsWith(Path.DirectorySeparatorChar), "Detect normalizes a trailing separator so in-place staging and backups stay beside the project");
         var nestedCandidate = LegacyMigration.Detect(nestedRoot).Single();
         check(nestedCandidate.Root == nestedRoot && nestedCandidate.DataRoot.EndsWith("Nested.mpq" + Path.DirectorySeparatorChar + "data"), "Migration finds deeply nested data and preserves selected project root");
         var backupRoot = nestedRoot + ".backup";
@@ -44,13 +46,13 @@ internal static class FeatureTests
         write(Path.Combine(nestedRoot, ".studio/recovery/unsaved.json"), "keep recovery");
         for (int i = 0; i < 24; i++) write(Path.Combine(nestedRoot, $"scripts/extra/{i}.txt"), new string((char)('a' + i), 300000));
         var stages = new List<string>();
-        var inPlace = LegacyMigration.MigrateInPlace(nestedCandidate, "Nested", backupRoot, progress: stages.Add);
+        var inPlace = LegacyMigration.MigrateInPlace(new LegacyProject(nestedRoot + Path.DirectorySeparatorChar, nestedCandidate.DataRoot, nestedCandidate.Name, false), "Nested", backupRoot, progress: stages.Add);
         check(!Directory.Exists(Path.Combine(nestedRoot, ".studio/builds")) && File.Exists(Path.Combine(backupRoot, ".studio/builds/old/data/cache.bin")), "In-place migration leaves generated build caches in backup only");
         check(File.ReadAllText(Path.Combine(nestedRoot, ".studio/recovery/unsaved.json")) == "keep recovery", "Cache exclusion preserves unsaved recovery files");
         check(Enumerable.Range(0, 24).All(i => File.ReadAllText(Path.Combine(nestedRoot, $"scripts/extra/{i}.txt")) == new string((char)('a' + i), 300000)), "Parallel preservation copies every file without mixing buffers");
         check(stages.Any(s => s.StartsWith("Preserving repository") && s.Contains("MiB") && s.Contains("workers")), "Preservation reports file counts bytes and bounded workers");
         check(stages.Count(s => s.StartsWith("Verifying preserved project profile:")) == 2 && !stages.Any(s => s.StartsWith("Verifying migrated profile:")), "In-place migration verifies each profile once after preservation");
-        check(inPlace.Project.Root == nestedRoot && File.Exists(Path.Combine(nestedRoot, "source/tables/example/records.json")), "In-place migration publishes converted source at the original root");
+        check(inPlace.Project.Root == nestedRoot && File.Exists(Path.Combine(nestedRoot, "source/tables/example.json")), "In-place migration publishes converted source at the original root");
         check(File.ReadAllText(Path.Combine(nestedRoot, "scripts/build.js")) == "original script" && File.ReadAllText(Path.Combine(nestedRoot, ".git/config")) == "original git metadata", "In-place migration preserves scripts and Git metadata");
         check(File.Exists(Path.Combine(backupRoot, "content/mods/Nested/Nested.mpq/data/global/excel/example.txt")), "In-place migration retains the original nested files in backup");
         throws(() => LegacyMigration.MigrateInPlace(nestedCandidate, "Nested", backupRoot), "In-place migration refuses to overwrite a backup");
@@ -138,12 +140,14 @@ internal static class FeatureTests
 
         var splitRoot = Path.Combine(root, "split-project"); Directory.CreateDirectory(splitRoot);
         foreach (var source in project.SourceFiles()) { var dest = Inside(splitRoot, Relative(target, source)); Directory.CreateDirectory(Path.GetDirectoryName(dest)!); File.Copy(source, dest); }
-        var splitFile = Path.Combine(splitRoot, "source/tables/uniqueitems/records.json"); var splitRecords = (JsonArray)Read(splitFile);
+        // Oldest layout: a folder per table holding schema.json and one file per record.
+        var splitFile = Path.Combine(splitRoot, "source/tables/uniqueitems.json"); var splitTable = TableData.Load(splitFile); var splitRecords = splitTable.Records;
+        WriteJson(Path.Combine(splitRoot, "source/tables/uniqueitems/schema.json"), splitTable.Schema);
         foreach (var row in splitRecords) WriteJson(Path.Combine(splitRoot, "source/tables/uniqueitems/records", row.S("sourceId") + ".json"), row!);
         File.Delete(splitFile);
         var splitCandidate = LegacyMigration.Detect(splitRoot).Single(); check(splitCandidate.SplitRecords, "Migration detects individual JSON records");
         var consolidated = LegacyMigration.Migrate(splitCandidate, Path.Combine(root, "consolidated"), "AdoptedMod");
-        check(JsonNode.DeepEquals(Read(Path.Combine(consolidated.Project.Root, "source/tables/uniqueitems/records.json")), splitRecords), "Split-record migration preserves row content and order");
+        check(JsonNode.DeepEquals(TableData.Load(Path.Combine(consolidated.Project.Root, "source/tables/uniqueitems.json")).Records, splitRecords) && !Directory.Exists(Path.Combine(consolidated.Project.Root, "source/tables/uniqueitems")), "Split-record migration preserves row content and order in a single-file table");
         check(File.ReadAllText(Path.Combine(consolidated.Project.Root, "data/hd/bin/asset.bin")) == "native asset", "Migration preserves native asset folders that share cache-like names");
         check(Directory.Exists(Path.Combine(splitRoot, "source/tables/uniqueitems/records")), "Split-record migration leaves original records in place");
         write(Path.Combine(splitRoot, "data/global/excel/uniqueitems.txt"), "index\tcode\tlvl\nConflict\taxe1\t10\n");

@@ -10,8 +10,13 @@
     <Style Selector="TextBlock.muted"><Setter Property="Foreground" Value="#B9AD97" /></Style>
     <Style Selector="Button.explorerTool"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="4" /><Setter Property="Margin" Value="1,0" /><Setter Property="Width" Value="26" /><Setter Property="Height" Value="26" /><Setter Property="MinWidth" Value="26" /><Setter Property="MinHeight" Value="26" /></Style>
     <Style Selector="Button.explorerTool:pointerover /template/ ContentPresenter"><Setter Property="Background" Value="#2E2F31" /></Style>
+    <Style Selector="Button.stripTab"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="8,3" /><Setter Property="Margin" Value="0" /><Setter Property="MinHeight" Value="0" /><Setter Property="Foreground" Value="#B9AD97" /><Setter Property="CornerRadius" Value="3" /></Style>
+    <Style Selector="Button.stripTab:pointerover /template/ ContentPresenter"><Setter Property="Background" Value="#2E2F31" /><Setter Property="Foreground" Value="#F0E9DF" /></Style>
     <Style Selector="TextBox"><Setter Property="MinHeight" Value="32" /></Style>
     <Style Selector="DataGrid"><Setter Property="Background" Value="#202122" /><Setter Property="RowBackground" Value="#202122" /><Setter Property="GridLinesVisibility" Value="All" /><Setter Property="HorizontalGridLinesBrush" Value="#3B3C3E" /><Setter Property="VerticalGridLinesBrush" Value="#3B3C3E" /></Style>
+    <!-- Headers stretch so the sort chevron can pin to the far edge of the column. -->
+    <Style Selector="DataGridColumnHeader"><Setter Property="HorizontalContentAlignment" Value="Stretch" /></Style>
+    <Style Selector="DataGridColumnHeader /template/ ContentPresenter#PART_ContentPresenter"><Setter Property="Grid.ColumnSpan" Value="2" /></Style>
     <!-- Selection is painted per cell by EditorPane; the row-wide highlight would hide which cells are picked. -->
     <Style Selector="DataGridRow:selected /template/ Rectangle#BackgroundRectangle"><Setter Property="Opacity" Value="0" /></Style>
     <Style Selector="DataGridRow:selected /template/ Rectangle#InvalidVisualElement"><Setter Property="Opacity" Value="0" /></Style>

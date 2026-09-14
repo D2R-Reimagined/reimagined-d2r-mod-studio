@@ -48,7 +48,7 @@ public partial class MainWindow
             var label = new TextBlock { Text = entry.Name, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
             if (entry.Name.StartsWith('.') || entry.Name is "legacy" or "migration-report.json") label.Foreground = new SolidColorBrush(Color.Parse("#8E8578"));
             row.Children.Add(label);
-            if (entry.SchemaPath != null) ToolTip.SetTip(row, "Table · double-click to open, right-click for schema and file actions"); else ToolTip.SetTip(row, entry.Path);
+            ToolTip.SetTip(row, entry.IsTable ? "Table · double-click to open; the schema is editable in Source view" : entry.Path);
             var menu = new ContextMenu(); menu.Opening += (_, _) => menu.ItemsSource = EntryMenu(entry); row.ContextMenu = menu;
             row.AddHandler(PointerPressedEvent, (_, e) => { if (e.GetCurrentPoint(row).Properties.IsRightButtonPressed) ProjectTree.SelectedItem = entry; }, RoutingStrategies.Tunnel);
             return row;
@@ -86,7 +86,7 @@ public partial class MainWindow
     }
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static bool SamePath(string a, string b) => PathComparer.Equals(System.IO.Path.TrimEndingDirectorySeparator(a), System.IO.Path.TrimEndingDirectorySeparator(b));
-    /// <summary>Selects a file in the tree, expanding its ancestors. Table entries are addressed by records.json or schema.json.</summary>
+    /// <summary>Selects a file in the tree, expanding its ancestors.</summary>
     private void RevealInExplorer(string? path)
     {
         if (path == null || project == null) return; path = System.IO.Path.GetFullPath(path);
@@ -95,7 +95,7 @@ public partial class MainWindow
         {
             foreach (var entry in entries)
             {
-                if (SamePath(entry.Path, path) || entry.SchemaPath != null && SamePath(entry.SchemaPath, path)) return [entry];
+                if (SamePath(entry.Path, path)) return [entry];
                 if (entry.Directory && Contains(entry.Path, path) && Find(entry.Children) is { } below) { below.Insert(0, entry); return below; }
             }
             return null;
@@ -119,9 +119,9 @@ public partial class MainWindow
 
     // Menus ---------------------------------------------------------------------------------------------------------
 
-    /// <summary>The folder an entry's "New" actions target: the entry itself for folders, otherwise its parent. Table entries are folders on disk, but their contents are managed by Studio.</summary>
-    private static string ContainerOf(ProjectEntry entry) => entry.Directory ? entry.Path : System.IO.Path.GetDirectoryName(entry.SchemaPath != null ? System.IO.Path.GetDirectoryName(entry.Path)! : entry.Path)!;
-    private static string DiskPath(ProjectEntry entry) => entry.SchemaPath != null ? System.IO.Path.GetDirectoryName(entry.Path)! : entry.Path;
+    /// <summary>The folder an entry's "New" actions target: the entry itself for folders, otherwise its parent.</summary>
+    private static string ContainerOf(ProjectEntry entry) => entry.Directory ? entry.Path : System.IO.Path.GetDirectoryName(entry.Path)!;
+    private static string DiskPath(ProjectEntry entry) => entry.Path;
     private MenuItem Item(string header, Func<Task> action, string? gesture = null)
     {
         var item = new MenuItem { Header = header, InputGesture = gesture == null ? null : KeyGesture.Parse(gesture) };
@@ -130,23 +130,18 @@ public partial class MainWindow
     }
     private List<object> ContainerMenu(string folder) =>
     [
-        Item("New File…", () => NewFileAsync(folder)), Item("New Folder…", () => NewFolderAsync(folder)), new Separator(),
+        Item("New File…", () => NewFileAsync(folder)), Item("New Folder…", () => NewFolderAsync(folder)), Item("New Table…", NewTableAsync), new Separator(),
         Item("Refresh", () => RefreshExplorerAsync(project!.Root)), Item("Collapse All", () => { CollapseAllButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); return Task.CompletedTask; }),
         new Separator(), CreateOpenLocationItem(folder, true)
     ];
     private List<object> EntryMenu(ProjectEntry entry)
     {
         var items = new List<object>();
-        if (entry.SchemaPath != null)
-        {
-            items.Add(Item("Open Table", () => OpenDocumentAsync(entry.Path)));
-            items.Add(Item("Edit Schema…", () => OpenDocumentAsync(entry.SchemaPath)));
-        }
-        else if (!entry.Directory) items.Add(Item("Open", () => OpenDocumentAsync(entry.Path)));
+        if (!entry.Directory) items.Add(Item(entry.IsTable ? "Open Table" : "Open", () => OpenDocumentAsync(entry.Path)));
         if (items.Count > 0) items.Add(new Separator());
-        var container = ContainerOf(entry);
-        var create = new MenuItem { Header = "New" };
+        var create = new MenuItem { Header = "New" }; var container = ContainerOf(entry);
         create.Items.Add(Item("File…", () => NewFileAsync(container))); create.Items.Add(Item("Folder…", () => NewFolderAsync(container)));
+        create.Items.Add(Item("Table…", NewTableAsync));
         items.Add(create);
         items.Add(new Separator());
         items.Add(Item("Rename…", () => RenameEntryAsync(entry), "F2"));
@@ -194,6 +189,13 @@ public partial class MainWindow
         Directory.CreateDirectory(path); await RefreshExplorerAsync(path);
         if (Flatten(explorerEntries).FirstOrDefault(e => SamePath(e.Path, path)) is { } created) { created.IsExpanded = true; FilterExplorer(); }
     }
+    private async Task NewTableAsync()
+    {
+        Require(project != null, "Open a project first.");
+        var table = await new NewTableWindow(project!).ShowDialog<TableData?>(this); if (table == null) return;
+        var records = TableData.Create(project!, table);
+        Log($"Created table {table.Name} with {table.Columns.Length} columns and {table.Records.Count} rows."); await RefreshExplorerAsync(records); await OpenDocumentAsync(records);
+    }
     /// <summary>Open documents keep their original path, so anything inside a renamed or deleted entry is closed first (with the usual recovery prompt); declining aborts the operation.</summary>
     private async Task<bool> CloseTabsUnderAsync(string path)
     {
@@ -203,18 +205,18 @@ public partial class MainWindow
     }
     private async Task RenameEntryAsync(ProjectEntry entry)
     {
-        var source = DiskPath(entry); var kind = entry.SchemaPath != null ? "table" : entry.Directory ? "folder" : "file";
+        var source = DiskPath(entry); var kind = entry.IsTable ? "table" : entry.Directory ? "folder" : "file";
         var name = await AskNameAsync("Rename " + kind, "New name", System.IO.Path.GetFileName(source)); if (name == null || name == System.IO.Path.GetFileName(source)) return;
         var target = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(source)!, name);
         Require(!File.Exists(target) && !Directory.Exists(target) || SamePath(source, target), "Something with that name already exists.");
         if (!await CloseTabsUnderAsync(source)) return;
         if (Directory.Exists(source)) Directory.Move(source, target); else File.Move(source, target);
         Log($"Renamed {Relative(project!.Root, source)} to {name}");
-        await RefreshExplorerAsync(entry.SchemaPath != null ? System.IO.Path.Combine(target, "records.json") : target);
+        await RefreshExplorerAsync(target);
     }
     private async Task DeleteEntryAsync(ProjectEntry entry)
     {
-        var source = DiskPath(entry); var kind = entry.SchemaPath != null ? "table" : entry.Directory ? "folder and everything inside it" : "file";
+        var source = DiskPath(entry); var kind = entry.IsTable ? "table" : entry.Directory ? "folder and everything inside it" : "file";
         var relative = Relative(project!.Root, source);
         if (await ChooseAsync("Delete " + relative, $"Permanently delete this {kind}? It is removed from disk immediately; use Git or a backup to restore it.", "Delete", "Cancel") != "Delete") return;
         if (!await CloseTabsUnderAsync(source)) return;
@@ -236,7 +238,7 @@ internal static class ExplorerIcons
     public static Control Tool(string data) => Glyph(data, Text);
     public static Control For(ProjectEntry entry)
     {
-        if (entry.SchemaPath != null) return Glyph("M2,3 H14 V13 H2 Z M2,6.5 H14 M2,9.5 H14 M6,3 V13 M10,3 V13", Table);
+        if (entry.IsTable) return Glyph("M2,3 H14 V13 H2 Z M2,6.5 H14 M2,9.5 H14 M6,3 V13 M10,3 V13", Table);
         if (entry.Directory) return Glyph("M1.5,4 V13 H14.5 V6 H8 L6.5,4 Z", Folder, new SolidColorBrush(Color.Parse("#3A3326")));
         var extension = System.IO.Path.GetExtension(entry.Name).ToLowerInvariant();
         return extension switch

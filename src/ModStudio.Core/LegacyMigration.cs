@@ -17,10 +17,11 @@ public static class LegacyMigration
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase) { ".git", ".studio", ".idea", "node_modules", "bin", "obj", "build", "dist" };
     public static List<LegacyProject> Detect(string selected)
     {
-        selected = Path.GetFullPath(selected); NoLinks(selected); Require(Directory.Exists(selected), "Choose an existing project folder.");
+        // A trailing separator (as file pickers often return) would make "<root>.converted-…" and "<root>.backup-…" land inside the project.
+        selected = Path.TrimEndingDirectorySeparator(Path.GetFullPath(selected)); NoLinks(selected); Require(Directory.Exists(selected), "Choose an existing project folder.");
         bool split = new[] { "tables", "strings" }.Any(kind => Directory.Exists(Path.Combine(selected, "source", kind)) && Directory.GetDirectories(Path.Combine(selected, "source", kind)).Any(dir => Directory.Exists(Path.Combine(dir, "records")) && File.Exists(Path.Combine(dir, "schema.json"))));
         if (split) return [new(selected, Path.Combine(selected, "data"), SuggestedName(selected), true)];
-        if (Directory.Exists(Path.Combine(selected, "source/tables")) && Directory.GetDirectories(Path.Combine(selected, "source/tables")).Any(dir => File.Exists(Path.Combine(dir, "records.json")))) return [];
+        if (Directory.Exists(Path.Combine(selected, "source/tables")) && (Directory.GetFiles(Path.Combine(selected, "source/tables"), "*.json").Length > 0 || ProjectLayout.NeedsUpgrade(selected))) return [];
         var result = new List<LegacyProject>();
         void Add(string root, string data)
         {
@@ -49,7 +50,7 @@ public static class LegacyMigration
     }
     public static ImportReport MigrateInPlace(LegacyProject legacy, string name, string backup, CancellationToken token = default, Action<string>? progress = null)
     {
-        var root = Path.GetFullPath(legacy.Root); backup = Path.GetFullPath(backup);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacy.Root)); backup = Path.TrimEndingDirectorySeparator(Path.GetFullPath(backup)); legacy = legacy with { Root = root };
         Require(Path.GetDirectoryName(root) == Path.GetDirectoryName(backup) && !Directory.Exists(backup) && !File.Exists(backup), "Backup must be an unused sibling folder beside the project.");
         NoLinks(root); NoLinks(backup);
         var prepared = root + ".converted-" + Guid.NewGuid().ToString("N");
@@ -134,7 +135,7 @@ public static class LegacyMigration
 
     private static ImportReport MigrateCore(LegacyProject legacy, string destination, string name, CancellationToken token, Action<string>? progress, bool verifyProfiles)
     {
-        destination = Path.GetFullPath(destination); NoLinks(destination); ModProject.ValidateName(name);
+        destination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination)); legacy = legacy with { Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacy.Root)) }; NoLinks(destination); ModProject.ValidateName(name);
         Require(!Contains(legacy.Root, destination) && !Contains(destination, legacy.Root), "Migration must use a separate destination.");
         Require(!Directory.Exists(destination) || !Directory.EnumerateFileSystemEntries(destination).Any(), "Migration destination must be new or empty.");
         var stage = destination + ".migration-" + Guid.NewGuid().ToString("N");
@@ -179,7 +180,10 @@ public static class LegacyMigration
                             Require(model.Validate(recordFile).Count == 0, "Legacy records need review before consolidation: " + dir);
                             WriteJson(recordFile, model.Records); Directory.Delete(rowsDirectory, true);
                         }
-                        var table = TableData.Load(recordFile); Require(table.Validate(recordFile).Count == 0, "Invalid legacy table: " + dir);
+                        var table = new TableData((JsonObject)Read(Path.Combine(dir, "schema.json")), (JsonArray)Read(recordFile)); Require(table.Validate(recordFile).Count == 0, "Invalid legacy table: " + dir);
+                        // Legacy folders become single-file tables; the folder only survives if it held something else.
+                        TableData.Write(dir + ".json", table); File.Delete(recordFile); File.Delete(Path.Combine(dir, "schema.json"));
+                        if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
                         if (kind == "tables")
                         {
                             tables++;
@@ -198,7 +202,7 @@ public static class LegacyMigration
                         }
                     }
                 }
-                WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
+                WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = ProjectLayout.Version, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
                 var ignore = Inside(stage, ".gitignore"); File.AppendAllText(ignore, "\n.studio/\n");
                 foreach (var textFile in Files(Path.Combine(stage, "source/text")))
                 {

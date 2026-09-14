@@ -1,5 +1,5 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="ModStudio.App.MainWindow" Width="1440" Height="920" MinWidth="1100" MinHeight="640" Title="Reimagined D2R Mod Studio">
- <Grid RowDefinitions="Auto,*,Auto,190,Auto">
+ <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto,190,Auto,Auto">
   <Border Background="#292727" BorderBrush="#494038" BorderThickness="0,0,0,1" Padding="10,8">
    <DockPanel LastChildFill="False">
     <TextBlock Text="REIMAGINED&#10;D2R MOD STUDIO" FontSize="11" FontWeight="SemiBold" Foreground="#D8BC86" Margin="8,0,18,0" VerticalAlignment="Center" />
@@ -13,8 +13,9 @@
     </StackPanel>
    </DockPanel>
   </Border>
-  <Grid Grid.Row="1" ColumnDefinitions="240,5,*,5,270">
-   <Grid RowDefinitions="Auto,Auto,Auto,*" Background="#1D1E1F">
+  <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnDefinitions="Auto,240,Auto,*,Auto,270,Auto">
+   <Border x:Name="LeftStrip" IsVisible="False" Width="26" Background="#1D1E1F" BorderBrush="#494038" BorderThickness="0,0,1,0"><StackPanel x:Name="LeftStripItems" Margin="0,8,0,0" Spacing="4" /></Border>
+   <Grid x:Name="ExplorerPanel" Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*" Background="#1D1E1F">
     <Grid ColumnDefinitions="*,Auto" Margin="12,8,6,4">
      <StackPanel VerticalAlignment="Center" Spacing="1">
       <TextBlock Text="PROJECT" FontSize="10" FontWeight="SemiBold" Foreground="#8E8578" />
@@ -24,6 +25,7 @@
       <Button x:Name="RevealActiveButton" Classes="explorerTool" ToolTip.Tip="Select the active file in the tree" />
       <Button x:Name="CollapseAllButton" Classes="explorerTool" ToolTip.Tip="Collapse all folders" />
       <Button x:Name="RefreshExplorerButton" Classes="explorerTool" ToolTip.Tip="Refresh the file tree" />
+      <Button x:Name="HideExplorerButton" Classes="explorerTool" ToolTip.Tip="Hide the project explorer" />
      </StackPanel>
     </Grid>
     <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,6">
@@ -44,12 +46,13 @@
      </TreeView.Styles>
     </TreeView>
    </Grid>
-   <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
-   <TabControl Grid.Column="2" x:Name="Documents" SelectionChanged="DocumentSelected">
+   <GridSplitter x:Name="LeftSplitter" Grid.Column="2" Width="5" ResizeDirection="Columns" />
+   <TabControl Grid.Column="3" x:Name="Documents" SelectionChanged="DocumentSelected">
     <TabItem Header="Welcome"><StackPanel Margin="30" Spacing="16"><TextBlock Text="Your mod. One workspace." FontSize="26" Foreground="#D8BC86" /><TextBlock Text="Open an existing JSON-source project or import a native data folder.&#10;Import creates a separate project and preserves the original files." TextWrapping="Wrap" /><TextBlock Text="Table and source editing · Recovery · Profile builds · Deploy and play" Classes="muted" TextWrapping="Wrap" /></StackPanel></TabItem>
    </TabControl>
-   <GridSplitter Grid.Column="3" ResizeDirection="Columns" />
-   <TabControl x:Name="InspectorTabs" Grid.Column="4" Background="#242324">
+   <GridSplitter x:Name="RightSplitter" Grid.Column="4" Width="5" ResizeDirection="Columns" />
+   <Grid x:Name="InspectorPanel" Grid.Column="5">
+   <TabControl x:Name="InspectorTabs" Background="#242324">
    <TabControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></TabControl.ItemsPanel>
    <TabControl.Styles><Style Selector="TabItem"><Setter Property="Padding" Value="8,6" /><Setter Property="MinHeight" Value="32" /><Setter Property="FontSize" Value="12" /></Style></TabControl.Styles>
    <TabItem><TabItem.Header><TextBlock Text="Details" FontSize="12" /></TabItem.Header><ScrollViewer><StackPanel Margin="14" Spacing="9">
@@ -71,13 +74,20 @@
     <ListBox x:Name="RowEditorFields" Grid.Row="3" Background="Transparent" BorderThickness="0" Padding="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Visible" ScrollViewer.AllowAutoHide="False"><ListBox.Styles><Style Selector="ListBoxItem"><Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /></Style></ListBox.Styles></ListBox>
    </Grid></TabItem>
    </TabControl>
+   <Button x:Name="HideInspectorButton" Classes="explorerTool" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,4,0" ToolTip.Tip="Hide the inspector" />
+   </Grid>
+   <Border x:Name="RightStrip" Grid.Column="6" IsVisible="False" Width="26" Background="#242324" BorderBrush="#494038" BorderThickness="1,0,0,0"><StackPanel x:Name="RightStripItems" Margin="0,8,0,0" Spacing="4" /></Border>
   </Grid>
-  <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch" ResizeDirection="Rows" />
-  <TabControl Grid.Row="3" x:Name="BottomTabs">
+  <GridSplitter x:Name="BottomSplitter" Grid.Row="2" Height="5" HorizontalAlignment="Stretch" ResizeDirection="Rows" />
+  <Grid x:Name="BottomPanel" Grid.Row="3">
+  <TabControl x:Name="BottomTabs">
    <TabItem><TabItem.Header><TextBlock Text="Problems" FontSize="13" /></TabItem.Header><DockPanel><WrapPanel DockPanel.Dock="Top"><Button Content="Check source references / rules" Click="CheckSemanticsClicked" /><Button Content="Edit validation rules…" Click="EditRulesClicked" /><TextBlock x:Name="SemanticStatus" Margin="8" Text="Shared-source checks; game coverage is partial" /></WrapPanel><ListBox x:Name="Problems" DoubleTapped="ProblemDoubleTapped" /></DockPanel></TabItem>
    <TabItem><TabItem.Header><TextBlock Text="Build / Game output" FontSize="13" /></TabItem.Header><TextBox x:Name="Output" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" /></TabItem>
    <TabItem><TabItem.Header><TextBlock Text="Changes" FontSize="13" /></TabItem.Header><DockPanel><Button DockPanel.Dock="Top" Content="Compare active table with disk…" Click="CompareClicked" HorizontalAlignment="Left" /><ListBox x:Name="Changes" /></DockPanel></TabItem>
   </TabControl>
-  <Border Grid.Row="4" Background="#292727" Padding="12,6"><DockPanel><Button x:Name="UpdateButton" DockPanel.Dock="Right" Height="22" MinHeight="0" Padding="6,0" Margin="8,0,0,0" Content="Check for updates" Click="UpdateClicked" ToolTip.Tip="Check GitHub for a Studio update" /><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
+  <Button x:Name="HideBottomButton" Classes="explorerTool" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,4,0" ToolTip.Tip="Hide the tool panel" />
+  </Grid>
+  <Border x:Name="BottomStrip" Grid.Row="4" IsVisible="False" Height="26" Background="#1D1E1F" BorderBrush="#494038" BorderThickness="0,1,0,0"><StackPanel x:Name="BottomStripItems" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0" Spacing="4" /></Border>
+  <Border Grid.Row="5" Background="#292727" Padding="12,6"><DockPanel><Button x:Name="UpdateButton" DockPanel.Dock="Right" Height="22" MinHeight="0" Padding="6,0" Margin="8,0,0,0" Content="Check for updates" Click="UpdateClicked" ToolTip.Tip="Check GitHub for a Studio update" /><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
  </Grid>
 </Window>

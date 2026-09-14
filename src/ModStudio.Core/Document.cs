@@ -6,8 +6,9 @@ namespace ModStudio.Core;
 public sealed class Document
 {
     private string diskHash;
-    private string? schemaHash;
     private string raw;
+    /// <summary>The parsed file of a JSON table document: schema and records are edited in place and serialized back through it.</summary>
+    private JsonObject? tableRoot;
     private readonly System.Text.Encoding fileEncoding;
     private readonly byte[] filePreamble;
     private readonly bool rawMode;
@@ -33,32 +34,33 @@ public sealed class Document
     public IReadOnlyCollection<int>? LastChangedRows { get; private set; }
     /// <summary>Columns touched by the latest cell-value change (see LastChangedRows).</summary>
     public IReadOnlyCollection<string>? LastChangedColumns { get; private set; }
-    public bool ExternalChange => !File.Exists(FilePath) || Hash(File.ReadAllBytes(FilePath)) != diskHash || (schemaHash != null && (!File.Exists(SchemaFile) || Hash(File.ReadAllBytes(SchemaFile)) != schemaHash));
-    private string SchemaFile => Path.Combine(Path.GetDirectoryName(FilePath)!, "schema.json");
+    public bool ExternalChange => !File.Exists(FilePath) || Hash(File.ReadAllBytes(FilePath)) != diskHash;
     public Document(string file, bool forceRaw = false)
     {
         FilePath = Path.GetFullPath(file); NoLinks(file); var bytes = File.ReadAllBytes(file); diskHash = Hash(bytes);
         rawMode = forceRaw;
         var detected = forceRaw ? (Encoding: System.Text.Encoding.Latin1, Preamble: 0) : TextFileEncoding.Detect(bytes); fileEncoding = detected.Encoding; filePreamble = bytes[..detected.Preamble];
         raw = fileEncoding.GetString(bytes, detected.Preamble, bytes.Length - detected.Preamble);
-        if (Path.GetFileName(file) == "records.json" && File.Exists(SchemaFile)) schemaHash = Hash(File.ReadAllBytes(SchemaFile));
         Parse();
     }
     public string Text
     {
-        get { if (modelChanged && Table != null) { raw = IsTsv ? Utf8.GetString(Table.EncodeTsv()) : Json(Table.Records); modelChanged = false; } return raw; }
+        get { if (modelChanged && Table != null) { raw = IsTsv ? Utf8.GetString(Table.EncodeTsv()) : Json(tableRoot!); modelChanged = false; } return raw; }
     }
     public bool IsTsv => FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && Table != null;
     public static System.Text.Json.JsonDocumentOptions SourceJsonOptions => new() { AllowTrailingCommas = true, CommentHandling = System.Text.Json.JsonCommentHandling.Skip };
     private void Parse()
     {
-        Diagnostics = []; Table = null;
+        Diagnostics = []; Table = null; tableRoot = null;
         if (rawMode) { PendingSource = false; return; }
         try
         {
-            if (schemaHash != null) Table = new((JsonObject)Read(SchemaFile), (JsonArray)(JsonNode.Parse(raw.TrimStart('\uFEFF')) ?? throw new InvalidDataException("Empty JSON.")));
-            else if (FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && raw.Contains('\t')) Table = TableData.FromTsv(Utf8.GetBytes(raw), Path.GetFileNameWithoutExtension(FilePath), "global/excel/" + Path.GetFileName(FilePath));
-            else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) JsonNode.Parse(raw.TrimStart('\uFEFF'), documentOptions: SourceJsonOptions);
+            if (FilePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && raw.Contains('\t')) Table = TableData.FromTsv(Utf8.GetBytes(raw), Path.GetFileNameWithoutExtension(FilePath), "global/excel/" + Path.GetFileName(FilePath));
+            else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                var node = JsonNode.Parse(raw.TrimStart('\uFEFF'), documentOptions: SourceJsonOptions);
+                if (TableData.IsTableFile(node)) { tableRoot = (JsonObject)node!; Table = TableData.FromFile(node!, FilePath); }
+            }
             if (Table != null) Diagnostics.AddRange(Validated());
             PendingSource = false;
         }
@@ -177,6 +179,69 @@ public sealed class Document
         Record(() => Splice(index, insert.Length, removed));
         Finish();
     }
+    /// <summary>
+    /// Moves rows so the block sits where <paramref name="target"/> pointed before the move (a slot in the current numbering,
+    /// Records.Count meaning the end). Rows keep their identities; only slots change, so original rows raise the order advisory.
+    /// </summary>
+    public void MoveRows(IEnumerable<int> rows, int target)
+    {
+        Require(Table != null && !PendingSource, "Apply valid source before moving rows.");
+        Require(!Table!.IsCatalog, "String entries keep their order; edit them in Source view.");
+        var moving = rows.Distinct().Order().ToArray(); int count = Table.Records.Count;
+        Require(moving.Length > 0 && moving.All(r => r >= 0 && r < count), "Invalid row.");
+        Require(target >= 0 && target <= count, "Invalid row position.");
+        Require(moving.All(r => !LockedRows.Contains(r)), "A selected row is locked against edits.");
+        var order = MoveOrder(count, moving, target);
+        if (order.Select((r, i) => r == i).All(same => same)) return;
+        Permute(order);
+    }
+    /// <summary>Slot order after moving rows: order[newSlot] = old slot. Shared with views so their row-indexed state can follow.</summary>
+    public static int[] MoveOrder(int count, IEnumerable<int> rows, int target)
+    {
+        var moving = rows.Distinct().Order().ToArray();
+        var staying = Enumerable.Range(0, count).Where(r => Array.BinarySearch(moving, r) < 0).ToList();
+        staying.InsertRange(target - moving.Count(r => r < target), moving);
+        return staying.ToArray();
+    }
+    /// <summary>Reorders records so slot i holds what was at order[i]; locked rows follow their records. The inverse permutation is the undo step.</summary>
+    private void Permute(int[] order)
+    {
+        var records = order.Select(i => Table!.Records[i]!).ToArray();
+        Table!.Records.Clear(); foreach (var record in records) Table.Records.Add(record);
+        var inverse = new int[order.Length]; for (int i = 0; i < order.Length; i++) inverse[order[i]] = i;
+        var locked = LockedRows.Select(r => inverse[r]).ToArray(); LockedRows.Clear(); LockedRows.UnionWith(locked);
+        Renumber(); Record(() => Permute(inverse)); Finish();
+    }
+    /// <summary>
+    /// Moves a column to another position. Column order is part of the schema (and of the emitted TSV), so the schema file is
+    /// written on the next save. Rows narrower than the affected span are widened to the full column count so no value can
+    /// fall outside its row's width.
+    /// </summary>
+    public void MoveColumn(int from, int to) => MoveColumn(from, to, null);
+    private void MoveColumn(int from, int to, Dictionary<int, int>? restoreWidths)
+    {
+        Require(Table != null && !PendingSource, "Apply valid source before moving columns.");
+        Require(!Table!.IsCatalog, "String table columns are fixed.");
+        var columns = (JsonArray)Table.Schema["columns"]!;
+        Require(from >= 0 && from < columns.Count && to >= 0 && to < columns.Count, "Invalid column position.");
+        if (from == to) return;
+        var node = columns[from]!; columns.RemoveAt(from); columns.Insert(to, node);
+        var widths = new Dictionary<int, int>();
+        for (int i = 0; i < Table.Records.Count; i++)
+        {
+            var record = (JsonObject)Table.Records[i]!; int width = record.I("columnCount");
+            if (restoreWidths != null) { if (restoreWidths.TryGetValue(i, out var previous)) { widths[i] = width; record["columnCount"] = previous; } }
+            else if (width > Math.Min(from, to) && width < columns.Count) { widths[i] = width; record["columnCount"] = columns.Count; }
+        }
+        Table = new TableData(Table.Schema, Table.Records);
+        foreach (var record in Table.Records.OfType<JsonObject>())
+        {
+            var fields = (JsonObject)record["fields"]!; var ordered = new JsonObject();
+            foreach (var key in Table.Columns) if (fields.ContainsKey(key)) ordered[key] = fields[key]!.DeepClone();
+            record["fields"] = ordered;
+        }
+        Record(() => MoveColumn(to, from, widths)); Finish();
+    }
     private void Renumber() { for (int i = 0; i < Table!.Records.Count; i++) Table.Records[i]!["order"] = i; }
     private void Finish() { modelChanged = true; Diagnostics = Validated(); LastChangedRows = null; LastChangedColumns = null; Notify(); }
     private void RestoreRows(Dictionary<int, JsonNode> rows)
@@ -203,7 +268,7 @@ public sealed class Document
     public void Save()
     {
         if (PendingSource) ApplySource(); Require(Diagnostics.All(d => d.Severity != "Error"), "Fix document errors before saving. Recovery retains invalid source.");
-        Require(!ExternalChange, "File or schema changed externally. Reload before saving; your edits are preserved in recovery.");
+        Require(!ExternalChange, "File changed externally. Reload before saving; your edits are preserved in recovery.");
         var encoder = (System.Text.Encoding)fileEncoding.Clone(); encoder.EncoderFallback = System.Text.EncoderFallback.ExceptionFallback;
         var bytes = filePreamble.Concat(encoder.GetBytes(Text)).ToArray(); AtomicWrite(FilePath, bytes, diskHash); diskHash = Hash(bytes); savedState = state; IsDirty = false; Changed?.Invoke();
     }

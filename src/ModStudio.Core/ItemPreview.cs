@@ -53,12 +53,12 @@ public sealed class ItemPreviewResolver
         var lookups = new Dictionary<(string Table, string Column), ILookup<string, JsonObject>>();
         JsonObject? Find(string name, string column, string value, bool required = true)
         {
-            token.ThrowIfCancellationRequested(); var file = Inside(project.Root, $"source/tables/{name}/records.json");
+            token.ThrowIfCancellationRequested(); var file = TableData.FileFor(project, "tables", name);
             if (!File.Exists(file)) { if (required) issues.Add($"Missing table: {name}."); return null; }
             if (!lookups.TryGetValue((name, column), out var lookup))
             {
                 var rows = new List<JsonObject>();
-                foreach (var row in ReadCached(file, token).AsArray().OfType<JsonObject>())
+                foreach (var row in ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
                 {
                     token.ThrowIfCancellationRequested();
                     rows.Add(rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject());
@@ -70,9 +70,9 @@ public sealed class ItemPreviewResolver
             if (found == null && required) issues.Add($"Unresolved {name}/{column}: {value}."); return found;
         }
         var catalogs = new List<Dictionary<string, string>>();
-        foreach (var file in Files(Inside(project.Root, "source/strings")).Where(f => Path.GetFileName(f) == "records.json"))
+        foreach (var file in Files(Inside(project.Root, "source/strings")).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal))
         {
-            var data = ReadCached(file, token); var cached = cache[file];
+            var data = ReadCached(file, token)["records"]!; var cached = cache[file];
             if (!cached.Locales.TryGetValue(locale + standard, out var translations))
             {
                 translations = new(StringComparer.Ordinal);

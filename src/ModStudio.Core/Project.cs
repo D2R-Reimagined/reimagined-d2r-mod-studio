@@ -17,8 +17,8 @@ public sealed record ModProject(string Root, string Id, string Name)
         var found = new List<string>();
         var strings = Path.Combine(Root, "source/strings");
         if (Directory.Exists(strings))
-            foreach (var schema in Directory.EnumerateFiles(strings, "schema.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
-                try { foreach (var locale in (Read(schema)["locales"] as JsonArray)?.Select(x => x?.GetValue<string>()).OfType<string>() ?? []) if (!found.Contains(locale)) found.Add(locale); }
+            foreach (var catalog in Directory.EnumerateFiles(strings, "*.json").Order(StringComparer.Ordinal))
+                try { foreach (var locale in (Read(catalog)["schema"]?["locales"] as JsonArray)?.Select(x => x?.GetValue<string>()).OfType<string>() ?? []) if (!found.Contains(locale)) found.Add(locale); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException or InvalidOperationException) { }
         return found.Count > 0 ? found : GameLocales;
     }
@@ -28,7 +28,7 @@ public sealed record ModProject(string Root, string Id, string Name)
         var manifest = Path.Combine(root, "mod-project.json");
         if (File.Exists(manifest))
         {
-            var node = Read(manifest); Require(node.I("schemaVersion") == 1, "Unsupported project version."); ValidateName(node.S("name"));
+            var node = Read(manifest); Require(node.I("schemaVersion") is 1 or ProjectLayout.Version, "Unsupported project version."); ValidateName(node.S("name"));
             return new(root, node.S("id"), node.S("name"));
         }
         Require(Directory.Exists(Path.Combine(root, "source/tables")) || Directory.Exists(Path.Combine(root, "data")), "Choose a mod project root, or use Import mod.");
@@ -93,8 +93,7 @@ public static class ProjectImporter
                     if (TryCatalog(bytes, Path.GetFileNameWithoutExtension(relative), relative) is { } catalog)
                     {
                         Require(names.Add("catalog:" + catalog.Name), $"Duplicate catalog name: {catalog.Name}");
-                        WriteJson(Inside(stage, $"source/strings/{catalog.Name}/schema.json"), catalog.Schema);
-                        WriteJson(Inside(stage, $"source/strings/{catalog.Name}/records.json"), catalog.Records); catalogs++;
+                        TableData.Write(Inside(stage, $"source/strings/{catalog.Name}.json"), catalog); catalogs++;
                         continue;
                     }
                 }
@@ -104,10 +103,9 @@ public static class ProjectImporter
             foreach (var table in tables.Values)
             {
                 Require(names.Add(table.Name), $"Duplicate table name: {table.Name}");
-                WriteJson(Inside(stage, $"source/tables/{table.Name}/schema.json"), table.Schema);
-                WriteJson(Inside(stage, $"source/tables/{table.Name}/records.json"), table.Records);
+                TableData.Write(Inside(stage, $"source/tables/{table.Name}.json"), table);
             }
-            WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
+            WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = ProjectLayout.Version, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
             WriteJson(Inside(stage, "modinfo.json"), new JsonObject { ["name"] = name, ["version"] = "1.0.0", ["savepath"] = name + "/" });
             foreach (var profile in new[] { "standard", "d2rl" }) WriteJson(Inside(stage, $"compatibility/{profile}/profile.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full", ["tableOverrides"] = new JsonArray(), ["assetOverrides"] = new JsonArray() });
             WriteJson(Inside(stage, "import-report.json"), new JsonObject { ["schemaVersion"] = 1, ["verifiedTables"] = verified, ["assets"] = assets, ["files"] = new JsonArray(sourceHashes.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(dataFolder, p.Key), ["sha256"] = p.Value }).ToArray()) });

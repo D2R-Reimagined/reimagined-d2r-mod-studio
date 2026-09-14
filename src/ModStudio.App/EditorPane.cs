@@ -135,6 +135,7 @@ public sealed partial class EditorPane : Grid
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
         WireReordering();
         document.Changed += UpdateNote;
+        document.Changed += ClearReferenceHighlight;
         // Fitted widths are recomputed when the table is re-parsed or rows come and go; single cell edits keep them, so an undo does not re-measure 24 columns.
         document.Changed += () => { if (document.LastChangedRows == null) fittedWidths.Clear(); };
         if (document.Table == null) { Source.IsVisible = true; tableHost.IsVisible = false; }
@@ -193,6 +194,8 @@ public sealed partial class EditorPane : Grid
         };
         grid.PointerExited += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
         DetachedFromVisualTree += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
+        // The document host hides rather than detaches panes on a tab switch.
+        PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !IsVisible) { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); } };
         grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
         grid.TemplateApplied += (_, e) =>
         {
@@ -210,6 +213,7 @@ public sealed partial class EditorPane : Grid
         };
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
+            if (IsReferenceButton(e.Source)) return;
             BeginInput(grid);
             if (!e.GetCurrentPoint(grid).Properties.IsRightButtonPressed || e.Source is not Visual visual) return;
             var header = visual.GetSelfAndVisualAncestors().OfType<DataGridColumnHeader>().FirstOrDefault();
@@ -240,7 +244,14 @@ public sealed partial class EditorPane : Grid
             menu.Closed += (_, _) => { if (grid.ContextMenu == menu) grid.ContextMenu = null; };
             grid.ContextMenu = menu; menu.Open(grid);
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-        grid.AddHandler(KeyDownEvent, (_, _) => BeginInput(grid), Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        grid.AddHandler(KeyDownEvent, (_, e) =>
+        {
+            if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.Alt && Document.Table is { } table && HasCellReference(Array.IndexOf(table.Columns, SelectedColumn)))
+            {
+                e.Handled = true; RequestCellReference(SelectedRow, Array.IndexOf(table.Columns, SelectedColumn), grid); return;
+            }
+            BeginInput(grid);
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         grid.GotFocus += (_, e) => { if (e.NavigationMethod is NavigationMethod.Tab or NavigationMethod.Directional) BeginInput(grid); };
         grid.SelectionChanged += (_, _) => CaptureSelection(grid);
         grid.CurrentCellChanged += (_, _) => CaptureSelection(grid);
@@ -439,10 +450,14 @@ public sealed partial class EditorPane : Grid
         if (item == null || column == null) return;
         Dispatcher.UIThread.Post(() =>
         {
-            if (version != viewVersion || !grid.Columns.Contains(column)) return;
+            // A reference jump can be followed immediately by freezing a row or switching tabs.
+            // Do not restore a discarded row or a grid that has since left the visible workspace.
+            if (version != viewVersion || !grid.Columns.Contains(column) || !grid.IsEffectivelyVisible || TopLevel.GetTopLevel(grid) == null ||
+                (grid.ItemsSource as IEnumerable<RowView>)?.Contains(item) != true) return;
             refreshing = true;
-            try { activeGrid = grid; grid.SelectedItem = item; grid.CurrentColumn = column; if (scroll) grid.ScrollIntoView(item, column); }
+            try { activeGrid = grid; grid.SelectedItem = item; if (scroll) grid.ScrollIntoView(item, column); if (grid.SelectedItem == item && grid.CurrentColumn != null) grid.CurrentColumn = column; }
             finally { refreshing = false; }
+            QueuePaint();
             selection(this);
         }, DispatcherPriority.Background);
     }
@@ -495,7 +510,9 @@ public sealed partial class EditorPane : Grid
         var target = grid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var i) && i == index); if (target == null) return;
         selectedCells.Clear(); selectedCells.Add((row, index)); cellAnchor = (row, index); selectedRow = row; selectedColumn = column; activeGrid = grid;
         refreshing = true;
-        try { grid.SelectedItem = item; grid.CurrentColumn = target; grid.ScrollIntoView(item, target); }
+        // Selecting a row in a tab that just became visible may precede the grid's current-row initialization.
+        // Scroll first, then let RestoreAfterLayout finish the current column when the reference is revealed.
+        try { grid.SelectedItem = item; grid.ScrollIntoView(item, target); if (grid.CurrentColumn != null) grid.CurrentColumn = target; }
         finally { refreshing = false; }
         QueuePaint(); selection(this);
     }
@@ -521,6 +538,7 @@ public sealed partial class EditorPane : Grid
     public void Jump(int row, string column = "")
     {
         if (Document.Table == null || Document.PendingSource) return;
+        ClearReferenceHighlight();
         Source.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
         var i = Array.IndexOf(Document.Table.Columns, column); offset = i > 0 ? ((i - 1) / 23) * 23 : 0; Refresh(); viewVersion++;
         activeGrid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;

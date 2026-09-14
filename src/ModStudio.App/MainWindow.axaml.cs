@@ -43,7 +43,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeLayout(); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
@@ -85,7 +85,7 @@ public partial class MainWindow : Window
         if (runningBuild != null && !controller.Running && operation == null) RunState.Text = "Last game: " + runningBuild + " · exited";
     }
     private void Log(string text) => Dispatcher.UIThread.Post(() => { Output.Text = ((Output.Text ?? "") + text + Environment.NewLine); if (Output.Text.Length > 60000) Output.Text = Output.Text[^50000..]; Status.Text = text; });
-    private void ShowError(Exception e) { Status.Text = e.Message; Output.Text += e.Message + Environment.NewLine; ShowBottomTab(1); }
+    private void ShowError(Exception e) { if (Program.Arguments.Contains("--smoke")) Console.Error.WriteLine(e); Status.Text = e.Message; Output.Text += e.Message + Environment.NewLine; ShowBottomTab(1); }
     private async Task<string?> PickFolderAsync(string title)
     {
         var result = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false }); return result.FirstOrDefault()?.TryGetLocalPath();
@@ -183,7 +183,7 @@ public partial class MainWindow : Window
         var nextProject = await Task.Run(() => ModProject.Open(root));
         if (!await UpgradeLayoutIfNeededAsync(nextProject)) return;
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
-        watcher?.Dispose();
+        watcher?.Dispose(); findInFiles?.Close();
         project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
@@ -284,7 +284,7 @@ public partial class MainWindow : Window
         if (previewTab == tab) previewTab = null;
         UpdateTabHeader(tab);
     }
-    private void AddDocumentTab(TabItem tab, bool preview)
+    private void AddDocumentTab(TabItem tab, bool preview, bool activate = true)
     {
         if (preview && previewTab != null)
         {
@@ -299,10 +299,11 @@ public partial class MainWindow : Window
             await CloseTabAsync(tab);
         }, RoutingStrategies.Tunnel);
         tab.DoubleTapped += (_, _) => KeepTab(tab);
-        tabs.Add(tab); UpdateTabHeader(tab); Documents.SelectedItem = tab; RefreshStatus();
+        tabs.Add(tab); UpdateTabHeader(tab); if (activate) Documents.SelectedItem = tab; RefreshStatus();
     }
     private readonly Dictionary<TabItem, Task<EditorPane?>> loadingDocuments = [];
-    public Task<EditorPane?> OpenDocumentAsync(string file, bool preview = false)
+    /// <summary>Opens (or focuses) a document tab. <paramref name="activate"/> false adds the tab without selecting it, for edits made from Find in files.</summary>
+    public Task<EditorPane?> OpenDocumentAsync(string file, bool preview = false, bool activate = true)
     {
         file = System.IO.Path.GetFullPath(file);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -310,7 +311,7 @@ public partial class MainWindow : Window
         if (existing != null)
         {
             if (!preview) KeepTab(existing);
-            Documents.SelectedItem = existing;
+            if (activate) Documents.SelectedItem = existing;
             return loadingDocuments.TryGetValue(existing, out var pending) ? pending : Task.FromResult(existing.Content as EditorPane);
         }
         var openingProject = project;
@@ -319,13 +320,13 @@ public partial class MainWindow : Window
         placeholder.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 4 });
         placeholder.Children.Add(new TextBlock { Text = "Reading and validating the file. You can switch tabs or close this tab.", TextWrapping = TextWrapping.Wrap });
         var tab = new TabItem { Tag = file, Content = placeholder };
-        AddDocumentTab(tab, preview);
+        AddDocumentTab(tab, preview, activate);
         async Task<EditorPane?> LoadAsync()
         {
             // Yield before starting work so the loading tab can be laid out and painted.
             await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
             await documentOpening.WaitAsync();
-            try { return openingProject == project && tabs.Contains(tab) ? await OpenDocumentCoreAsync(file, preview, openingProject, tab) : null; }
+            try { return openingProject == project && tabs.Contains(tab) ? await OpenDocumentCoreAsync(file, preview, openingProject, tab, activate) : null; }
             catch (Exception ex)
             {
                 if (tabs.Contains(tab)) tab.Content = new TextBlock { Margin = new(24), TextWrapping = TextWrapping.Wrap, Text = "Unable to open file: " + ex.Message + "\nClose this tab and reopen the file to retry." };
@@ -335,18 +336,18 @@ public partial class MainWindow : Window
         }
         var task = LoadAsync(); loadingDocuments[tab] = task; return task;
     }
-    private async Task<EditorPane?> OpenDocumentCoreAsync(string file, bool preview, ModProject? openingProject, TabItem? loadingTab = null)
+    private async Task<EditorPane?> OpenDocumentCoreAsync(string file, bool preview, ModProject? openingProject, TabItem? loadingTab = null, bool activate = true)
     {
         file = System.IO.Path.GetFullPath(file);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        var existing = tabs.FirstOrDefault(t => t != loadingTab && string.Equals((t.Content as EditorPane)?.Document.FilePath ?? t.Tag as string, file, comparison)); if (existing != null) { if (!preview) KeepTab(existing); Documents.SelectedItem = existing; return existing.Content as EditorPane; }
+        var existing = tabs.FirstOrDefault(t => t != loadingTab && string.Equals((t.Content as EditorPane)?.Document.FilePath ?? t.Tag as string, file, comparison)); if (existing != null) { if (!preview) KeepTab(existing); if (activate) Documents.SelectedItem = existing; return existing.Content as EditorPane; }
         var extension = System.IO.Path.GetExtension(file).ToLowerInvariant();
         if (SpecialistPreviewPane.Supports(file))
         {
             if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
             var specialTab = loadingTab ?? new TabItem { Tag = file };
             specialTab.Content = new SpecialistPreviewPane(file);
-            if (loadingTab == null) AddDocumentTab(specialTab, preview); else UpdateTabHeader(specialTab);
+            if (loadingTab == null) AddDocumentTab(specialTab, preview, activate); else UpdateTabHeader(specialTab);
             return null;
         }
         var isText = await Task.Run(() => { NoLinks(file); using var input = File.OpenRead(file); var prefix = new byte[(int)Math.Min(input.Length, 8192)]; input.ReadExactly(prefix); return TextFileEncoding.LooksLikeText(prefix); });
@@ -375,15 +376,16 @@ public partial class MainWindow : Window
             DockPanel.SetDock(rawButton, Dock.Top); binaryPanel.Children.Add(rawButton); binaryPanel.Children.Add(binaryView); binary.Content = binaryPanel;
             var closeBinary = new MenuItem { Header = "Close preview" }; closeBinary.Click += async (_, _) => await CloseTabAsync(binary); binary.ContextMenu = new ContextMenu { ItemsSource = new[] { CreateOpenLocationItem(file), closeBinary } };
             if (openingProject != project) return null;
-            if (loadingTab == null) AddDocumentTab(binary, preview); return null;
+            if (loadingTab == null) AddDocumentTab(binary, preview, activate); return null;
         }
         Status.Text = "Loading " + System.IO.Path.GetFileName(file) + "…";
         var document = await Task.Run(() => new Document(file));
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane);
+        pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
-        if (loadingTab == null) AddDocumentTab(tab, preview); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
+        if (loadingTab == null) AddDocumentTab(tab, preview, activate); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
         var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { CreateOpenLocationItem(file), reload, close }; tab.ContextMenu = menu;
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
@@ -595,9 +597,18 @@ public partial class MainWindow : Window
             Require(!updateBusy && UpdateButton.IsEnabled && studioUpdate == null,
                 "Portable update check must finish without offering an install.");
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
+            await SmokeColumnGuideAsync(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            if (Program.Arguments.Contains("--cell-references-only"))
+            {
+                await SmokeCellReferencesAsync(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "cell-references-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeItemPreviewsAsync(output);
+            await SmokeCellReferencesAsync(output);
+            await SmokeFindInFilesAsync(output);
             await SmokeLayoutAsync(output);
             await SmokeReorderAsync(root);
             await SmokeCatalogRowsAsync();

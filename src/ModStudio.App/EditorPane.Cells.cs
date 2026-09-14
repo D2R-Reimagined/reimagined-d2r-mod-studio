@@ -71,6 +71,7 @@ public sealed partial class EditorPane
         grid.ClipboardCopyMode = DataGridClipboardCopyMode.None; // the grid's own Ctrl+C copies whole rows; ours copies cells
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
+            if (IsReferenceButton(e.Source)) return;
             if (Document.Table == null || e.Source is not Visual visual) return;
             // Commit before pointer selection/focus can tear down the editing control or replace the selection.
             if (liveEditor != null && !visual.GetSelfAndVisualAncestors().Contains(liveEditor))
@@ -121,6 +122,7 @@ public sealed partial class EditorPane
         grid.BeginningEdit += (_, e) =>
         {
             if (e.Cancel) return;
+            ClearReferenceHighlight();
             draggingCells = false; Document.BeginEditGroup(); // one undo step per committed cell value, not per keystroke
             if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col)) { editingCell = (row.Row, col); editTargets = selectedCells.Contains((row.Row, col)) ? selectedCells.ToArray() : [(row.Row, col)]; }
         };
@@ -249,17 +251,23 @@ public sealed partial class EditorPane
     }
     private void PaintCells()
     {
+        if (HighlightedReferenceRow >= 0 && SelectedRow != HighlightedReferenceRow) ClearReferenceHighlight();
         foreach (var grid in new[] { TableGrid, FrozenGrid })
         {
             if (!grid.IsVisible) continue;
             foreach (var rowControl in grid.GetVisualDescendants().OfType<DataGridRow>())
             {
                 if (rowControl.DataContext is not RowView item) continue;
+                bool referenceRow = !item.IsPlaceholder && item.Row == HighlightedReferenceRow;
+                if (referenceRow) rowControl.Background = ReferenceRowBrush;
+                else rowControl.ClearValue(DataGridRow.BackgroundProperty);
                 foreach (var column in grid.Columns)
                 {
                     if (column.GetCellContent(rowControl) is not Visual content || !columnMap.TryGetValue(column, out var col)) continue;
                     var cell = content as DataGridCell ?? content.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault(); if (cell == null) continue;
-                    if (!item.IsPlaceholder && selectedCells.Contains((item.Row, col))) cell.Background = SelectedCellBrush; else cell.ClearValue(DataGridCell.BackgroundProperty);
+                    if (!item.IsPlaceholder && selectedCells.Contains((item.Row, col))) cell.Background = SelectedCellBrush;
+                    else if (referenceRow) cell.Background = ReferenceRowBrush;
+                    else cell.ClearValue(DataGridCell.BackgroundProperty);
                 }
             }
         }

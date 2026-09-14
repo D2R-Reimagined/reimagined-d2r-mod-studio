@@ -9,6 +9,10 @@ public sealed class StudioPreferences
     public List<string> SettingsIntroduced { get; set; } = [];
     /// <summary>Tool panels the user minimized to their strip: "explorer", "inspector", "bottom".</summary>
     public List<string> HiddenPanels { get; set; } = [];
+    /// <summary>Find in files window size and last scope, so the popup reopens the way it was left.</summary>
+    public double FindInFilesWidth { get; set; }
+    public double FindInFilesHeight { get; set; }
+    public string FindInFilesScope { get; set; } = "source";
     /// <summary>Where Import mod creates new projects; distinct from the game's mods folder, which only receives deployed builds.</summary>
     public string? ProjectsFolder { get; set; }
     public static string DefaultProjectsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "D2R Mod Studio");

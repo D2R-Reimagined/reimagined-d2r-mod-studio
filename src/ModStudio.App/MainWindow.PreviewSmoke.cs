@@ -11,6 +11,34 @@ namespace ModStudio.App;
 
 public partial class MainWindow
 {
+    private async Task SmokeColumnGuideAsync(string output)
+    {
+        var entry = ColumnGuide.Find("skills", "cltdofunc") ?? throw new InvalidOperationException("Missing cltdofunc guide.");
+        foreach (int width in new[] { 270, 320, 460 })
+        {
+            var card = ColumnGuideTooltip.Create("skills", "cltdofunc", entry);
+            var host = new Window { Width = width, Height = 800, Content = card, Background = Brushes.Black };
+            try
+            {
+                host.Show();
+                for (int attempt = 0; attempt < 100 && card.Bounds.Width == 0; attempt++) await Task.Delay(10);
+                host.UpdateLayout();
+                var grid = ((StackPanel)((ScrollViewer)card).Content!).Children.OfType<Grid>().Single();
+                var cells = grid.Children.OfType<TextBlock>().ToArray();
+                Require(cells.All(cell => cell.Bounds.Width >= 18), "Guide table squeezed a column at width " + width);
+                Require(cells.Where(cell => Grid.GetColumn(cell) == grid.ColumnDefinitions.Count - 1).All(cell => cell.Bounds.Width >= 80),
+                    "Guide descriptions lost readable width at " + width);
+                Require(cells.Single(cell => Grid.GetRow(cell) == 0 && Grid.GetColumn(cell) == grid.ColumnDefinitions.Count - 1).Bounds.Height < 100,
+                    "Short guide description wrapped into excessive height at " + width);
+                Require(card.Bounds.Height <= 560, "Guide card extends past its height limit.");
+                await Task.Delay(120);
+                using var image = new RenderTargetBitmap(new PixelSize(width, 800), new Vector(96, 96));
+                image.Render(host); image.Save(System.IO.Path.Combine(output, $"column-guide-{width}.png"), PngBitmapEncoderOptions.Default);
+            }
+            finally { host.Close(); }
+        }
+    }
+
     private async Task SmokePreviewsAsync(string output, IEnumerable<string> realAssets)
     {
         var file = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "synthetic.sprite")); var bytes = new byte[72];

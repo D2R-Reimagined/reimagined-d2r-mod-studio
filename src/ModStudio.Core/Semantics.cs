@@ -6,7 +6,16 @@ using static ModStudio.Core.Storage;
 namespace ModStudio.Core;
 
 public record SemanticRule(string Table, string Column, string Type = "text", bool Required = false, decimal? Min = null, decimal? Max = null, string[]? Values = null, string[]? ReferenceTables = null, string ReferenceColumn = "code", string Severity = "Warning", bool Enabled = true);
-public record ReferenceHit(string File, int Row, string Column, string Value) { public override string ToString() => $"{Path.GetFileName(Path.GetDirectoryName(File))} · row {Row} · {Column} = {Value}"; }
+public record ReferenceHit(string File, int Row, string Column, string Value, string? SourceId = null, string? CatalogId = null)
+{
+    public int FindRow(TableData table)
+    {
+        var row = SourceId is { Length: > 0 } ? Enumerable.Range(0, table.Records.Count).FirstOrDefault(r => table.Records[r]?["sourceId"]?.GetValue<string>() == SourceId, -1)
+            : CatalogId != null ? Enumerable.Range(0, table.Records.Count).FirstOrDefault(r => table.Cell(r, "id") == CatalogId, -1) : Row;
+        return row >= 0 && row < table.Records.Count && table.Cell(row, Column) == Value ? row : -1;
+    }
+    public override string ToString() => $"{Path.GetFileNameWithoutExtension(File)} · row {Row} · {Column} = {Value}";
+}
 public record SemanticReport(List<Diagnostic> Diagnostics, int Rules, int Cells);
 public static class Semantics
 {
@@ -37,6 +46,7 @@ public static class Semantics
     /// <summary>Navigation-only rule from the bundled data guide when the column is documented as a reference to another table. Not used by Check: guide targets can be enum pages or index-based.</summary>
     public static SemanticRule? GuideReference(string table, string column)
     {
+        if (CellReferences.Rule(table, column) is { Kind: "item-code" } pilot) return new(table, column, ReferenceTables: pilot.ReferenceTables);
         var entry = ColumnGuide.Find(table, column);
         if (entry?.RefFile == null) return null;
         return new(table, column, ReferenceTables: [entry.RefFile.ToLowerInvariant()], ReferenceColumn: entry.RefField ?? "code");

@@ -161,6 +161,8 @@ try
         Check(!run.Running, "Stop terminates only the owned child process");
     }
     FeatureTests.Run(root, Check, Throws, Write);
+    CellReferenceTests.Run(root, Check);
+    WorkspaceSearchTests.Run(root, Check, Throws);
     Console.WriteLine($"PASS {count} checks");
 }
 finally { Directory.Delete(root, true); }

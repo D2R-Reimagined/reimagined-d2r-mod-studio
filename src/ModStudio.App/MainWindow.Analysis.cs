@@ -30,9 +30,12 @@ public partial class MainWindow
             await Task.Delay(150); if (generation != inspectionGeneration) return;
             // Project rules win; otherwise the bundled data guide tells us which table a column points at (navigation only).
             var rule = Semantics.Rules(selectedProject).FirstOrDefault(r => r.Table == table.Name && r.Column == column);
-            bool fromGuide = false;
-            if (rule?.ReferenceTables == null && Semantics.GuideReference(table.Name, column) is { } guideRule) { rule = guideRule; fromGuide = true; }
-            var buffers = OpenBuffers(rule?.ReferenceTables ?? []);
+            bool fromGuide = rule?.ReferenceTables == null;
+            var navigation = rule?.ReferenceTables != null ? CellReferences.FromSemantic(rule) : CellReferences.Rule(table.Name, column);
+            var index = CurrentReferenceIndex();
+            var buffers = ReferenceBuffers(navigation?.ReferenceTables ?? []);
+            var pending = PendingReferenceTables();
+            var fields = table.Columns.ToDictionary(c => c, c => table.Cell(row, c));
             try
             {
                 var profileValue = ProfileEditing.ReadCell(selectedProject, table, row, column, selectedProfile);
@@ -40,15 +43,16 @@ public partial class MainWindow
                 EditProfileButton.IsVisible = true;
             }
             catch (Exception e) { ProfileValue.Text = "Profile needs review: " + e.Message; }
-            if (rule?.ReferenceTables == null) { ReferenceStatus.Text = "No reference rule for this field yet."; return; }
-            var targets = string.Join(", ", rule.ReferenceTables.Select(t => t + "." + rule.ReferenceColumn));
-            if (!rule.ReferenceTables.Any(t => File.Exists(Semantics.TableFile(selectedProject, t)))) { ReferenceStatus.Text = $"The data guide says this points at {targets}, which is not a table in this project."; return; }
+            if (navigation == null) { ReferenceStatus.Text = "No reference rule for this field yet."; return; }
+            var targets = string.Join(", ", navigation.Targets);
             ReferenceStatus.Text = "Resolving shared-source reference…";
-            var hits = await Task.Run(() => Semantics.References(selectedProject, rule, value, buffers));
+            var result = await Task.Run(() => index.Resolve(selectedProject, navigation, value, buffers, pending, source: fields));
+            var hits = result.Hits.ToList();
             if (generation != inspectionGeneration || selectedProject != project) return;
             ReferenceList.ItemsSource = hits;
             var origin = fromGuide ? $"Data guide: this points at {targets}. " : "";
             ReferenceStatus.Text = value.Length == 0 ? origin + "Empty reference." : hits.Count == 0 ? origin + "Unresolved in available project tables. Base-game resources may be missing." : origin + $"{hits.Count} match(es). Select one and press Go to, or double-click. Unsaved open target tables are included.";
+            if (result.Issues.Count > 0) ReferenceStatus.Text += "\n" + string.Join("\n", result.Issues);
             if (hits.Count > 0) { ReferenceList.SelectedIndex = 0; GoToReferenceButton.IsVisible = true; GoToReferenceButton.Content = hits.Count == 1 ? $"Go to {Path.GetFileName(Path.GetDirectoryName(hits[0].File))} row {hits[0].Row}" : "Go to selected referenced row"; }
         }
         catch (Exception e) { if (generation == inspectionGeneration) { ProfileValue.Text = e.Message; ReferenceStatus.Text = "Resolve this issue before editing the profile."; } }
@@ -58,7 +62,13 @@ public partial class MainWindow
     private async void ReferenceKeyDown(object? sender, KeyEventArgs e) { if (e.Key == Key.Enter) { e.Handled = true; await OpenReferenceAsync(); } }
     private async Task OpenReferenceAsync()
     {
-        try { if (ReferenceList.SelectedItem is ReferenceHit hit) { var pane = await OpenDocumentAsync(hit.File); pane?.Jump(hit.Row, hit.Column); } }
+        try
+        {
+            if (ReferenceList.SelectedItem is not ReferenceHit hit) return;
+            var pane = await OpenDocumentAsync(hit.File);
+            if (pane?.Document is { PendingSource: false, Table: { } table } && hit.FindRow(table) is var row && row >= 0) pane.JumpToReference(row, hit.Column);
+            else Status.Text = "Reference changed. Select the source again to refresh its matches.";
+        }
         catch (Exception e) { ShowError(e); }
     }
     private async void EditProfileClicked(object? sender, RoutedEventArgs e)

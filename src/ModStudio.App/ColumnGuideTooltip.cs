@@ -33,7 +33,11 @@ internal static class ColumnGuideTooltip
         {
             var grid = new Grid { Margin = new(0, 4, 0, 0) };
             int columns = entry.Table.Max(r => r.Length);
-            for (int c = 0; c < columns; c++) grid.ColumnDefinitions.Add(new ColumnDefinition(c == columns - 1 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto));
+            // Auto columns take their unwrapped desired width before the last column is
+            // measured, which can squeeze descriptions down to one character per line.
+            // Share the available width so every column can wrap, favoring descriptions.
+            for (int c = 0; c < columns; c++)
+                grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(c == columns - 1 ? 3 : c == 0 ? 1 : 2, GridUnitType.Star)));
             var rows = entry.Table.Take(TableRows + 1).ToArray();
             for (int r = 0; r < rows.Length; r++)
             {
@@ -56,6 +60,14 @@ internal static class ColumnGuideTooltip
             if (entry.Bits.Count(b => !string.IsNullOrWhiteSpace(b)) > TableRows) panel.Children.Add(new TextBlock { Text = "… more flags in the online guide", Foreground = Muted });
         }
         panel.Children.Add(new TextBlock { Text = "d2rdoc data guide · " + ColumnGuide.Url(tableName, column), Foreground = Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new(0, 4, 0, 0) });
-        return panel;
+        return new ScrollViewer
+        {
+            Content = panel, MaxWidth = 460, MaxHeight = 560,
+            HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Top,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            AllowAutoHide = false
+        };
     }
 }

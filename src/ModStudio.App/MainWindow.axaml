@@ -1,10 +1,10 @@
-<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="ModStudio.App.MainWindow" Width="1440" Height="920" MinWidth="1100" MinHeight="640" Title="Reimagined D2R Mod Studio">
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:app="using:ModStudio.App" x:Class="ModStudio.App.MainWindow" Width="1440" Height="920" MinWidth="1100" MinHeight="640" Title="Reimagined D2R Mod Studio">
  <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto,190,Auto,Auto">
   <Border Background="#292727" BorderBrush="#494038" BorderThickness="0,0,0,1" Padding="10,8">
    <DockPanel LastChildFill="False">
     <TextBlock Text="REIMAGINED&#10;D2R MOD STUDIO" FontSize="11" FontWeight="SemiBold" Foreground="#D8BC86" Margin="8,0,18,0" VerticalAlignment="Center" />
     <Button Content="Open project" Click="OpenClicked" ToolTip.Tip="Open a Studio project (JSON source)" /><Button Content="Import mod…" Click="MigrateClicked" ToolTip.Tip="Turn an existing mod, unpacked .mpq or data folder into an editable Studio project" />
-    <Button Content="Save all" Click="SaveAllClicked" /><Button Content="Run settings" Click="SettingsClicked" />
+    <Button Content="Save all" Click="SaveAllClicked" /><Button x:Name="FindInFilesButton" Content="Find in files…" ToolTip.Tip="Search every table cell, string and file in the project; preview and edit matches without opening them (Ctrl+Shift+F)" /><Button Content="Run settings" Click="SettingsClicked" />
     <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
      <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
@@ -48,6 +48,15 @@
    </Grid>
    <GridSplitter x:Name="LeftSplitter" Grid.Column="2" Width="5" ResizeDirection="Columns" />
    <TabControl Grid.Column="3" x:Name="Documents" SelectionChanged="DocumentSelected">
+    <!-- Same shape as the Fluent TabControl template, but the content area keeps editor panes alive across tab switches. -->
+    <TabControl.Template><ControlTemplate>
+     <Border BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Background="{TemplateBinding Background}" HorizontalAlignment="{TemplateBinding HorizontalAlignment}" VerticalAlignment="{TemplateBinding VerticalAlignment}">
+      <DockPanel>
+       <ItemsPresenter Name="PART_ItemsPresenter" ItemsPanel="{TemplateBinding ItemsPanel}" DockPanel.Dock="{TemplateBinding TabStripPlacement}" />
+       <app:DocumentTabHost Margin="{TemplateBinding Padding}" />
+      </DockPanel>
+     </Border>
+    </ControlTemplate></TabControl.Template>
     <TabItem Header="Welcome"><StackPanel Margin="30" Spacing="16"><TextBlock Text="Your mod. One workspace." FontSize="26" Foreground="#D8BC86" /><TextBlock Text="Open an existing JSON-source project or import a native data folder.&#10;Import creates a separate project and preserves the original files." TextWrapping="Wrap" /><TextBlock Text="Table and source editing · Recovery · Profile builds · Deploy and play" Classes="muted" TextWrapping="Wrap" /></StackPanel></TabItem>
    </TabControl>
    <GridSplitter x:Name="RightSplitter" Grid.Column="4" Width="5" ResizeDirection="Columns" />

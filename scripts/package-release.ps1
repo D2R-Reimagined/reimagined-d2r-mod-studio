@@ -12,7 +12,7 @@ $output = Join-Path $root "artifacts/release/$Version/$Runtime/velopack"
 & "$PSScriptRoot/publish.ps1" -Runtime $Runtime -Dotnet $Dotnet -PackageCache $PackageCache -Version $Version -UpdateRepositoryUrl $RepositoryUrl -OutputDirectory $publish
 # Install the GUI at package root; retain the CLI and all distribution notices.
 foreach ($name in @('cli','docs','licenses','README.md','LICENSE','THIRD_PARTY_NOTICES.md')) {
-    Copy-Item -LiteralPath (Join-Path $publish $name) -Destination (Join-Path $publish 'app') -Recurse
+    if (Test-Path -LiteralPath (Join-Path $publish $name)) { Copy-Item -LiteralPath (Join-Path $publish $name) -Destination (Join-Path $publish 'app') -Recurse }
 }
 [xml]$project = Get-Content (Join-Path $root 'src/ModStudio.App/ModStudio.App.csproj')
 $toolVersion = $project.Project.PropertyGroup.VelopackVersion

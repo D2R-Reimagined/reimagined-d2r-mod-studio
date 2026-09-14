@@ -165,7 +165,9 @@ public partial class MainWindow
         using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96))) { image.Render(this); image.Save(System.IO.Path.Combine(output, "column-drag.png"), PngBitmapEncoderOptions.Default); }
         this.MouseUp(to, MouseButton.Left, RawInputModifiers.None); await Task.Delay(100);
         Require(!columnMarker[0].IsVisible, "Column drop marker stayed visible after the drop.");
-        if (pane.Document.IsDirty) { pane.Document.Undo(); pane.Refresh(); }
+        // The marker was drawn on the far edge of the header under the pointer, so the grid's own drop must land the column there.
+        Require(pane.Document.Table!.Columns[3] == cols[1] && pane.Document.Table.Columns[1] == cols[2], "Column drop did not land where the marker showed: " + string.Join(",", pane.Document.Table.Columns.Take(5)));
+        pane.Document.Undo(); pane.Refresh();
         Require(pane.Document.Table!.Columns.SequenceEqual(cols) && !pane.Document.IsDirty, "Column drag did not undo cleanly.");
         await CloseTabAsync(tabs.First(t => t.Content == pane));
     }

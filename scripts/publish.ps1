@@ -78,7 +78,7 @@ foreach ($file in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $output
 }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination $output -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination $output -Recurse -Force
+if (Test-Path -LiteralPath (Join-Path $projectRoot 'docs')) { Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination $output -Recurse -Force }
 if ($Runtime.StartsWith('win-')) { Compress-Archive -Path (Join-Path $output '*') -DestinationPath "$output.zip" }
 else {
     & tar -czf "$output.tar.gz" -C $output .

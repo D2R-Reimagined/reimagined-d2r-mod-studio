@@ -835,9 +835,15 @@ public partial class MainWindow : Window
                 pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
                 Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) != "7" && pane.Document.Table.Cell(secondRowIndex, cols[nextIndex]) != "7", "Undo did not revert the typed multi-cell edit.");
                 // Double-clicking a cell inside the block opens it for editing without collapsing the selection; Enter fills the block.
-                pane.Jump(secondRowIndex, cols[nextIndex]); await Task.Delay(600);
-                var visibleForDoubleClick = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
-                Require(visibleForDoubleClick.Length >= 2, "Fewer than two scrolling columns are visible for the double-click test.");
+                pane.Jump(secondRowIndex, cols[nextIndex]);
+                // Loaded CI runners can take well over half a second to realize the scrolled-to rows; poll instead of trusting one delay.
+                DataGridColumn[] visibleForDoubleClick = [];
+                for (int attempt = 0; attempt < 20 && visibleForDoubleClick.Length < 2; attempt++)
+                {
+                    await Task.Delay(attempt == 0 ? 600 : 150); UpdateLayout();
+                    visibleForDoubleClick = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).Where(c => LiveCell(clickedRow, c) != null && LiveCell(secondRowIndex, c) != null).ToArray();
+                }
+                Require(visibleForDoubleClick.Length >= 2, $"Fewer than two scrolling columns are visible for the double-click test (rows {clickedRow}/{secondRowIndex}, {pane.TableGrid.Columns.Count} columns, {pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Count()} rows realized).");
                 startColumn = visibleForDoubleClick[^2]; nextColumn = visibleForDoubleClick[^1]; startIndex = pane.ColumnIndexOf(startColumn); nextIndex = pane.ColumnIndexOf(nextColumn);
                 pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, shift: true); await Task.Delay(60);
                 var inside = Centre(LiveCell(secondRowIndex, nextColumn)); Require(pane.SelectedCells.Count == 4, "Block selection was lost before the double-click test.");

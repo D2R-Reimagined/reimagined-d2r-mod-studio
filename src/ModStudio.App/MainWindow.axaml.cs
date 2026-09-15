@@ -419,7 +419,7 @@ public partial class MainWindow : Window
         Status.Text = "Loading " + System.IO.Path.GetFileName(file) + "…";
         var document = await Task.Run(() => new Document(file));
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
-        var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane);
+        var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane, FindOpenDocument);
         pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
@@ -441,6 +441,8 @@ public partial class MainWindow : Window
     }
     /// <summary>Tab title: table files show their table name, everything else its file name.</summary>
     private static string Label(Document doc) => (doc.IsDirty ? "● " : "") + (doc.Table != null && doc.FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileNameWithoutExtension(doc.FilePath) : System.IO.Path.GetFileName(doc.FilePath));
+    private Document? FindOpenDocument(string file) => tabs.Select(t => t.Content).OfType<EditorPane>()
+        .Select(p => p.Document).FirstOrDefault(d => string.Equals(d.FilePath, file, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
     private string RecoveryFile(Document doc) => Inside(project!.Cache, "recovery/" + Hash(doc.FilePath) + ".json");
     private readonly Dictionary<Document, DateTime> lastEdit = [];
     private static readonly TimeSpan RecoveryIdle = TimeSpan.FromSeconds(2);
@@ -675,6 +677,48 @@ public partial class MainWindow : Window
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await SmokeColumnGuideAsync(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            if (Program.Arguments.Contains("--cell-tip-only"))
+            {
+                var pane = await OpenDocumentAsync(Path.Combine(root, "source/strings/cell-tip.json"));
+                Require(pane != null, "Cell tooltip smoke needs a catalog.");
+                pane!.TableGrid.Columns[2].Width = new DataGridLength(100);
+                DataGridCell? Cell(int rowIndex)
+                {
+                    var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView view && view.Row == rowIndex);
+                    return row == null ? null : pane.TableGrid.Columns[2].GetCellContent(row)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                }
+                var timeout = Stopwatch.StartNew();
+                while (timeout.Elapsed < TimeSpan.FromSeconds(10) && (Cell(0)?.Bounds.Width ?? 0) == 0)
+                { await Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Background); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2); await Task.Delay(10); }
+                var longCell = Cell(0); var shortCell = Cell(1);
+                Require(longCell != null && shortCell != null, "Cell tooltip smoke did not realize both catalog rows.");
+                var tip = pane.GetVisualDescendants().OfType<Border>().Single(b => b.Name == "TruncatedCellTooltip");
+                var longPoint = longCell!.TranslatePoint(new Point(22, longCell!.Bounds.Height / 2), this)!.Value;
+                this.MouseMove(longPoint, RawInputModifiers.None);
+                Require(tip.IsVisible && tip.GetVisualDescendants().OfType<TextBlock>().Single().Text == "of the Mammoth", "Clipped text did not show its complete value immediately.");
+                var firstX = Canvas.GetLeft(tip);
+                this.MouseMove(new Point(longPoint.X + 10, longPoint.Y), RawInputModifiers.None);
+                Require(tip.IsVisible && Canvas.GetLeft(tip) > firstX + 5, "Cell tooltip did not follow the pointer.");
+                UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
+                { image.Render(this); image.Save(Path.Combine(output, "cell-tip.png"), PngBitmapEncoderOptions.Default); }
+                var shortPoint = shortCell!.TranslatePoint(new Point(22, shortCell!.Bounds.Height / 2), this)!.Value;
+                this.MouseMove(shortPoint, RawInputModifiers.None);
+                Require(!tip.IsVisible, "A fully visible cell showed the tooltip.");
+                pane.TableGrid.Columns[2].Width = new DataGridLength(220); UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                this.MouseMove(longPoint, RawInputModifiers.None);
+                Require(!tip.IsVisible, "Widening the column did not clear the truncated-cell tooltip.");
+                pane.TableGrid.Columns[2].Width = new DataGridLength(100);
+                pane.Jump(0, "enUS"); pane.ToggleFrozenRows(); UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                var frozenRow = pane.FrozenGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView view && view.Row == 0);
+                var frozenCell = frozenRow == null ? null : pane.FrozenGrid.Columns[2].GetCellContent(frozenRow)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                Require(frozenCell != null, "Frozen catalog row was not realized for the tooltip check.");
+                var frozenPoint = frozenCell!.TranslatePoint(new Point(22, frozenCell!.Bounds.Height / 2), this)!.Value;
+                this.MouseMove(frozenPoint, RawInputModifiers.None);
+                Require(tip.IsVisible, "A clipped frozen-row cell did not show the tooltip.");
+                File.WriteAllText(Path.Combine(output, "cell-tip-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--catalog-ids-only"))
             {
                 var file = Path.Combine(root, "source/strings/duplicate-ids.json");
@@ -699,6 +743,12 @@ public partial class MainWindow : Window
             {
                 await SmokeCellReferencesAsync(output);
                 File.WriteAllText(System.IO.Path.Combine(output, "cell-references-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
+            if (Program.Arguments.Contains("--skilldesc-classes-only"))
+            {
+                await SmokeSkillClassFilterAsync();
+                File.WriteAllText(System.IO.Path.Combine(output, "skilldesc-classes-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
             if (Program.Arguments.Contains("--row-copy-only"))

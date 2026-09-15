@@ -34,6 +34,10 @@ internal static class GuideAndDetectionTests
         var guideRule = Semantics.GuideReference("skills", "srvmissilea");
         check(guideRule is { ReferenceTables: ["missiles"], ReferenceColumn: "Missile" } && Semantics.GuideReference("skills", "skilldesc") is { ReferenceTables: ["skilldesc"] }, "Data guide reference types become navigation rules");
         check(Semantics.GuideReference("skills", "reqlevel") == null && Semantics.GuideReference("nope", "x") == null, "Non-reference columns produce no guide rule");
+        var classSkills = TableData.FromTsv(Storage.Utf8.GetBytes("skill\tcharclass\tskilldesc\nAmazon skill\tama\tshared\nGeneric skill\t\tshared\nSorceress skill\tsor\tsor only\nOther generic\t\tgeneric\n"), "skills", "global/excel/skills.txt");
+        var classFilter = new SkillDescClassFilter(classSkills);
+        check(classFilter.Classes.SequenceEqual(["ama", "sor"]) && classFilter.Matches("shared", "ama") && !classFilter.Matches("shared", "sor") && classFilter.Matches("sor only", "sor"), "Skill descriptions follow their linked character classes");
+        check(classFilter.Matches("shared", "*") && classFilter.Matches("generic", "*") && classFilter.Matches("unlinked", "*") && !classFilter.Matches("sor only", "*") && classFilter.Matches("sor only", ""), "Any includes class-neutral and unlinked descriptions while All includes every row");
         var refProject = new ModProject(Path.Combine(root, "guide-refs"), "refs", "Refs"); Directory.CreateDirectory(refProject.Root);
         var missiles = TableData.FromTsv(Storage.Utf8.GetBytes("missile\tvelocity\narrow\t10\nfirebolt\t20\n"), "missiles", "global/excel/missiles.txt");
         TableData.Write(TableData.FileFor(refProject, "tables", "missiles"), missiles);

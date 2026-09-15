@@ -25,6 +25,9 @@ public sealed partial class EditorPane
         private readonly Button? reference;
         private string? referenceKey;
         private RowView? observedRow;
+        private string? measuredText;
+        private double measuredWidth;
+        private bool measuredClipped;
         private readonly TextBox mirror = new()
         {
             IsReadOnly = true, IsHitTestVisible = false, Focusable = false,
@@ -84,6 +87,41 @@ public sealed partial class EditorPane
                     Avalonia.Automation.AutomationProperties.SetName(reference, $"Open reference {key}");
                 }
             }
+        }
+        public bool TryGetClippedText(out string fullText)
+        {
+            var visible = display.IsVisible ? display : mirror;
+            fullText = visible switch { TextBlock text => text.Text ?? "", TextBox box => box.Text ?? "", _ => "" };
+            if (fullText.Length == 0 || visible.Bounds.Width <= 0) return false;
+            var available = visible.Bounds.Width - (visible is TextBox editor ? editor.Padding.Left + editor.Padding.Right : 0);
+            if (fullText != measuredText || Math.Abs(available - measuredWidth) > 0.5)
+            {
+                measuredText = fullText; measuredWidth = available;
+                // Rows show one line. A second line is clipped even when the first fits horizontally.
+                measuredClipped = fullText.IndexOfAny(['\r', '\n']) >= 0;
+                if (!measuredClipped)
+                {
+                    // Very long values cannot fit the editor's bounded columns; avoid laying out thousands of glyphs.
+                    if (fullText.Length > 512) measuredClipped = true;
+                    else
+                    {
+                        var probe = new TextBlock { Text = fullText, TextTrimming = TextTrimming.None, TextWrapping = TextWrapping.NoWrap };
+                        if (visible is TextBlock text)
+                        {
+                            probe.FontFamily = text.FontFamily; probe.FontSize = text.FontSize;
+                            probe.FontWeight = text.FontWeight; probe.FontStyle = text.FontStyle;
+                        }
+                        else if (visible is TextBox box)
+                        {
+                            probe.FontFamily = box.FontFamily; probe.FontSize = box.FontSize;
+                            probe.FontWeight = box.FontWeight; probe.FontStyle = box.FontStyle;
+                        }
+                        probe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                        measuredClipped = probe.DesiredSize.Width > available + 1;
+                    }
+                }
+            }
+            return measuredClipped;
         }
     }
     private void RefreshLiveCells()

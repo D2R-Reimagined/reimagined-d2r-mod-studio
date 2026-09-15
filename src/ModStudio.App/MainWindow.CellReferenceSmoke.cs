@@ -15,6 +15,19 @@ public partial class MainWindow
 {
     private async Task SmokeCellReferencesAsync(string output)
     {
+        // The smoke writes its own reference tables. Delayed watcher callbacks from
+        // those writes can invalidate an otherwise current navigation mid-open.
+        var watching = watcher?.EnableRaisingEvents == true;
+        if (watching) watcher!.EnableRaisingEvents = false;
+        try { await SmokeCellReferencesCoreAsync(output); }
+        finally
+        {
+            if (watching && watcher != null) watcher.EnableRaisingEvents = true;
+        }
+    }
+
+    private async Task SmokeCellReferencesCoreAsync(string output)
+    {
         int previousOutput = Output.Text?.Length ?? 0;
         void Table(string name, string text) => TableData.Write(Semantics.TableFile(project!, name), TableData.FromTsv(Utf8.GetBytes(text), name, "global/excel/" + name + ".txt"));
         Table("gamble", "name\tcode\nCap\tcap\nHand Axe\thax\nHealing Potion\thp1\nUnknown\tmissing\nEmpty\t\nDuplicate\tshared\nAmulet\tamu\n");

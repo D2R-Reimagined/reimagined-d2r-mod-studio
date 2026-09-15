@@ -59,7 +59,19 @@ public sealed partial class EditorPane : Grid
     public string? SortColumn => sortColumn;
     public bool SortDescending => descending;
     private readonly Grid tableHost = new() { RowDefinitions = new("Auto,*") };
+    private readonly Canvas cellTipLayer = new() { IsHitTestVisible = false, ClipToBounds = false };
+    private readonly TextBlock cellTipText = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly Border cellTip = new()
+    {
+        Name = "TruncatedCellTooltip", IsVisible = false, IsHitTestVisible = false, MaxWidth = 520,
+        Background = new SolidColorBrush(Color.Parse("#272B30")), BorderBrush = new SolidColorBrush(Color.Parse("#D8BC86")),
+        BorderThickness = new Thickness(1), Padding = new Thickness(9, 6), CornerRadius = new CornerRadius(4),
+        BoxShadow = new BoxShadows(new BoxShadow { Blur = 12, Color = Color.FromArgb(130, 0, 0, 0) })
+    };
+    private Size cellTipSize;
+    private double cellTipLayerWidth = -1;
     private readonly TextBlock columnsLabel = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new(8, 0, 4, 0) };
+    private readonly ComboBox skillClassDropdown = new() { Width = 145, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0) };
     private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Enter)", Width = 180, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Dictionary<DataGridColumn, int> columnMap = [];
@@ -69,6 +81,7 @@ public sealed partial class EditorPane : Grid
     private readonly List<int> frozenColumns = [0];
     private readonly Action<Exception> error;
     private readonly Action<EditorPane> selection;
+    private readonly Func<string, Document?>? findOpenDocument;
     private DataGrid activeGrid;
     private bool syncing, refreshing, synchronizingBars, synchronizingWidths;
     private int offset;
@@ -98,9 +111,9 @@ public sealed partial class EditorPane : Grid
         HorizontalScrollBarVisibility = ScrollBarVisibility.Visible, VerticalScrollBarVisibility = ScrollBarVisibility.Visible
     };
 
-    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Action<EditorPane>? save = null)
+    public EditorPane(Document document, Action<Exception> onError, Action<EditorPane> onSelection, Action<EditorPane>? save = null, Func<string, Document?>? findOpenDocument = null)
     {
-        Document = document; error = onError; selection = onSelection; activeGrid = TableGrid;
+        Document = document; error = onError; selection = onSelection; this.findOpenDocument = findOpenDocument; activeGrid = TableGrid;
         Source.SyntaxHighlighting = SourceCodeEditing.Highlighting(document.FilePath);
         Source.Options.ConvertTabsToSpaces = true; Source.Options.IndentationSize = 4;
         RowDefinitions = new("Auto,*,Auto");
@@ -125,18 +138,22 @@ public sealed partial class EditorPane : Grid
             Item("Unlock all edits", () => { document.LockedRows.Clear(); document.LockedColumns.Clear(); Refresh(); }) };
         view.Click += (_, _) => menu.Open(view); toolbar.Children.Add(view);
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
+        InitializeSkillClassDropdown(toolbar);
         filter.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } e.Handled = true; } };
         Children.Add(toolbar);
         FrozenGrid.IsVisible = false; FrozenGrid.HeadersVisibility = DataGridHeadersVisibility.All;
         FrozenGrid.BorderBrush = new SolidColorBrush(Color.Parse("#D8BC86")); FrozenGrid.BorderThickness = new(0, 0, 0, 1);
         FrozenGrid.HorizontalScrollBarVisibility = ScrollBarVisibility.Visible;
         tableHost.Children.Add(FrozenGrid); SetRow(TableGrid, 1); tableHost.Children.Add(TableGrid);
+        cellTip.Child = cellTipText; cellTipLayer.Children.Add(cellTip); SetRowSpan(cellTipLayer, 2); tableHost.Children.Add(cellTipLayer);
+        tableHost.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !tableHost.IsVisible) HideCellTip(); };
         SetRow(tableHost, 1); Children.Add(tableHost); SetRow(Source, 1); Children.Add(Source);
         SetRow(note, 2); note.Margin = new(10, 5); Children.Add(note);
         Source.TextChanged += (_, _) => { if (!syncing) { try { document.SetRaw((document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "") + Source.Text); } catch (Exception ex) { error(ex); Refresh(); } } };
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
         WireReordering();
         document.Changed += UpdateNote;
+        document.Changed += HideCellTip;
         document.Changed += ClearReferenceHighlight;
         // Fitted widths are recomputed when the table is re-parsed or rows come and go; single cell edits keep them, so an undo does not re-measure 24 columns.
         document.Changed += () => { if (document.LastChangedRows == null) fittedWidths.Clear(); };
@@ -188,19 +205,23 @@ public sealed partial class EditorPane : Grid
     {
         ScrollViewer.SetAllowAutoHide(grid, false);
         grid.PointerMoved += (_, e) => {
+            UpdateCellTip(e);
             if (Document.Table?.Name is not ("uniqueitems" or "setitems")) return;
             var rowControl = (e.Source as Visual)?.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault();
             int row = (rowControl?.DataContext as RowView)?.Row ?? -1;
             if (row == hoveredRow && rowControl == hoveredItem) return;
             hoveredRow = row; hoveredItem = rowControl; ItemHovered?.Invoke(this, row, rowControl);
         };
-        grid.PointerExited += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
-        DetachedFromVisualTree += (_, _) => { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
+        grid.PointerExited += (_, _) => { HideCellTip(); hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
+        grid.PointerWheelChanged += (_, _) => HideCellTip();
+        DetachedFromVisualTree += (_, _) => { HideCellTip(); hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
         // The document host hides rather than detaches panes on a tab switch.
-        PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !IsVisible) { hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); } };
+        PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !IsVisible) { HideCellTip(); hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); } };
         grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
         grid.TemplateApplied += (_, e) =>
         {
+            if (e.NameScope.Find<ScrollBar>("PART_VerticalScrollbar") is { } vertical)
+                vertical.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) HideCellTip(); };
             var bar = e.NameScope.Find<ScrollBar>("PART_HorizontalScrollbar"); if (bar == null) return;
             bar.AllowAutoHide = false; bar.Height = 22; bar.MinHeight = 22;
             if (grid == FrozenGrid) { bar.Height = 0; bar.MinHeight = 0; bar.Opacity = 0; bar.IsHitTestVisible = false; }
@@ -211,10 +232,11 @@ public sealed partial class EditorPane : Grid
             }
             if (e.NameScope.Find<Control>("PART_RowsPresenter") is { } rows) SetRowSpan(rows, 1);
             if (grid == TableGrid) mainBar = bar; else frozenBar = bar;
-            bar.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) SyncBars(bar); };
+            bar.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) { HideCellTip(); SyncBars(bar); } };
         };
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
+            HideCellTip();
             if (IsReferenceButton(e.Source)) return;
             BeginInput(grid);
             if (!e.GetCurrentPoint(grid).Properties.IsRightButtonPressed || e.Source is not Visual visual) return;
@@ -273,6 +295,27 @@ public sealed partial class EditorPane : Grid
         };
         grid.BeginningEdit += (_, e) => { if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col)) e.Cancel = Document.LockedRows.Contains(row.Row) || Document.LockedColumns.Contains(Document.Table!.Columns[col]); };
         WireCellSelection(grid);
+    }
+    private void HideCellTip() => cellTip.IsVisible = false;
+    private void UpdateCellTip(PointerEventArgs e)
+    {
+        if (!tableHost.IsVisible || e.Source is not Visual source || IsReferenceButton(source)) { HideCellTip(); return; }
+        var cell = source.GetSelfAndVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+        var live = cell?.GetVisualDescendants().OfType<LiveCellDisplay>().FirstOrDefault();
+        if (live == null || !live.TryGetClippedText(out var fullText)) { HideCellTip(); return; }
+        var needsMeasure = !cellTip.IsVisible || cellTipText.Text != fullText || Math.Abs(cellTipLayerWidth - cellTipLayer.Bounds.Width) > 0.5;
+        if (needsMeasure)
+        {
+            cellTipText.Text = fullText; cellTip.IsVisible = true; cellTipLayerWidth = cellTipLayer.Bounds.Width;
+            cellTip.Measure(new Size(Math.Min(520, Math.Max(1, cellTipLayerWidth)), double.PositiveInfinity));
+            cellTipSize = cellTip.DesiredSize;
+        }
+        var point = e.GetPosition(cellTipLayer);
+        var width = cellTipSize.Width; var height = cellTipSize.Height;
+        var x = Math.Clamp(point.X + 16, 0, Math.Max(0, cellTipLayer.Bounds.Width - width - 4));
+        var y = point.Y + 18;
+        if (y + height > cellTipLayer.Bounds.Height) y = Math.Max(0, point.Y - height - 10);
+        Canvas.SetLeft(cellTip, x); Canvas.SetTop(cellTip, y);
     }
     private ContextMenu CreateRowMenu(DataGrid grid)
     {
@@ -370,6 +413,7 @@ public sealed partial class EditorPane : Grid
     public void RefreshColumns()
     {
         if (Document.Table == null) return;
+        HideCellTip();
         bool previous = refreshing; refreshing = true; var selectedColumn = SelectedColumn;
         try
         {
@@ -393,7 +437,7 @@ public sealed partial class EditorPane : Grid
                     columnMap[column] = i; grid.Columns.Add(column);
                     column.PropertyChanged += (_, e) =>
                     {
-                        if (e.Property.Name != "Width" || synchronizingWidths) return; synchronizingWidths = true;
+                        if (e.Property.Name != "Width" || synchronizingWidths) return; HideCellTip(); synchronizingWidths = true;
                         try { widths[i] = column.Width; foreach (var pair in columnMap.Where(p => p.Value == i && p.Key != column)) pair.Key.Width = column.Width; }
                         finally { synchronizingWidths = false; }
                     };
@@ -439,15 +483,17 @@ public sealed partial class EditorPane : Grid
     private void ApplyView(int selected, string column, bool scroll = false)
     {
         var table = Document.Table!; var term = filter.Text ?? "";
-        IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
+        var classFilter = SelectedSkillClassFilter();
+        IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && SkillClassMatches(i, classFilter) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
         if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
         // A blank line at the bottom creates a new row as soon as something is typed into it.
         var views = rows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit));
         TableGrid.ItemsSource = views.Append(new RowView(Document, -1, error, MaterializePlaceholder)).ToArray();
-        FrozenGrid.ItemsSource = frozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
-        FrozenGrid.IsVisible = frozenRows.Count > 0; FrozenGrid.Height = frozenRows.Count * 30 + 34;
+        var visibleFrozenRows = frozenRows.Where(i => SkillClassMatches(i, classFilter)).ToArray();
+        FrozenGrid.ItemsSource = visibleFrozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
+        FrozenGrid.IsVisible = visibleFrozenRows.Length > 0; FrozenGrid.Height = visibleFrozenRows.Length * 30 + 34;
         TableGrid.HeadersVisibility = FrozenGrid.IsVisible ? DataGridHeadersVisibility.Row : DataGridHeadersVisibility.All;
-        activeGrid = frozenRows.Contains(selected) ? FrozenGrid : TableGrid;
+        activeGrid = visibleFrozenRows.Contains(selected) ? FrozenGrid : TableGrid;
         activeGrid.SelectedItem = ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault(r => r.Row == selected);
         activeGrid.SelectedItem ??= ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault();
         selectedRow = (activeGrid.SelectedItem as RowView)?.Row ?? -1; selectedColumn = column;
@@ -503,7 +549,9 @@ public sealed partial class EditorPane : Grid
         step();
         var changedRows = Document.LastChangedRows; var changedColumns = Document.LastChangedColumns;
         bool inPlace = table != null && ReferenceEquals(table, Document.Table) && !Document.PendingSource && table.Records.Count == rows && !Source.IsVisible && MarkdownPreview?.IsVisible != true
-            && changedRows != null && changedColumns != null && string.IsNullOrEmpty(filter.Text) && (sortColumn == null || !changedColumns.Contains(sortColumn));
+            && changedRows != null && changedColumns != null && string.IsNullOrEmpty(filter.Text)
+            && (SelectedSkillClassCode().Length == 0 || !changedColumns.Contains("skilldesc"))
+            && (sortColumn == null || !changedColumns.Contains(sortColumn));
         if (!inPlace) { Refresh(); return; }
         RefreshRowValues(changedRows!); QueuePaint(); UpdateNote(); selection(this);
     }
@@ -552,6 +600,7 @@ public sealed partial class EditorPane : Grid
         rowHeaderPress = false;
         ClearReferenceHighlight();
         Source.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
+        if (skillClassDropdown.IsVisible) skillClassDropdown.SelectedIndex = 0;
         var i = Array.IndexOf(Document.Table.Columns, column); offset = i > 0 ? ((i - 1) / 23) * 23 : 0; Refresh(); viewVersion++;
         activeGrid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
         var item = ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault(r => r.Row == row);

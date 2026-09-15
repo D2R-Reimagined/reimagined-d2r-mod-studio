@@ -127,6 +127,7 @@ public sealed class Document
     private List<Diagnostic> Validated()
     {
         var diagnostics = Table!.Validate(FilePath).ToList();
+        diagnostics.AddRange(Table.DuplicateIdWarnings(FilePath));
         if (Table!.RowOrderChanged) diagnostics.Add(new(FilePath, TableData.RowOrderAdvice, "Warning"));
         return diagnostics;
     }
@@ -198,7 +199,7 @@ public sealed class Document
     {
         modelChanged = true;
         if (Diagnostics.Any(d => d.Severity == "Error") || Table!.ValidateRows(FilePath, Enumerable.Range(index, count)).Count > 0) Diagnostics = Validated();
-        else { Table!.RefreshRowOrder(); Diagnostics = Table.RowOrderChanged ? [new(FilePath, TableData.RowOrderAdvice, "Warning")] : []; }
+        else { Table!.RefreshRowOrder(); Diagnostics = Table.DuplicateIdWarnings(FilePath).ToList(); if (Table.RowOrderChanged) Diagnostics.Add(new(FilePath, TableData.RowOrderAdvice, "Warning")); }
         LastChangedRows = null; LastChangedColumns = null; Notify();
     }
     /// <summary>

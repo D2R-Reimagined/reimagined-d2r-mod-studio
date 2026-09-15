@@ -124,6 +124,14 @@ public static class BuildService
             }
             foreach (var rule in rules) if (!tableNames.Contains(rule.S("table"))) diagnostics.Add(new(Inside(project.Root, Relative(snapshot, profilePath)), "Unknown override table: " + rule.S("table")));
             if (diagnostics.Count > 0) throw new BuildFailure(diagnostics);
+            var catalogWarnings = new List<Diagnostic>();
+            var catalogRoot = Path.Combine(snapshot, "source/strings");
+            if (Directory.Exists(catalogRoot))
+                foreach (var file in Directory.GetFiles(catalogRoot, "*.json"))
+                {
+                    token.ThrowIfCancellationRequested();
+                    catalogWarnings.AddRange(TableData.Load(file).DuplicateIdWarnings(Inside(project.Root, Relative(snapshot, file))));
+                }
             var semanticDiagnostics = CheckedSemantics(project, snapshot, Inside(folder, "semantics.json"), hashes, token);
             if (semanticDiagnostics.Any(d => d.Severity == "Error")) throw new BuildFailure(semanticDiagnostics);
             foreach (var textFile in Files(Path.Combine(snapshot, "source/text")))
@@ -165,7 +173,7 @@ public static class BuildService
             progress?.Invoke("Writing build manifest…");
             foreach (var old in Files(output)) if (!generated.Contains(Relative(output, old))) File.Delete(old);
             var entries = FileEntries(output).Select(f => new BuildFile(Relative(output, f.FullName), BuildCache.FileHash(f), f.Length)).ToList();
-            var result = new BuildResult(id, profile, project.Id, project.Name, output, entries, snapshot, semanticDiagnostics);
+            var result = new BuildResult(id, profile, project.Id, project.Name, output, entries, snapshot, [.. catalogWarnings, .. semanticDiagnostics]);
             AtomicWrite(Inside(folder, "build.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result, Pretty));
             AtomicWrite(cacheFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(cache, Pretty));
             BuildCache.SaveFingerprints(project);

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -29,6 +30,9 @@ public partial class MainWindow : Window
     private TabItem? previewTab;
     private readonly SemaphoreSlim documentOpening = new(1, 1);
     private readonly ObservableCollection<Diagnostic> diagnostics = [];
+    private readonly List<Diagnostic> catalogIdWarnings = [];
+    private readonly DispatcherTimer catalogWarningTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private int catalogWarningRevision;
     private readonly RunController controller = new();
     private CancellationTokenSource? operation;
     private FileSystemWatcher? watcher;
@@ -44,6 +48,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        catalogWarningTimer.Tick += async (_, _) => { catalogWarningTimer.Stop(); if (project is { } current) await RefreshCatalogIdWarningsAsync(current); };
         // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
         ToolbarActions.PropertyChanged += (_, e) =>
         {
@@ -198,9 +203,10 @@ public partial class MainWindow : Window
         Require(!externalBusy, "Wait for external synchronization before switching projects.");
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose(); externalWatcher?.Dispose(); externalActive = false; findInFiles?.Close();
-        project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
+        project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
+        await RefreshCatalogIdWarningsAsync(nextProject);
         explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; SetExplorerEntries(entries); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };
         watcher.Changed += OnExternalChange; watcher.Created += OnExternalChange; watcher.Deleted += OnExternalChange; watcher.Renamed += OnExternalChange;
@@ -228,6 +234,10 @@ public partial class MainWindow : Window
             if (e.ChangeType != WatcherChangeTypes.Changed) QueueExplorerRefresh();
             git.QueueRefresh();
             workspaceRevision++; SemanticStatus.Text = "Files changed; run source checks again";
+            if (project is { } current &&
+                (Contains(Path.Combine(current.Root, "source/strings"), e.FullPath) && e.FullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+                 e is RenamedEventArgs renamedCatalog && Contains(Path.Combine(current.Root, "source/strings"), renamedCatalog.OldFullPath) && renamedCatalog.OldFullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
+            { catalogWarningTimer.Stop(); catalogWarningTimer.Start(); }
             RefreshItemPreview();
             _ = RefreshSemanticInspectorAsync();
             if (runningBuild != null && controller.Running) RunState.Text = $"Game: {runningBuild} · source changed";
@@ -452,14 +462,35 @@ public partial class MainWindow : Window
     }
     private void RefreshStatus()
     {
-        diagnostics.Clear(); foreach (var diagnostic in buildDiagnostics) diagnostics.Add(diagnostic);
+        diagnostics.Clear(); var listed = new HashSet<Diagnostic>();
+        static string ProblemPath(string file) => Path.GetFullPath(file).Replace('/', Path.DirectorySeparatorChar);
+        void Add(Diagnostic diagnostic) { var normalized = diagnostic with { File = ProblemPath(diagnostic.File) }; if (listed.Add(normalized)) diagnostics.Add(normalized); }
+        foreach (var diagnostic in buildDiagnostics) Add(diagnostic);
         var changes = new List<string>();
+        var openFiles = tabs.Select(t => t.Content).OfType<EditorPane>().Select(p => ProblemPath(p.Document.FilePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var diagnostic in catalogIdWarnings) if (!openFiles.Contains(ProblemPath(diagnostic.File))) Add(diagnostic);
         foreach (var pane in tabs.Select(t => t.Content).OfType<EditorPane>())
         {
-            foreach (var diagnostic in pane.Document.Diagnostics) diagnostics.Add(diagnostic);
+            foreach (var diagnostic in pane.Document.Diagnostics) Add(diagnostic);
             if (pane.Document.IsDirty) changes.Add(pane.Document.FilePath + " — unsaved revision " + pane.Document.Revision);
         }
         Changes.ItemsSource = changes;
+    }
+    private static List<Diagnostic> ScanCatalogIdWarnings(ModProject current)
+    {
+        var warnings = new List<Diagnostic>(); var folder = Path.Combine(current.Root, "source/strings");
+        if (!Directory.Exists(folder)) return warnings;
+        foreach (var file in Directory.GetFiles(folder, "*.json"))
+            try { warnings.AddRange(TableData.Load(file).DuplicateIdWarnings(file)); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { warnings.Add(new(file, ex.Message)); }
+        return warnings;
+    }
+    private async Task RefreshCatalogIdWarningsAsync(ModProject current)
+    {
+        var revision = ++catalogWarningRevision;
+        var warnings = await Task.Run(() => ScanCatalogIdWarnings(current));
+        if (project != current || revision != catalogWarningRevision) return;
+        catalogIdWarnings.Clear(); catalogIdWarnings.AddRange(warnings); RefreshStatus();
     }
     private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); } }
     private void UpdateInspector(EditorPane pane)
@@ -644,6 +675,21 @@ public partial class MainWindow : Window
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await SmokeColumnGuideAsync(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            if (Program.Arguments.Contains("--catalog-ids-only"))
+            {
+                var file = Path.Combine(root, "source/strings/duplicate-ids.json");
+                Require(diagnostics.Count(d => d.Severity == "Warning" && d.Field == "id" && d.File == Path.GetFullPath(file).Replace('/', Path.DirectorySeparatorChar)) == 2, "Problems did not list both duplicate IDs when the project opened.");
+                var pane = await OpenDocumentAsync(file);
+                Require(pane != null && diagnostics.Count(d => d.Severity == "Warning" && d.Field == "id" && d.File == Path.GetFullPath(file).Replace('/', Path.DirectorySeparatorChar)) == 2, "Opening the catalog duplicated or removed its ID problems.");
+                var corrected = (JsonObject)JsonNode.Parse(pane!.Document.Text)!;
+                corrected["records"]![1]!["id"] = 2;
+                pane.Document.SetRaw(corrected.ToJsonString()); pane.Document.ApplySource(); RefreshStatus();
+                Require(diagnostics.All(d => d.Field != "id"), "Correcting an ID in Source view did not clear its problems.");
+                pane.Document.Save(); await RefreshCatalogIdWarningsAsync(project!);
+                Require(catalogIdWarnings.All(d => d.Field != "id") && diagnostics.All(d => d.Field != "id"), "Saving the corrected ID did not clear project-wide problems.");
+                File.WriteAllText(Path.Combine(output, "catalog-ids-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--external-editor-only"))
             {
                 await SmokeExternalEditorAsync(output);

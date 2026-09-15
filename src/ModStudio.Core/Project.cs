@@ -125,17 +125,27 @@ public static class ProjectImporter
     {
         var text = Utf8.GetString(bytes); if (JsonNode.Parse(text.TrimStart('\uFEFF')) is not JsonArray rows || rows.Count == 0) return null;
         if (rows[0] is not JsonObject first || !first.ContainsKey("id") || !first.ContainsKey("Key")) return null;
-        var locales = first.Select(p => p.Key).Where(k => k is not ("id" or "Key")).ToArray();
+        var locales = rows.OfType<JsonObject>().SelectMany(row => row.Select(p => p.Key)).Where(k => k is not ("id" or "Key")).Distinct(StringComparer.Ordinal).ToArray();
         var records = new JsonArray();
         foreach (var row in rows)
         {
-            Require(row is JsonObject obj && obj.Count == locales.Length + 2, $"Inconsistent catalog: {target}");
-            var translations = new JsonObject(); foreach (var locale in locales) translations[locale] = row![locale]!.GetValue<string>();
+            Require(row is JsonObject && row["id"] is JsonValue && row["Key"] is JsonValue, $"Inconsistent catalog: {target}");
+            var obj = (JsonObject)row!;
+            var translations = new JsonObject();
+            foreach (var locale in locales)
+                if (obj.ContainsKey(locale))
+                {
+                    Require(obj[locale] is JsonValue value && value.TryGetValue<string>(out _), $"Invalid translation {locale}: {target}");
+                    translations[locale] = obj[locale]!.GetValue<string>();
+                }
             records.Add(new JsonObject { ["order"] = records.Count, ["id"] = row!["id"]!.GetValue<int>(), ["Key"] = row["Key"]!.GetValue<string>(), ["translations"] = translations });
         }
         var schema = new JsonObject { ["schemaVersion"] = 1, ["category"] = name, ["target"] = target, ["locales"] = new JsonArray(locales.Select(l => (JsonNode?)JsonValue.Create(l)).ToArray()), ["bom"] = text.StartsWith('\uFEFF'), ["newline"] = text.Contains("\r\n") ? "\r\n" : "\n", ["finalNewline"] = text.EndsWith('\n'), ["indent"] = 4 };
         var table = new TableData(schema, records); Require(table.Validate(target).Count == 0, $"Invalid catalog: {target}");
-        Require(JsonNode.DeepEquals(rows, JsonNode.Parse(Utf8.GetString(table.EncodeCatalog(false)).TrimStart('\uFEFF'))), $"Catalog conversion changed values: {target}");
+        var encoded = (JsonArray)JsonNode.Parse(Utf8.GetString(table.EncodeCatalog(false)).TrimStart('\uFEFF'))!;
+        for (int i = 0; i < rows.Count; i++)
+            foreach (var pair in (JsonObject)rows[i]!)
+                Require(JsonNode.DeepEquals(pair.Value, encoded[i]?[pair.Key]), $"Catalog conversion changed values: {target}");
         return table;
     }
 }

@@ -96,7 +96,10 @@ public sealed class TableData
         {
             Require(Schema.I("schemaVersion") == 1, "Unsupported schema version.");
             Require(Records.Count >= Schema.I("protectedRows"), "Original row slots cannot be removed.");
-            var ids = new HashSet<int>(); var sourceIds = new HashSet<string>(StringComparer.Ordinal);
+            // Imported catalogs can contain repeated IDs. Reserve all of their IDs up front so a new Studio entry
+            // cannot reuse one, even when it was inserted before the imported entries.
+            var ids = IsCatalog ? Records.Where((_, i) => IsOriginalRow(i)).Select(r => r.I("id", -1)).ToHashSet() : new HashSet<int>();
+            var sourceIds = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < Records.Count; i++)
             {
                 try { ValidateRow(i, ids, sourceIds); }
@@ -128,6 +131,26 @@ public sealed class TableData
         }
         catch (Exception e) { Error(e.Message); }
         return errors;
+    }
+    /// <summary>Repeated IDs already present in an imported catalog are preserved, but should be reviewed.</summary>
+    public IReadOnlyList<Diagnostic> DuplicateIdWarnings(string file)
+    {
+        if (!IsCatalog) return [];
+        var warnings = new List<Diagnostic>();
+        var groups = Enumerable.Range(0, Records.Count)
+            .Where(i => Records[i].I("id", -1) >= 0)
+            .GroupBy(i => Records[i].I("id"))
+            .Where(group => group.Count() > 1 && group.All(IsOriginalRow));
+        foreach (var group in groups)
+        {
+            var rows = group.ToArray();
+            foreach (var row in rows)
+            {
+                var peer = rows.First(i => i != row);
+                warnings.Add(new(file, $"String ID {group.Key} is shared by {rows.Length} entries, including row {peer} ({Records[peer].S("Key")}). Review these entries; edit an imported ID in Source view if the duplication is unintended.", "Warning", row, "id"));
+            }
+        }
+        return warnings;
     }
     /// <summary>
     /// SHA-256 of the compact JSON array of [sourceId, identity values…] per original row, in original numbering. Written
@@ -170,14 +193,18 @@ public sealed class TableData
         var r = Records[i] ?? throw new InvalidDataException("Null record.");
         if (IsCatalog)
         {
-            // The shipped game data has IDs above 65535 (commands.json) and repeated keys within one file (item-nameaffixes.json
-            // reuses "Jade", "of Luck"…): both must import losslessly. Only a repeated ID inside one catalog is rejected.
-            Require(r.I("id", -1) >= 0 && (ids?.Add(r.I("id")) ?? true), "Invalid or duplicate string ID.");
+            // Existing catalog IDs are imported identities. New Studio entries need IDs unused by those entries and each other.
+            Require(r.I("id", -1) >= 0 && (IsOriginalRow(i) || (ids?.Add(r.I("id")) ?? true)), "Invalid or duplicate string ID.");
             Require(r.S("Key").Length > 0, "Missing string key.");
+            Require(r["translations"] is null or JsonObject, "Invalid translations block.");
+            var translations = r["translations"] as JsonObject;
             for (int c = 2; c < Columns.Length; c++)
             {
                 var locale = Columns[c];
-                var full = r["translations"]?[locale]?.GetValue<string>() ?? throw new InvalidDataException($"Missing locale {locale}");
+                var translation = translations?[locale];
+                if (translations?.ContainsKey(locale) == true)
+                    Require(translation is JsonValue value && value.TryGetValue<string>(out _), $"Invalid translation {locale}; values must be strings.");
+                var full = translation?.GetValue<string>() ?? "";
                 Require(!full.Contains('\0'), "NUL in translation.");
                 if (r["standardTranslations"]?[locale] is JsonNode compact)
                 {
@@ -214,7 +241,7 @@ public sealed class TableData
         foreach (var r in Records)
         {
             var output = new JsonObject { ["id"] = r!["id"]!.DeepClone(), ["Key"] = r["Key"]!.DeepClone() };
-            foreach (var locale in Columns.Skip(2)) output[locale] = (standard ? r["standardTranslations"]?[locale] : null)?.DeepClone() ?? r["translations"]![locale]!.DeepClone();
+            foreach (var locale in Columns.Skip(2)) output[locale] = (standard ? r["standardTranslations"]?[locale] : null)?.DeepClone() ?? r["translations"]?[locale]?.DeepClone() ?? JsonValue.Create("");
             rows.Add(output);
         }
         var options = new System.Text.Json.JsonSerializerOptions(Pretty) { IndentSize = Schema.I("indent", 4) };

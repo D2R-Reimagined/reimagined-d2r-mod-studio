@@ -595,6 +595,20 @@ public partial class MainWindow : Window
             }
             throw new TimeoutException($"Row Editor did not settle: selected row {Active?.SelectedRow}, editor row {rowEditorRow}, revision {Active?.Document.Revision}/{rowEditorRevision}, queued {rowEditorRefreshQueued}.");
         }
+        async Task SettleExplorerSearchAsync(Func<bool> ready, string expectation)
+        {
+            var timeout = Stopwatch.StartNew();
+            int settled = 0;
+            while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), DispatcherPriority.Background);
+                bool matches = !explorerSearchTimer.IsEnabled && ready();
+                if (matches && ++settled >= 2) return;
+                if (!matches) settled = 0;
+                await Task.Delay(10);
+            }
+            throw new TimeoutException($"Explorer search did not settle for {expectation}: query '{ExplorerSearch.Text}', timer {explorerSearchTimer.IsEnabled}, entries [{string.Join(", ", Flatten((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Select(entry => entry.Name))}].");
+        }
         int exit = 0;
         try
         {
@@ -633,16 +647,22 @@ public partial class MainWindow : Window
             RefreshRunControls(); Require(!StopButton.IsVisible, "Idle Stop button is visible.");
             operation = new(); RefreshRunControls(); Require(StopButton.IsVisible, "Cancelable work has no Stop button."); operation.Dispose(); operation = null; RefreshRunControls();
             var unfilteredEntries = ProjectTree.ItemsSource;
-            ExplorerSearch.Text = "SOUNDS"; await Task.Delay(400); UpdateLayout();
+            ExplorerSearch.Text = "SOUNDS";
+            await SettleExplorerSearchAsync(() => Flatten((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Count() == 3 &&
+                Flatten((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Last().Name == "sounds.json", "file-name match");
             var filteredRoots = ((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).ToArray();
             var filteredTable = filteredRoots.Single(e => e.Name == "source").Children.Single(e => e.Name == "tables").Children.Single();
             Require(filteredTable.Name == "sounds.json" && filteredTable.IsTable && !filteredTable.Directory, "Explorer search did not preserve table metadata or exclude unrelated files.");
             Require(ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().Any(item => item.DataContext is ProjectEntry { Name: "sounds.json" }), "Search ancestors were not expanded to reveal the matching file.");
-            ExplorerSearch.Text = "source\\tables\\cube"; await Task.Delay(250);
+            ExplorerSearch.Text = "source\\tables\\cube";
+            await SettleExplorerSearchAsync(() => Flatten((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Count() == 3 &&
+                Flatten((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Last().Name == "cubemain.json", "relative-path match");
             Require(((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Single().Children.Single().Children.Single().Name == "cubemain.json", "Explorer relative-path search failed.");
-            ExplorerSearch.Text = "missing-file-xyz"; await Task.Delay(250);
+            ExplorerSearch.Text = "missing-file-xyz";
+            await SettleExplorerSearchAsync(() => ExplorerSearchStatus.IsVisible && !((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Any(), "empty state");
             Require(ExplorerSearchStatus.IsVisible && !((IEnumerable<ProjectEntry>)ProjectTree.ItemsSource!).Any(), "Explorer search did not display the empty state.");
-            ClearExplorerSearch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Task.Delay(250);
+            ClearExplorerSearch.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await SettleExplorerSearchAsync(() => ReferenceEquals(unfilteredEntries, ProjectTree.ItemsSource) && !ExplorerSearchStatus.IsVisible && !ClearExplorerSearch.IsVisible, "cleared search");
             Require(ReferenceEquals(unfilteredEntries, ProjectTree.ItemsSource) && !ExplorerSearchStatus.IsVisible && !ClearExplorerSearch.IsVisible, "Clearing search did not restore the original tree.");
             // Explorer refresh keeps expansion state, reveals a newly created file, and drops deleted entries.
             {

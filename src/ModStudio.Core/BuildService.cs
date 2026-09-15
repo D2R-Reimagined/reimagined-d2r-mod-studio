@@ -13,6 +13,7 @@ public static class BuildService
     {
         Require(project.Profiles.Contains(profile), "Unknown runtime profile.");
         using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
+        ExternalEditorSync.RequireClean(project);
         var id = Guid.NewGuid().ToString("N"); var folder = Inside(project.Cache, "builds/current");
         var snapshot = Inside(folder, "snapshot"); var output = Inside(folder, "output");
         Directory.CreateDirectory(output); Directory.CreateDirectory(snapshot); var hashes = new Dictionary<string, string>();

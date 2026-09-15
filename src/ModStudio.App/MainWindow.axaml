@@ -1,27 +1,32 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:app="using:ModStudio.App" x:Class="ModStudio.App.MainWindow" Width="1440" Height="920" MinWidth="1100" MinHeight="640" Title="Reimagined D2R Mod Studio">
  <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto,190,Auto,Auto">
   <Border Background="#292727" BorderBrush="#494038" BorderThickness="0,0,0,1" Padding="10,8">
-   <DockPanel LastChildFill="False">
+   <Grid ColumnDefinitions="*,Auto">
+    <ScrollViewer x:Name="ToolbarActions" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" VerticalAlignment="Top">
+    <StackPanel x:Name="ToolbarActionButtons" Orientation="Horizontal">
     <TextBlock Text="REIMAGINED&#10;D2R MOD STUDIO" FontSize="11" FontWeight="SemiBold" Foreground="#D8BC86" Margin="8,0,18,0" VerticalAlignment="Center" />
     <Button Content="Open project" Click="OpenClicked" ToolTip.Tip="Open a Studio project (JSON source)" /><Button Content="Import mod…" Click="MigrateClicked" ToolTip.Tip="Turn an existing mod, unpacked .mpq or data folder into an editable Studio project" />
     <Button Content="Save all" Click="SaveAllClicked" /><Button x:Name="FindInFilesButton" Content="Find in files…" ToolTip.Tip="Search every table cell, string and file in the project; preview and edit matches without opening them (Ctrl+Shift+F)" /><Button Content="Run settings" Click="SettingsClicked" />
+    <Button Content="External editor" Click="ExternalEditorClicked" ToolTip.Tip="Open deployed TXT files or a workspace in your own editor; synchronize and resolve conflicts" />
     <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
-    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+    </StackPanel>
+    </ScrollViewer>
+    <StackPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Horizontal" Margin="8,0,0,0">
      <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
      <ComboBox x:Name="LaunchTargetPicker" Width="135" PlaceholderText="Game target" IsEnabled="False" VerticalAlignment="Center" ToolTip.Tip="Launch using D2R.exe (vanilla) or D2RLoader.exe. Configure the game folder in Run settings." />
      <Button Content="Build" Click="BuildClicked" /><Button Content="Deploy" Click="DeployClicked" /><Button Content="▶ Play" Classes="accent" Click="PlayClicked" /><Button x:Name="StopButton" Content="■ Stop / Cancel" Click="StopClicked" IsVisible="False" />
     </StackPanel>
-   </DockPanel>
+   </Grid>
   </Border>
   <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnDefinitions="Auto,240,Auto,*,Auto,270,Auto">
    <Border x:Name="LeftStrip" IsVisible="False" Width="26" Background="#1D1E1F" BorderBrush="#494038" BorderThickness="0,0,1,0"><StackPanel x:Name="LeftStripItems" Margin="0,8,0,0" Spacing="4" /></Border>
    <Grid x:Name="LeftPanel" Grid.Column="1" Background="#1D1E1F">
-   <TabControl x:Name="LeftTabs" Background="#1D1E1F">
+   <TabControl x:Name="LeftTabs" Background="#1D1E1F" Padding="0">
    <TabControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></TabControl.ItemsPanel>
    <TabControl.Styles><Style Selector="TabItem"><Setter Property="Padding" Value="8,6" /><Setter Property="MinHeight" Value="32" /><Setter Property="FontSize" Value="12" /></Style></TabControl.Styles>
    <TabItem><TabItem.Header><TextBlock Text="Project" FontSize="12" /></TabItem.Header>
    <Grid x:Name="ExplorerPanel" RowDefinitions="Auto,Auto,Auto,*">
-    <Grid ColumnDefinitions="*,Auto" Margin="12,8,6,4">
+    <Grid ColumnDefinitions="*,Auto" Margin="6,8,4,4">
      <StackPanel VerticalAlignment="Center" Spacing="1">
       <TextBlock Text="PROJECT" FontSize="10" FontWeight="SemiBold" Foreground="#8E8578" />
       <TextBlock x:Name="ProjectLabel" Text="No project open" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
@@ -32,20 +37,20 @@
       <Button x:Name="RefreshExplorerButton" Classes="explorerTool" ToolTip.Tip="Refresh the file tree" />
      </StackPanel>
     </Grid>
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,6">
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="6,0,6,6">
      <TextBox x:Name="ExplorerSearch" PlaceholderText="Find files…" MinHeight="28" FontSize="12" ToolTip.Tip="Filter file names and relative paths. Escape clears the search." />
      <Button x:Name="ClearExplorerSearch" Grid.Column="1" Content="×" ToolTip.Tip="Clear file search" IsVisible="False" Padding="8,2" />
     </Grid>
-    <TextBlock x:Name="ExplorerSearchStatus" Grid.Row="2" IsVisible="False" Margin="14,0,14,8" Classes="muted" Text="No matching files" />
-    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" Background="Transparent" Padding="4,0,0,8">
+    <TextBlock x:Name="ExplorerSearchStatus" Grid.Row="2" IsVisible="False" Margin="6,0,6,8" Classes="muted" Text="No matching files" />
+    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" Background="Transparent" Padding="0,0,0,8">
      <TreeView.Styles>
       <Style Selector="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" /><Setter Property="MinHeight" Value="24" /><Setter Property="Padding" Value="0" /></Style>
       <Style Selector="TreeViewItem /template/ Border#PART_LayoutRoot"><Setter Property="MinHeight" Value="24" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Margin" Value="0,0,6,0" /></Style>
       <Style Selector="TreeViewItem:pointerover /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#2A2B2D" /></Style>
       <Style Selector="TreeViewItem:selected /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#3A3326" /></Style>
       <Style Selector="TreeViewItem:selected:pointerover /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#43392A" /></Style>
-      <Style Selector="TreeViewItem /template/ ToggleButton"><Setter Property="Width" Value="22" /><Setter Property="Height" Value="24" /><Setter Property="MinWidth" Value="22" /><Setter Property="MinHeight" Value="24" /><Setter Property="Margin" Value="0" /></Style>
-      <Style Selector="TreeViewItem /template/ ToggleButton /template/ Border"><Setter Property="MinWidth" Value="22" /><Setter Property="MinHeight" Value="24" /></Style>
+      <Style Selector="TreeViewItem /template/ ToggleButton"><Setter Property="Width" Value="18" /><Setter Property="Height" Value="24" /><Setter Property="MinWidth" Value="18" /><Setter Property="MinHeight" Value="24" /><Setter Property="Margin" Value="0" /></Style>
+      <Style Selector="TreeViewItem /template/ ToggleButton /template/ Border"><Setter Property="MinWidth" Value="18" /><Setter Property="MinHeight" Value="24" /></Style>
       <Style Selector="TreeViewItem /template/ ToggleButton /template/ Path"><Setter Property="Width" Value="9" /><Setter Property="Height" Value="9" /><Setter Property="Fill" Value="#8E8578" /></Style>
      </TreeView.Styles>
     </TreeView>
@@ -57,6 +62,8 @@
    </Grid>
    <GridSplitter x:Name="LeftSplitter" Grid.Column="2" Width="5" ResizeDirection="Columns" />
    <TabControl Grid.Column="3" x:Name="Documents" SelectionChanged="DocumentSelected">
+    <!-- Fluent's large tab-header font also inherits into our persistent document content. -->
+    <TabControl.Styles><Style Selector="TabItem"><Setter Property="FontSize" Value="13" /></Style></TabControl.Styles>
     <!-- Same shape as the Fluent TabControl template, but the content area keeps editor panes alive across tab switches. -->
     <TabControl.Template><ControlTemplate>
      <Border BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Background="{TemplateBinding Background}" HorizontalAlignment="{TemplateBinding HorizontalAlignment}" VerticalAlignment="{TemplateBinding VerticalAlignment}">

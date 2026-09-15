@@ -73,12 +73,19 @@ public record RunSettings(string DeploymentDirectory = "", string Executable = "
 public record DeploymentManifest(string ProjectId, string BuildId, string Profile, List<BuildFile> Files);
 public record JournalEntry(string Path, string? Before, string? After);
 public record DeploymentJournal(string ProjectId, List<JournalEntry> Entries);
+public sealed class DeploymentOwnershipConflict(string target, string previousProjectId, string ownerHash)
+    : IOException("Another project owns this deployment. Back up and reuse this folder, or choose a separate mod folder.")
+{
+    public string Target { get; } = target;
+    public string PreviousProjectId { get; } = previousProjectId;
+    public string OwnerHash { get; } = ownerHash;
+}
 
 public static class DeploymentService
 {
     private const string Owner = ".studio-owner.json";
     private const string Transaction = ".studio-transaction";
-    public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null, bool overwriteDestination = false)
+    public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null, bool overwriteDestination = false, string? reviewedOwnerHash = null)
     {
         using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
         var buildManifest = Inside(project.Cache, "builds/current/build.json");
@@ -87,21 +94,28 @@ public static class DeploymentService
         Require(!string.IsNullOrWhiteSpace(target), "Choose a deployment mod folder in Run settings."); target = Path.GetFullPath(target); NoLinks(target);
         Require(!Contains(project.Root, target) && !Contains(target, project.Root), "Source and deployment folders must not overlap.");
         Require(Path.GetFileName(target).Equals(project.Name, StringComparison.Ordinal), $"Deployment must be the mod folder named {project.Name}, for example game/mods/{project.Name}.");
+        ExternalEditorSync.RequireClean(project, build.Profile, target);
         Directory.CreateDirectory(target);
         using var fileLock = new FileStream(Inside(target, ".studio-deploy.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var transaction = Inside(target, Transaction); if (Directory.Exists(transaction)) Recover(project, target, progress);
-        var ownerFile = Inside(target, Owner); DeploymentManifest? previous = null;
+        var ownerFile = Inside(target, Owner); DeploymentManifest? previous = null; bool transfer = false;
+        var ownerBytes = File.Exists(ownerFile) ? File.ReadAllBytes(ownerFile) : null;
+        Require(reviewedOwnerHash == null || ownerBytes != null && Hash(ownerBytes) == reviewedOwnerHash, "Deployment ownership changed since review. Retry to review its current owner.");
         if (File.Exists(ownerFile))
         {
-            previous = JsonSerializer.Deserialize<DeploymentManifest>(File.ReadAllText(ownerFile), Pretty)!;
-            Require(previous.ProjectId == project.Id, "Another project owns this deployment. Choose a separate mod folder.");
+            previous = JsonSerializer.Deserialize<DeploymentManifest>(ownerBytes!, Pretty)!;
+            transfer = previous.ProjectId != project.Id;
+            if (transfer && reviewedOwnerHash == null) throw new DeploymentOwnershipConflict(target, previous.ProjectId, Hash(ownerBytes!));
         }
         var next = build.Files.ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
         Require(next.Count == build.Files.Count && build.Files.All(f => !f.Path.StartsWith(".studio-", StringComparison.OrdinalIgnoreCase)), "Invalid build ownership paths.");
+        // Taking over does not remove files belonging only to the former project.
+        if (transfer) previous = previous! with { Files = previous.Files.Where(f => next.ContainsKey(f.Path)).ToList() };
         // Enumerate the build output and the deployed folder once; every hash check below reuses those entries instead of stat'ing each path again.
         var outputs = FileEntries(build.Output).ToDictionary(f => Relative(build.Output, f.FullName), StringComparer.OrdinalIgnoreCase);
         var deployed = FileEntries(target).ToDictionary(f => Relative(target, f.FullName), StringComparer.OrdinalIgnoreCase);
         string? DeployedHash(string relative) => deployed.TryGetValue(relative, out var file) ? BuildCache.FileHash(file) : null;
+        Require(DeployedHash(Owner) == (ownerBytes == null ? null : Hash(ownerBytes)), "Deployment ownership changed while preparing deployment. Retry.");
         foreach (var file in build.Files)
         {
             token.ThrowIfCancellationRequested(); SafeRelative(file.Path);
@@ -131,6 +145,19 @@ public static class DeploymentService
                     Require(BuildCache.FileHash(staged) == entry.After, "Staged deployment hash mismatch.");
                 }
             }
+            if (transfer)
+            {
+                var backup = Inside(project.Cache, "deployment-backups/" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+                foreach (var entry in entries.Where(e => e.Before != null))
+                {
+                    token.ThrowIfCancellationRequested();
+                    var bytes = File.ReadAllBytes(Inside(transaction, "backup/" + entry.Path));
+                    Require(Hash(bytes) == entry.Before, "Deployment backup changed while preparing ownership transfer.");
+                    AtomicWrite(Inside(backup, "files/" + entry.Path), bytes);
+                }
+                AtomicWrite(Inside(backup, "backup.json"), JsonSerializer.SerializeToUtf8Bytes(new { Target = target, PreviousProjectId = previous!.ProjectId, ProjectId = project.Id, Entries = entries }, Pretty));
+                progress?.Invoke("Previous deployment backed up to " + backup);
+            }
             AtomicWrite(Inside(transaction, "journal.json"), JsonSerializer.SerializeToUtf8Bytes(new DeploymentJournal(project.Id, entries), Pretty));
             foreach (var entry in entries)
             {
@@ -143,6 +170,7 @@ public static class DeploymentService
             // The owner manifest is the last committed file. Recovery can always roll back a partial commit.
             Directory.Delete(transaction, true);
             BuildCache.SaveFingerprints(project, target);
+            ExternalEditorSync.Deployed(project, build, target);
         }
         catch
         {
@@ -190,7 +218,7 @@ public sealed class RunController : IDisposable
         foreach (var arg in new[] { "-mod", project.Name, "-txt" }.Concat(settings.Arguments ?? [])) start.ArgumentList.Add(arg);
         return start;
     }
-    public async Task<BuildResult> ExecuteAsync(ModProject project, string profile, RunSettings settings, bool deploy, bool play, CancellationToken token, Action<string>? progress = null)
+    public async Task<BuildResult> ExecuteAsync(ModProject project, string profile, RunSettings settings, bool deploy, bool play, CancellationToken token, Action<string>? progress = null, Func<DeploymentOwnershipConflict, Task<bool>>? reviewOwnership = null)
     {
         Require(await gate.WaitAsync(0, token), "Another build/deployment is already running.");
         try
@@ -198,7 +226,16 @@ public sealed class RunController : IDisposable
             Require(!Running || !deploy, "Stop this editor's running game before deploying again.");
             var start = play ? CreateStartInfo(project, settings) : null;
             var build = await Task.Run(() => BuildService.Build(project, profile, token, progress), token);
-            if (deploy) await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress, settings.OverwriteDestination), token);
+            if (deploy)
+            {
+                try { await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress, settings.OverwriteDestination), token); }
+                catch (DeploymentOwnershipConflict conflict) when (reviewOwnership != null)
+                {
+                    if (!await reviewOwnership(conflict)) throw new OperationCanceledException("Deployment ownership transfer canceled.");
+                    token.ThrowIfCancellationRequested();
+                    await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress, settings.OverwriteDestination, conflict.OwnerHash), token);
+                }
+            }
             token.ThrowIfCancellationRequested();
             if (start != null)
             {

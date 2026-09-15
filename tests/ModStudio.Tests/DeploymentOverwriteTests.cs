@@ -41,5 +41,46 @@ internal static class DeploymentOverwriteTests
         var manifest = Read(owner); manifest["projectId"] = "another-project"; WriteJson(owner, manifest);
         throws(() => DeploymentService.Deploy(project, build, destination, overwriteDestination: true), "Overwrite retains other-project ownership guard");
         throws(() => DeploymentService.Deploy(project, build, project.Root, overwriteDestination: true), "Overwrite retains source overlap guard");
+
+        write(file, "external edit to preserve");
+        write(Inside(destination, "former-project-only.cfg"), "keep former file");
+        var former = new DeploymentManifest("previous-conversion", "previous-build", "standard", [
+            new(relative, Hash("old deployed bytes"), 18), new("former-project-only.cfg", Hash("keep former file"), 16)]);
+        var formerBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(former, Pretty); AtomicWrite(owner, formerBytes);
+        try { await run.ExecuteAsync(project, "standard", settings, true, false, CancellationToken.None, reviewOwnership: _ => Task.FromResult(false)); throw new Exception("Expected ownership cancellation"); }
+        catch (OperationCanceledException) { check(File.ReadAllBytes(owner).SequenceEqual(formerBytes) && File.ReadAllText(file) == "external edit to preserve", "Declining deployment reuse preserves owner and deployed edits"); }
+        bool staleRejected = false;
+        try
+        {
+            await run.ExecuteAsync(project, "standard", settings, true, false, CancellationToken.None, reviewOwnership: _ =>
+            {
+                AtomicWrite(owner, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(former with { ProjectId = "changed-during-review" }, Pretty));
+                return Task.FromResult(true);
+            });
+        }
+        catch (InvalidDataException ex) { staleRejected = ex.Message.Contains("since review"); }
+        check(staleRejected && File.ReadAllText(file) == "external edit to preserve", "Ownership changes during review invalidate reuse approval");
+        AtomicWrite(owner, formerBytes);
+        using (var cancellation = new CancellationTokenSource())
+        {
+            try
+            {
+                await run.ExecuteAsync(project, "standard", settings, true, false, cancellation.Token,
+                    message => { if (message.StartsWith("Deployed ")) cancellation.Cancel(); }, _ => Task.FromResult(true));
+                throw new Exception("Expected canceled transfer");
+            }
+            catch (OperationCanceledException) { check(File.ReadAllBytes(owner).SequenceEqual(formerBytes) && File.ReadAllText(file) == "external edit to preserve", "Canceled ownership transfer rolls back files and former owner"); }
+        }
+        build = await run.ExecuteAsync(project, "standard", settings, true, false, CancellationToken.None, reviewOwnership: _ => Task.FromResult(true));
+        var nextOwner = System.Text.Json.JsonSerializer.Deserialize<DeploymentManifest>(File.ReadAllBytes(owner), Pretty)!;
+        check(nextOwner.ProjectId == project.Id && File.ReadAllText(Inside(destination, "former-project-only.cfg")) == "keep former file" && File.ReadAllText(Inside(destination, "personal.cfg")) == "keep", "Approved reuse transfers ownership while preserving files outside the build");
+        var backups = Directory.GetDirectories(Inside(project.Cache, "deployment-backups"));
+        check(backups.Any(folder => File.ReadAllBytes(Inside(folder, "files/.studio-owner.json")).SequenceEqual(formerBytes) && File.ReadAllText(Inside(folder, "files/" + relative)) == "external edit to preserve" && File.Exists(Inside(folder, "backup.json"))), "Ownership transfer keeps a durable backup of replaced edits and the original ownership record");
+        ExternalEditorSync.Begin(project, build, destination);
+        var deployedTable = TableData.FromTsv(File.ReadAllBytes(file), "charstats", "global/excel/base/charstats.txt");
+        deployedTable.SetCell(0, "value", "2"); AtomicWrite(file, deployedTable.EncodeTsv()); ExternalEditorSync.Synchronize(project);
+        var session = ExternalEditorSync.Load(project)!;
+        check(session.ProjectId == project.Id && TableData.Load(Inside(project.Root, session.Tables.Single().Source)).Cell(0, "value") == "2", "Converted project can start external synchronization after approved deployment reuse");
+        ExternalEditorSync.End(project);
     }
 }

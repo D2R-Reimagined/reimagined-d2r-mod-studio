@@ -102,7 +102,12 @@ public sealed partial class EditorPane
                 selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; draggingCells = e.ClickCount == 1; PaintCells();
             }
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
-        grid.AddHandler(PointerReleasedEvent, (_, _) => draggingCells = false, Avalonia.Interactivity.RoutingStrategies.Tunnel, handledEventsToo: true);
+        grid.AddHandler(PointerReleasedEvent, (_, _) =>
+        {
+            draggingCells = false;
+            // Clicking an already-current row need not raise SelectionChanged, but its header still picks the whole row.
+            if (rowHeaderPress && activeGrid == grid && Document.Table != null) { SelectRows(grid); PaintCells(); }
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel, handledEventsToo: true);
         grid.PointerCaptureLost += (_, _) => draggingCells = false;
         grid.PointerMoved += (_, e) =>
         {
@@ -190,7 +195,8 @@ public sealed partial class EditorPane
         };
         grid.KeyDown += (_, e) =>
         {
-            rowHeaderPress = false;
+            // Copy/paste keeps the row-header selection. Navigation or editing returns to cell selection.
+            if (!(e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) || e.Key is not (Key.C or Key.V)) rowHeaderPress = false;
             if (e.Key == Key.Escape && editingCell == null && selectedCells.Count > 1 && grid.SelectedItem is RowView current && grid.CurrentColumn != null && columnMap.TryGetValue(grid.CurrentColumn, out var currentCol))
             { selectedCells.Clear(); selectedCells.Add((current.Row, currentCol)); cellAnchor = (current.Row, currentCol); PaintCells(); e.Handled = true; return; }
             if (editingCell != null || e.KeyModifiers != KeyModifiers.None || e.Key != Key.Delete || selectedCells.Count == 0 || Document.Table == null) return;
@@ -234,6 +240,7 @@ public sealed partial class EditorPane
     /// <summary>Programmatic selection used by tests and the inspector: same semantics as clicking with the given modifiers.</summary>
     public void SelectCell(int row, int col, bool control = false, bool shift = false)
     {
+        rowHeaderPress = false;
         var cell = (row, col);
         if (control) { if (!selectedCells.Remove(cell)) selectedCells.Add(cell); cellAnchor = cell; }
         else if (shift && cellAnchor != null) SelectRectangle(activeGrid, cellAnchor.Value, cell);
@@ -291,13 +298,21 @@ public sealed partial class EditorPane
         if (cellAnchor is { } a && a.Row >= from) cellAnchor = (a.Row + delta, a.Col);
         frozenRows.RemoveAll(r => r >= from && r + delta < from); for (int i = 0; i < frozenRows.Count; i++) if (frozenRows[i] >= from) frozenRows[i] += delta;
     }
-    /// <summary>Inserts blank rows and selects the first one. Rows are identified, not renumbered, so later profile overrides stay attached.</summary>
+    /// <summary>
+    /// Inserts blank rows and selects them in the column that was already selected. Rows are identified, not renumbered, so
+    /// later profile overrides stay attached. The view rebuilds once and stays on its column page: a jump to the first
+    /// column would rebuild it a second time and pull the user away from where they were working.
+    /// </summary>
     public void InsertRows(int index, int count = 1)
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before adding rows.");
+        var column = SelectedColumn; int col = Math.Max(0, Array.IndexOf(Document.Table!.Columns, column));
         Document.InsertRows(index, count); ShiftSelection(index, count);
-        Refresh(); Jump(index, Document.Table!.Columns[0]);
-        selectedCells.Clear(); for (int i = 0; i < count; i++) selectedCells.Add((index + i, 0)); cellAnchor = (index, 0); QueuePaint();
+        // Blank rows never match a filter term, so the filter is cleared to keep the new rows on screen.
+        if (!string.IsNullOrEmpty(filter.Text)) filter.Text = "";
+        selectedRow = index; selectedColumn = column;
+        selectedCells.Clear(); for (int i = 0; i < count; i++) selectedCells.Add((index + i, col)); cellAnchor = (index, col);
+        Refresh(scrollToSelection: true);
     }
     public void DeleteSelectedRows()
     {
@@ -321,7 +336,7 @@ public sealed partial class EditorPane
     {
         var table = Document.Table!;
         if (wholeRows || selectedCells.Count == 0)
-            return string.Join('\n', SelectedRowsForCommands().Select(r => string.Join('\t', VisibleColumns().Select(c => table.Cell(r, table.Columns[c])))));
+            return string.Join('\n', SelectedRowsForCommands().Select(r => string.Join('\t', table.Columns.Select(c => table.Cell(r, c)))));
         var rows = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
         var cols = selectedCells.Select(c => c.Col).Distinct().Order().ToList();
         var rowOrder = selectedCells.Select(c => c.Row).Distinct().OrderBy(r => rows.IndexOf(r)).ToList();

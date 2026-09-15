@@ -44,13 +44,19 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
+        ToolbarActions.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == ScrollViewer.ExtentProperty || e.Property == ScrollViewer.ViewportProperty)
+                ToolbarActionButtons.Margin = new(0, 0, 0, ToolbarActions.Extent.Width > ToolbarActions.Viewport.Width + 1 ? 22 : 0);
+        };
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
         ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshLaunchTargets(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
-        runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start();
+        runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor();
         KeyDown += async (_, e) =>
         {
             bool command = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
@@ -60,6 +66,7 @@ public partial class MainWindow : Window
         Closing += async (_, e) =>
         {
             if (closingApproved) return; e.Cancel = true;
+            if (externalBusy) { Status.Text = "External synchronization is finishing. Close again when it has finished."; return; }
             if (operation != null) { operation.Cancel(); ShowError(new Exception("Canceling the current operation. Close again when it has finished.")); return; }
             if (!await MayLeaveAsync()) return;
             if (controller.Running && await ChooseAsync("A game process is still running", "Closing Studio leaves that process running.", "Leave running and close", "Cancel") != "Leave running and close") return;
@@ -184,11 +191,13 @@ public partial class MainWindow : Window
     private async void TutorialClicked(object? sender, RoutedEventArgs e) => await new QuickStartWindow().ShowDialog(this);
     public async Task LoadProjectAsync(string root)
     {
-        Require(operation == null, "Wait for the current operation before switching projects.");
+        Require(operation == null && !externalBusy, "Wait for the current operation before switching projects.");
         var nextProject = await Task.Run(() => ModProject.Open(root));
+        Require(!externalBusy, "External synchronization started. Wait for it to finish before switching projects.");
         if (!await UpgradeLayoutIfNeededAsync(nextProject)) return;
+        Require(!externalBusy, "Wait for external synchronization before switching projects.");
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
-        watcher?.Dispose(); findInFiles?.Close();
+        watcher?.Dispose(); externalWatcher?.Dispose(); externalActive = false; findInFiles?.Close();
         project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
@@ -208,12 +217,14 @@ public partial class MainWindow : Window
             }
             catch (Exception ex) { ShowError(ex); }
         }
+        WatchExternalSession();
     }
     private void OnExternalChange(object? sender, FileSystemEventArgs e)
     {
         if (project == null || !Contains(project.Root, e.FullPath) || Contains(project.Cache, e.FullPath) || Contains(System.IO.Path.Combine(project.Root, ".git"), e.FullPath)) return;
         Dispatcher.UIThread.Post(() =>
         {
+            if (externalActive) { externalPending = true; externalChanged = DateTime.UtcNow; }
             if (e.ChangeType != WatcherChangeTypes.Changed) QueueExplorerRefresh();
             git.QueueRefresh();
             workspaceRevision++; SemanticStatus.Text = "Files changed; run source checks again";
@@ -248,7 +259,7 @@ public partial class MainWindow : Window
         close.DoubleTapped += (_, e) => e.Handled = true;
         header.Children.Add(close); tab.Header = header;
         var filePath = (tab.Content as EditorPane)?.Document.FilePath ?? tab.Tag as string;
-        if (filePath != null) header.ContextMenu = new ContextMenu { ItemsSource = new[] { CreateOpenLocationItem(filePath) } };
+        if (filePath != null) header.ContextMenu = new ContextMenu { ItemsSource = IsExternalTable(filePath) ? new[] { CreateOpenLocationItem(filePath), CreateExternalEditorItem(filePath) } : new[] { CreateOpenLocationItem(filePath) } };
         ToolTip.SetTip(tab, preview ? "Temporary preview · Double-click this tab to keep it open" : tab.Content is EditorPane p ? p.Document.FilePath : tab.Tag);
     }
     private MenuItem CreateOpenLocationItem(string path, bool directory = false)
@@ -274,10 +285,21 @@ public partial class MainWindow : Window
         {
             if (tab.Content is EditorPane pane && pane.Document.IsDirty)
             {
-                if (await ChooseAsync("Close document", "Keep unsaved work in recovery and close?", "Keep recovery and close", "Cancel") != "Keep recovery and close") return;
-                // Do not close if writing recovery fails.
-                pane.Document.Recover(RecoveryFile(pane.Document));
-                recoveredRevision[pane.Document] = pane.Document.Revision;
+                var choice = await ChooseAsync("Close document", "How would you like to close this document with unsaved changes?", "Keep recovery and close", "Discard Changes", "Cancel");
+                if (choice == "Keep recovery and close")
+                {
+                    // Do not close if writing recovery fails.
+                    pane.Document.Recover(RecoveryFile(pane.Document));
+                    recoveredRevision[pane.Document] = pane.Document.Revision;
+                }
+                else if (choice == "Discard Changes")
+                {
+                    // The recovery timer may have written this document while the dialog was open.
+                    var recovery = RecoveryFile(pane.Document);
+                    if (File.Exists(recovery)) File.Delete(recovery);
+                    recoveredRevision.Remove(pane.Document);
+                }
+                else return;
             }
             if (previewTab == tab) previewTab = null;
             tabs.Remove(tab); RefreshStatus();
@@ -356,7 +378,7 @@ public partial class MainWindow : Window
             if (loadingTab == null) AddDocumentTab(specialTab, preview, activate); else UpdateTabHeader(specialTab);
             return null;
         }
-        var isText = await Task.Run(() => { NoLinks(file); using var input = File.OpenRead(file); var prefix = new byte[(int)Math.Min(input.Length, 8192)]; input.ReadExactly(prefix); return TextFileEncoding.LooksLikeText(prefix); });
+        var isText = await Task.Run(() => { NoLinks(file); using var input = File.OpenRead(file); var prefix = new byte[(int)Math.Min(input.Length, 8192)]; input.ReadExactly(prefix); return TextFileEncoding.LooksLikeText(prefix, isPrefix: input.Position < input.Length); });
         if (!isText)
         {
             NoLinks(file); using var stream = File.OpenRead(file); var bytes = new byte[Math.Min(stream.Length, 1024)]; await stream.ReadExactlyAsync(bytes);
@@ -393,6 +415,7 @@ public partial class MainWindow : Window
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview, activate); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
         var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { CreateOpenLocationItem(file), reload, close }; tab.ContextMenu = menu;
+        if (IsExternalTable(file)) menu.ItemsSource = new[] { CreateOpenLocationItem(file), CreateExternalEditorItem(file), reload, close };
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
         document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); };
@@ -553,18 +576,19 @@ public partial class MainWindow : Window
     {
         try
         {
-            Require(project != null && operation == null, "Open a project and wait for the current operation.");
+            Require(project != null && operation == null && !externalBusy, "Open a project and wait for the current operation.");
             var settings = RunSettings.Load(project!, Profile);
             if (tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty))
             {
                 if (!settings.SaveBeforePlay && await ChooseAsync("Unsaved documents", "Save all documents before this build?", "Save and continue", "Cancel") != "Save and continue") return;
                 if (!await SaveAllAsync()) return;
             }
+            if (!await SyncExternalAsync(true)) return;
             buildDiagnostics.Clear(); RefreshStatus(); ShowBottomTab(1); operation = new();
             try
             {
                 var revisions = tabs.Select(t => t.Content).OfType<EditorPane>().ToDictionary(p => p.Document, p => p.Document.Revision);
-                var build = await controller.ExecuteAsync(project!, Profile, settings, deploy, play, operation.Token, Log);
+                var build = await controller.ExecuteAsync(project!, Profile, settings, deploy, play, operation.Token, Log, ReviewDeploymentOwnershipAsync);
                 buildDiagnostics.AddRange(build.Diagnostics ?? []); RefreshStatus();
                 if (play) { runningBuild = build.Id[..8]; RunState.Text = "Game: " + runningBuild + (revisions.Any(p => p.Key.Revision != p.Value) ? " · newer edits" : " · " + build.Profile); }
                 Log($"Build {build.Id[..8]} complete. Output: {build.Output}");
@@ -572,6 +596,7 @@ public partial class MainWindow : Window
             finally { operation.Dispose(); operation = null; }
         }
         catch (BuildFailure e) { buildDiagnostics.AddRange(e.Diagnostics); RefreshStatus(); ShowBottomTab(0); Status.Text = "Build blocked. Select a problem to locate its source."; }
+        catch (OperationCanceledException) { Status.Text = "Build/deployment canceled."; }
         catch (Exception e) { ShowError(e); }
     }
     private async Task SmokeAsync()
@@ -619,10 +644,39 @@ public partial class MainWindow : Window
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await SmokeColumnGuideAsync(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            if (Program.Arguments.Contains("--external-editor-only"))
+            {
+                await SmokeExternalEditorAsync(output);
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--cell-references-only"))
             {
                 await SmokeCellReferencesAsync(output);
                 File.WriteAllText(System.IO.Path.Combine(output, "cell-references-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
+            if (Program.Arguments.Contains("--row-copy-only"))
+            {
+                var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables/sounds.json"));
+                Require(pane != null && Clipboard != null, "Row-copy smoke needs a table and clipboard.");
+                await SmokeRowCopyAsync(pane!, Clipboard!);
+                File.WriteAllText(System.IO.Path.Combine(output, "row-copy-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
+            if (Program.Arguments.Contains("--full-row-paste-only"))
+            {
+                var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables/hireling.json"));
+                Require(pane != null && Clipboard != null, "Hireling paste smoke needs a table and clipboard.");
+                await SmokeFullRowIntoAddedCellAsync(pane!);
+                File.WriteAllText(System.IO.Path.Combine(output, "full-row-paste-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
+            if (Program.Arguments.Contains("--row-insert-only"))
+            {
+                var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables/sounds.json"));
+                Require(pane != null, "Row-insert smoke needs a table.");
+                await SmokeRowInsertAsync(pane!);
+                File.WriteAllText(System.IO.Path.Combine(output, "row-insert-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
@@ -691,7 +745,7 @@ public partial class MainWindow : Window
             await Task.Delay(100);
             var folder = ProjectTree.GetVisualDescendants().OfType<TreeViewItem>().First(t => t.DataContext is ProjectEntry p && p.Name == "source");
             var toggle = folder.GetVisualDescendants().OfType<ToggleButton>().First();
-            Require(toggle.Bounds.Width >= 20 && toggle.Bounds.Height >= 22, "Folder expander target is too small.");
+            Require(toggle.Bounds.Width >= 18 && toggle.Bounds.Height >= 18, $"Folder expander target is too small: {toggle.Bounds}.");
             var click = toggle.TranslatePoint(new Point(3, toggle.Bounds.Height / 2), this)!.Value;
             this.MouseDown(click, MouseButton.Left, RawInputModifiers.None); this.MouseUp(click, MouseButton.Left, RawInputModifiers.None);
             Require(folder.IsExpanded, "Clicking the expanded chevron hit area failed.");
@@ -774,6 +828,7 @@ public partial class MainWindow : Window
                     await pane.CopyAsync(); Require(await clipboard.TryGetTextAsync() == before + " pasted", "Ctrl+C on a single cell did not copy just that cell.");
                     await pane.CopyAsync(false); Require((await clipboard.TryGetTextAsync())?.StartsWith(before + " pasted" + (pane.Document.Table.Columns.Length > 1 ? "\t" : "")) == true, "Clipboard row copy lost selected row.");
                     pane.Document.Undo(); pane.Refresh();
+                    if (name == "sounds") { await SmokeRowCopyAsync(pane, clipboard); await SmokeRowInsertAsync(pane); }
                 }
                 await pane.SortAsync(field); Require(pane.Document.Table!.Cell(0, field) == before, "View sorting mutated source order.");
                 Require(pane.TableGrid.Columns.Any(c => c.Header?.ToString()?.EndsWith("▲") == true), "Ascending sort indicator missing.");

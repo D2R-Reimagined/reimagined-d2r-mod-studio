@@ -33,6 +33,13 @@ public sealed class TableData
     public bool IsOriginalRow(int row) => IsCatalog ? row >= 0 && row < Records.Count && Records[row].S("sourceId").Length == 0 : OriginalSlot(row) >= 0;
     /// <summary>Set by Validate when rows were inserted before imported rows. Advisory only: it matters for tables where the row number is the game ID.</summary>
     public bool RowOrderChanged { get; private set; }
+    /// <summary>Recomputes the row-order advisory alone, for changes that cannot touch any other table-level check.</summary>
+    public void RefreshRowOrder()
+    {
+        bool moved = false;
+        for (int i = 0; i < Records.Count && !moved; i++) { var slot = OriginalSlot(i); moved = slot >= 0 && slot != i; }
+        RowOrderChanged = moved;
+    }
     public const string RowOrderAdvice = "Rows were inserted before original rows. In tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) this shifts existing IDs; add rows at the bottom instead if that matters.";
     /// <summary>A blank table row with a fresh identity. IDs are random so rows added on different branches never collide; the physical slot is written by the caller.</summary>
     public JsonObject NewRecord(JsonObject? fields = null)

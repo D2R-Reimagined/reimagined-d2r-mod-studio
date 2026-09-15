@@ -132,7 +132,7 @@ public partial class MainWindow
     [
         Item("New File…", () => NewFileAsync(folder)), Item("New Folder…", () => NewFolderAsync(folder)), Item("New Table…", NewTableAsync), new Separator(),
         Item("Refresh", () => RefreshExplorerAsync(project!.Root)), Item("Collapse All", () => { CollapseAllButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); return Task.CompletedTask; }),
-        new Separator(), CreateOpenLocationItem(folder, true)
+        new Separator(), CreateOpenLocationItem(folder, true), CreateExternalEditorItem()
     ];
     private List<object> EntryMenu(ProjectEntry entry)
     {
@@ -150,6 +150,8 @@ public partial class MainWindow
         items.Add(Item("Copy Path", () => CopyTextAsync(DiskPath(entry))));
         items.Add(Item("Copy Relative Path", () => CopyTextAsync(Relative(project!.Root, DiskPath(entry)))));
         items.Add(CreateOpenLocationItem(entry.Path, entry.Directory));
+        if (entry.Directory) items.Add(CreateExternalEditorItem());
+        else if (IsExternalTable(entry.Path)) items.Add(CreateExternalEditorItem(entry.Path));
         return items;
     }
     private async Task CopyTextAsync(string text) { if (Clipboard is { } clipboard) { await clipboard.SetTextAsync(text); Status.Text = "Copied " + text; } }

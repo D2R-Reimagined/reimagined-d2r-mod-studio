@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -58,8 +59,8 @@ public sealed partial class EditorPane : Grid
     public string? SortColumn => sortColumn;
     public bool SortDescending => descending;
     private readonly Grid tableHost = new() { RowDefinitions = new("Auto,*") };
-    private readonly TextBlock columnsLabel = new();
-    private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Enter)", Width = 180 };
+    private readonly TextBlock columnsLabel = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new(8, 0, 4, 0) };
+    private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Enter)", Width = 180, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Dictionary<DataGridColumn, int> columnMap = [];
     private readonly Dictionary<int, DataGridLength> widths = [];
@@ -71,6 +72,7 @@ public sealed partial class EditorPane : Grid
     private DataGrid activeGrid;
     private bool syncing, refreshing, synchronizingBars, synchronizingWidths;
     private int offset;
+    private string columnSignature = "";
     private int viewVersion;
     private int selectedRow;
     private string selectedColumn = "";
@@ -289,9 +291,9 @@ public sealed partial class EditorPane : Grid
         }
         var copyCell = new MenuItem { Header = cellCount == 1 ? $"Copy cell: {SelectedColumn}" : $"Copy {cellCount} cells", IsEnabled = cellCount > 0 };
         copyCell.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(true); } catch (Exception ex) { error(ex); } };
-        var copy = new MenuItem { Header = $"Copy {noun} (displayed columns)" };
+        var copy = new MenuItem { Header = $"Copy {noun} (all columns)" };
         copy.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(false); } catch (Exception ex) { error(ex); } };
-        var paste = new MenuItem { Header = cellCount > 1 ? $"Paste into {cellCount} selected cells" : "Paste starting at selected cell", IsEnabled = !Document.PendingSource && !Document.LockedRows.Contains(SelectedRow) && !Document.LockedColumns.Contains(SelectedColumn) };
+        var paste = new MenuItem { Header = rowHeaderPress ? $"Paste into selected {noun}" : cellCount > 1 ? $"Paste into {cellCount} selected cells" : "Paste starting at selected cell", IsEnabled = !Document.PendingSource && !Document.LockedRows.Contains(SelectedRow) && (rowHeaderPress || !Document.LockedColumns.Contains(SelectedColumn)) };
         paste.Click += async (_, _) => { try { activeGrid = grid; await PasteAsync(); } catch (Exception ex) { error(ex); } };
         var clear = new MenuItem { Header = cellCount > 1 ? $"Clear {cellCount} cells" : "Clear cell", IsEnabled = cellCount > 0 && !Document.PendingSource };
         clear.Click += (_, _) => { try { activeGrid = grid; ApplyToSelection("", null); } catch (Exception ex) { error(ex); } };
@@ -400,11 +402,17 @@ public sealed partial class EditorPane : Grid
                 if (grid.SelectedItem != null) grid.CurrentColumn = grid.Columns.FirstOrDefault(c => Document.Table.Columns[columnMap[c]] == selectedColumn) ?? grid.Columns.FirstOrDefault();
             }
             columnsLabel.Text = $"{offset + 1}–{Math.Min(offset + 24, Document.Table.Columns.Length)} / {Document.Table.Columns.Length} columns";
+            columnSignature = ColumnSignature();
         }
         finally { refreshing = previous; }
         UpdateNote();
     }
-    public void Refresh()
+    /// <summary>
+    /// Rebuilds the view from the document. Column controls are rebuilt only when something about them changed (the table,
+    /// the visible window, headers, locks): recreating two dozen DataGrid columns regenerates every realized cell, which is
+    /// the slowest part of a refresh and pointless after a change that only touched rows.
+    /// </summary>
+    public void Refresh(bool scrollToSelection = false)
     {
         viewVersion++;
         int selected = SelectedRow; string column = SelectedColumn; refreshing = true;
@@ -417,7 +425,7 @@ public sealed partial class EditorPane : Grid
             {
                 frozenRows.RemoveAll(i => i >= Document.Table.Records.Count); frozenColumns.RemoveAll(i => i >= Document.Table.Columns.Length);
                 Document.LockedRows.RemoveWhere(i => i < 0 || i >= Document.Table.Records.Count); Document.LockedColumns.RemoveWhere(c => !Document.Table.Columns.Contains(c));
-                RefreshColumns(); ApplyView(selected, column);
+                if (ColumnSignature() != columnSignature) RefreshColumns(); ApplyView(selected, column, scrollToSelection);
                 if (selectedCells.Count == 0 && selectedRow >= 0 && Array.IndexOf(Document.Table.Columns, SelectedColumn) is var ci and >= 0) { selectedCells.Add((selectedRow, ci)); cellAnchor = (selectedRow, ci); }
                 QueuePaint();
             }
@@ -425,7 +433,10 @@ public sealed partial class EditorPane : Grid
         finally { refreshing = false; }
         UpdateNote(); selection(this);
     }
-    private void ApplyView(int selected, string column)
+    /// <summary>Everything RefreshColumns bakes into the column controls; equal signatures mean the existing columns can stay.</summary>
+    private string ColumnSignature() => Document.Table == null ? "" :
+        $"{RuntimeHelpers.GetHashCode(Document.Table)}|{Document.Table.IsCatalog}|{string.Join(',', VisibleColumns().Select(i => $"{i}:{Header(i)}:{Document.LockedColumns.Contains(Document.Table.Columns[i])}"))}";
+    private void ApplyView(int selected, string column, bool scroll = false)
     {
         var table = Document.Table!; var term = filter.Text ?? "";
         IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
@@ -441,7 +452,7 @@ public sealed partial class EditorPane : Grid
         activeGrid.SelectedItem ??= ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault();
         selectedRow = (activeGrid.SelectedItem as RowView)?.Row ?? -1; selectedColumn = column;
         if (activeGrid.SelectedItem != null) activeGrid.CurrentColumn = activeGrid.Columns.FirstOrDefault(c => table.Columns[columnMap[c]] == column) ?? activeGrid.Columns.FirstOrDefault();
-        RestoreAfterLayout(activeGrid, activeGrid.SelectedItem as RowView, activeGrid.CurrentColumn, false);
+        RestoreAfterLayout(activeGrid, activeGrid.SelectedItem as RowView, activeGrid.CurrentColumn, scroll);
         if (mainBar != null) Dispatcher.UIThread.Post(() => SyncBars(mainBar), DispatcherPriority.Background);
     }
     private void RestoreAfterLayout(DataGrid grid, RowView? item, DataGridColumn? column, bool scroll)
@@ -538,6 +549,7 @@ public sealed partial class EditorPane : Grid
     public void Jump(int row, string column = "")
     {
         if (Document.Table == null || Document.PendingSource) return;
+        rowHeaderPress = false;
         ClearReferenceHighlight();
         Source.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
         var i = Array.IndexOf(Document.Table.Columns, column); offset = i > 0 ? ((i - 1) / 23) * 23 : 0; Refresh(); viewVersion++;
@@ -553,14 +565,14 @@ public sealed partial class EditorPane : Grid
         }
         selection(this);
     }
-    /// <summary>Copies the selected cells (one cell, or the rectangle around a multi-cell selection); rows picked by their header copy every displayed column.</summary>
+    /// <summary>Copies the selected cells (one cell, or the rectangle around a multi-cell selection); rows picked by their header copy every table column.</summary>
     public Task CopyAsync() => CopyAsync(cellOnly: !rowHeaderPress);
     public async Task CopyAsync(bool cellOnly)
     {
         if (Document.Table == null) return;
         if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(SelectionText(!cellOnly));
     }
-    /// <summary>Pastes at the current cell. One value fills every selected cell; a block pastes across rows/columns, adding rows at the bottom when it runs past the last one.</summary>
+    /// <summary>Pastes at the current cell, or from the first column when row headers are selected. A block pastes across rows/columns, adding rows at the bottom when it runs past the last one.</summary>
     public async Task PasteAsync()
     {
         if (Document.Table == null || Document.PendingSource) return;
@@ -569,6 +581,18 @@ public sealed partial class EditorPane : Grid
         var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList(); if (lines.Count > 1 && lines[^1] == "") lines.RemoveAt(lines.Count - 1);
         var block = lines.Select(l => l.Split('\t')).ToArray();
         if (block.Length == 1 && block[0].Length == 1 && selectedCells.Count > 1) { ApplyToSelection(block[0][0], null); return; }
+        if (rowHeaderPress && SelectedRowsForCommands().Length > 0)
+        {
+            PasteRows(block);
+            return;
+        }
+        // A copied whole row spans the table, not the current 24-column page. Adding a row selects a cell,
+        // so recognize a table-width block there too and paste from column zero across every page.
+        if (block.All(r => r.Length == Document.Table.Columns.Length) && SelectedRow >= 0)
+        {
+            PasteRows(block, fromCell: true);
+            return;
+        }
         var displayed = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
         int start = SelectedRow < 0 ? displayed.Count : displayed.IndexOf(SelectedRow); Storage.Require(start >= 0, "Select the cell to paste at.");
         var columns = VisibleColumns(); int firstColumn = Math.Max(0, activeGrid.CurrentColumn?.DisplayIndex ?? 0);
@@ -585,6 +609,38 @@ public sealed partial class EditorPane : Grid
         Document.SetCells(edits);
         selectedCells.Clear(); foreach (var (row, column, _) in edits) selectedCells.Add((row, Array.IndexOf(Document.Table.Columns, column)));
         cellAnchor = (displayed[start], columns[firstColumn]);
+        Refresh(); QueuePaint();
+    }
+
+    private void PasteRows(string[][] block, bool fromCell = false)
+    {
+        var table = Document.Table!;
+        Storage.Require(block.All(r => r.Length <= table.Columns.Length), $"Clipboard rows have more than {table.Columns.Length} columns.");
+        var displayed = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToArray();
+        var selected = (fromCell ? [SelectedRow] : SelectedRowsForCommands()).Where(displayed.Contains).OrderBy(r => Array.IndexOf(displayed, r)).ToArray();
+        Storage.Require(selected.Length > 0, "Select a row to paste into.");
+        int[] targets;
+        if (block.Length == 1) targets = selected;
+        else if (block.Length == selected.Length) targets = selected;
+        else
+        {
+            int start = Array.IndexOf(displayed, selected[0]);
+            Storage.Require(start + block.Length <= displayed.Length, "Pasted rows run past the displayed rows. Add rows first, or paste higher in the table.");
+            targets = displayed.Skip(start).Take(block.Length).ToArray();
+        }
+        var edits = new List<(int Row, string Column, string Value)>();
+        for (int r = 0; r < targets.Length; r++)
+            for (int c = 0; c < block[block.Length == 1 ? 0 : r].Length; c++)
+            {
+                var column = table.Columns[c];
+                // Record identity belongs to the destination row. Imported string IDs and game identity columns are protected.
+                if (table.IsIdentityColumn(column)) continue;
+                edits.Add((targets[r], column, block[block.Length == 1 ? 0 : r][c]));
+            }
+        Document.SetCells(edits);
+        selectedCells.Clear();
+        foreach (var row in targets) for (int col = 0; col < table.Columns.Length; col++) selectedCells.Add((row, col));
+        cellAnchor = (targets[0], 0); selectedRow = targets[0]; selectedColumn = table.Columns[0];
         Refresh(); QueuePaint();
     }
 }

@@ -9,8 +9,8 @@ public sealed class Document
     private string raw;
     /// <summary>The parsed file of a JSON table document: schema and records are edited in place and serialized back through it.</summary>
     private JsonObject? tableRoot;
-    private readonly System.Text.Encoding fileEncoding;
-    private readonly byte[] filePreamble;
+    private System.Text.Encoding fileEncoding;
+    private byte[] filePreamble;
     private readonly bool rawMode;
     private bool modelChanged;
     private readonly Stack<Action> undo = new();
@@ -35,6 +35,16 @@ public sealed class Document
     /// <summary>Columns touched by the latest cell-value change (see LastChangedRows).</summary>
     public IReadOnlyCollection<string>? LastChangedColumns { get; private set; }
     public bool ExternalChange => !File.Exists(FilePath) || Hash(File.ReadAllBytes(FilePath)) != diskHash;
+    public void ReloadClean()
+    {
+        Require(!IsDirty && !InEditGroup, "Save current edits before reloading external changes.");
+        NoLinks(FilePath); var bytes = File.ReadAllBytes(FilePath);
+        var detected = rawMode ? (Encoding: System.Text.Encoding.Latin1, Preamble: 0) : TextFileEncoding.Detect(bytes);
+        fileEncoding = detected.Encoding; filePreamble = bytes[..detected.Preamble];
+        raw = detected.Encoding.GetString(bytes, detected.Preamble, bytes.Length - detected.Preamble);
+        diskHash = Hash(bytes); modelChanged = false; undo.Clear(); redo.Clear(); Parse();
+        LastChangedRows = null; LastChangedColumns = null; Revision++; Changed?.Invoke();
+    }
     public Document(string file, bool forceRaw = false)
     {
         FilePath = Path.GetFullPath(file); NoLinks(file); var bytes = File.ReadAllBytes(file); diskHash = Hash(bytes);
@@ -177,7 +187,19 @@ public sealed class Document
         Renumber();
         var shifted = LockedRows.Where(r => r >= index).ToArray(); LockedRows.ExceptWith(shifted); LockedRows.UnionWith(shifted.Select(r => r + insert.Length - remove).Where(r => r >= index + insert.Length));
         Record(() => Splice(index, insert.Length, removed));
-        Finish();
+        if (remove == 0) RowsInserted(index, insert.Length); else Finish();
+    }
+    /// <summary>
+    /// Finishes a pure insertion. New rows carry fresh identities and blank identity cells and no other record changed, so
+    /// in a table that was valid before, only the new rows need checking and only the row-order advisory can change.
+    /// A full pass still runs in any error state, as for cell edits.
+    /// </summary>
+    private void RowsInserted(int index, int count)
+    {
+        modelChanged = true;
+        if (Diagnostics.Any(d => d.Severity == "Error") || Table!.ValidateRows(FilePath, Enumerable.Range(index, count)).Count > 0) Diagnostics = Validated();
+        else { Table!.RefreshRowOrder(); Diagnostics = Table.RowOrderChanged ? [new(FilePath, TableData.RowOrderAdvice, "Warning")] : []; }
+        LastChangedRows = null; LastChangedColumns = null; Notify();
     }
     /// <summary>
     /// Moves rows so the block sits where <paramref name="target"/> pointed before the move (a slot in the current numbering,

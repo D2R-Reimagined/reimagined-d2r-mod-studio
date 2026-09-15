@@ -141,12 +141,21 @@ public partial class MainWindow
             ["magicprefix"] = "Name\tmod1code\tmod1param\nSkillful\tstate\t1\n",
             ["properties"] = "code\tfunc1\tstat1\nstate\t24\tstate\n",
             ["states"] = "state\t*ID\nnone\t0\nfrozen\t1\n",
+            ["monstats"] = "Id\tNameStr\nrogue\tRogue\n",
             ["missiles"] = "Missile\tSubMissile1\nfirebolt\texplosion\n" +
                 string.Concat(Enumerable.Range(0, 150).Select(i => $"filler{i}\t\n")) + "explosion\t\n"
         };
         var saved = fixtures.Keys.ToDictionary(n => n, n => File.Exists(Semantics.TableFile(project!, n)) ? File.ReadAllBytes(Semantics.TableFile(project!, n)) : null);
+        const string catalogName = "unicode-reference-monsters";
+        var catalogFile = TableData.FileFor(project!, "strings", catalogName);
+        var savedCatalog = File.Exists(catalogFile) ? File.ReadAllBytes(catalogFile) : null;
         try
         {
+            var catalog = new TableData(new() { ["schemaVersion"] = 1, ["category"] = catalogName, ["locales"] = new System.Text.Json.Nodes.JsonArray("enUS") },
+                new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject { ["id"] = 900001, ["Key"] = "Rogue", ["translations"] = new System.Text.Json.Nodes.JsonObject { ["enUS"] = "Rogue" } }));
+            // Byte 8192 cuts through a UTF8 character in a valid JSON string.
+            const string prefix = "{\"padding\":\"";
+            AtomicWrite(catalogFile, Utf8.GetBytes(prefix + new string(' ', 8190 - prefix.Length) + "者\"," + Json(catalog.ToFile())[1..]));
             foreach (var pair in fixtures) TableData.Write(Semantics.TableFile(project!, pair.Key), TableData.FromTsv(Utf8.GetBytes(pair.Value), pair.Key, "global/excel/" + pair.Key + ".txt"));
             async Task Wait(Func<bool> ready)
             {
@@ -169,6 +178,12 @@ public partial class MainWindow
                 Require(Active!.SelectedCells.Count == 1 && !pane.Document.IsDirty, "Expanded navigation changed the source or selected the whole destination for editing.");
             }
             var affix = (await OpenDocumentAsync(Semantics.TableFile(project!, "magicprefix")))!;
+            var monstats = (await OpenDocumentAsync(Semantics.TableFile(project!, "monstats")))!;
+            await Click(monstats, 0, "NameStr", catalogName, 0);
+            Require(Active!.Document.Table!.IsCatalog && !Active.Document.PendingSource && Active.Document.Table.Cell(0, "Key") == "Rogue",
+                "Unicode JSON reference opened as binary instead of navigating to Rogue.");
+            using (var shot = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
+            { shot.Render(this); shot.Save(Path.Combine(output, "unicode-json-reference.png"), PngBitmapEncoderOptions.Default); }
             await Click(affix, 0, "mod1code", "properties", 0);
             await Click(affix, 0, "mod1param", "states", 1);
             var properties = tabs.Select(t => t.Content).OfType<EditorPane>().Single(p => p.Document.Table?.Name == "properties");
@@ -192,7 +207,8 @@ public partial class MainWindow
         }
         finally
         {
-            foreach (var tab in tabs.Where(t => t.Content is EditorPane p && fixtures.ContainsKey(p.Document.Table?.Name ?? "")).ToArray()) await CloseTabAsync(tab);
+            foreach (var tab in tabs.Where(t => t.Content is EditorPane p && (fixtures.ContainsKey(p.Document.Table?.Name ?? "") || p.Document.FilePath == catalogFile)).ToArray()) await CloseTabAsync(tab);
+            if (savedCatalog == null) { if (File.Exists(catalogFile)) File.Delete(catalogFile); } else File.WriteAllBytes(catalogFile, savedCatalog);
             foreach (var pair in saved)
             {
                 var file = Semantics.TableFile(project!, pair.Key);

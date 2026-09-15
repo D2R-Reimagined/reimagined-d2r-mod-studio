@@ -4,6 +4,7 @@ namespace ModStudio.Core;
 
 public sealed class StudioPreferences
 {
+    public ExternalEditorSettings ExternalEditor { get; set; } = new();
     public string? LastProject { get; set; }
     public string RowEditorSearch { get; set; } = "";
     public List<string> SettingsIntroduced { get; set; } = [];

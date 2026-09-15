@@ -33,6 +33,10 @@ jobs:
         run: dotnet run --project tests/ModStudio.Tests -c Release --no-build -- --create-ui-fixture artifacts/example-project
       - name: Render and exercise desktop controls
         run: dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/example-project artifacts/ui-smoke
+      - name: Exercise external editor synchronization UI
+        run: |
+          dotnet run --project tests/ModStudio.Tests -c Release --no-build -- --create-ui-fixture artifacts/external-editor-project
+          dotnet run --project src/ModStudio.App -c Release --no-build -- --smoke artifacts/external-editor-project artifacts/ui-smoke/external-editor --external-editor-only
       - name: Package self-contained application and CLI
         run: ./scripts/publish.ps1 -Runtime '${{ matrix.rid }}'
       - uses: actions/upload-artifact@v7

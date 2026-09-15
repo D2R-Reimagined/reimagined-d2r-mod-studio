@@ -35,6 +35,7 @@ try
     await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
     await GitTests.RunAsync(root, Check, Throws, Write);
     UnifiedDiffTests.Run(Check);
+    TextFileEncodingTests.Run(Check);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
     var encodedFile = Path.Combine(root, "utf16.bat");
     var encodedBytes = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes("@echo off\r\necho hello\r\n")).ToArray();
@@ -165,6 +166,7 @@ try
     FeatureTests.Run(root, Check, Throws, Write);
     CellReferenceTests.Run(root, Check);
     WorkspaceSearchTests.Run(root, Check, Throws);
+    ExternalEditorTests.Run(root, Check, Throws);
     Console.WriteLine($"PASS {count} checks");
 }
 finally { Directory.Delete(root, true); }

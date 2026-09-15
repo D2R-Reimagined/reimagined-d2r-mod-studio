@@ -16,3 +16,4 @@ Well, there are a few reasons. First off I can't stand the amount of merge concl
 * * Hate having to go figure out what the hell the end Health of a monster is? Or what the skill description is? Yea me too. Hopefully this solves that
 * Item tooltip rendering in certain views (Hover unique row in unique editor, and see the built item - or error if incorrect)
 * New file system - Move away from the .txt files for much better collaboration and less merge conflicts
+* Built-in Git (Git tab beside the project tree, Ctrl+K): tick the files to include, commit, push, pull, switch branches, view diffs and history - driven by your installed `git`, so SSH keys and credential managers just work

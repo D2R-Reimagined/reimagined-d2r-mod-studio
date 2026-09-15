@@ -43,7 +43,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
         if (!Program.Arguments.Contains("--smoke")) WindowState = WindowState.Maximized;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
@@ -51,7 +51,12 @@ public partial class MainWindow : Window
         ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshLaunchTargets(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start();
-        KeyDown += async (_, e) => { if ((e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) && e.Key == Key.S) { await SaveAllAsync(); e.Handled = true; } };
+        KeyDown += async (_, e) =>
+        {
+            bool command = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+            if (command && e.Key == Key.S) { await SaveAllAsync(); e.Handled = true; }
+            else if (command && e.Key == Key.K && project != null) { SetPanelVisible("explorer", true); LeftTabs.SelectedItem = GitTab; git.FocusMessage(); e.Handled = true; }
+        };
         Closing += async (_, e) =>
         {
             if (closingApproved) return; e.Cancel = true;
@@ -59,7 +64,7 @@ public partial class MainWindow : Window
             if (!await MayLeaveAsync()) return;
             if (controller.Running && await ChooseAsync("A game process is still running", "Closing Studio leaves that process running.", "Leave running and close", "Cancel") != "Leave running and close") return;
             try { SaveOpenFiles(); } catch (Exception ex) { ShowError(ex); return; }
-            closingApproved = true; terminal.Dispose(); watcher?.Dispose(); recoveryTimer.Stop(); runStateTimer.Stop(); controller.Dispose(); Close();
+            closingApproved = true; terminal.Dispose(); git.Cancel(); watcher?.Dispose(); recoveryTimer.Stop(); runStateTimer.Stop(); controller.Dispose(); Close();
         };
         Opened += async (_, _) =>
         {
@@ -184,7 +189,7 @@ public partial class MainWindow : Window
         if (!await UpgradeLayoutIfNeededAsync(nextProject)) return;
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose(); findInFiles?.Close();
-        project = nextProject; terminal.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
+        project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear();
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; SetExplorerEntries(entries); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
@@ -206,10 +211,11 @@ public partial class MainWindow : Window
     }
     private void OnExternalChange(object? sender, FileSystemEventArgs e)
     {
-        if (project == null || !Contains(project.Root, e.FullPath) || Contains(project.Cache, e.FullPath)) return;
+        if (project == null || !Contains(project.Root, e.FullPath) || Contains(project.Cache, e.FullPath) || Contains(System.IO.Path.Combine(project.Root, ".git"), e.FullPath)) return;
         Dispatcher.UIThread.Post(() =>
         {
             if (e.ChangeType != WatcherChangeTypes.Changed) QueueExplorerRefresh();
+            git.QueueRefresh();
             workspaceRevision++; SemanticStatus.Text = "Files changed; run source checks again";
             RefreshItemPreview();
             _ = RefreshSemanticInspectorAsync();
@@ -229,7 +235,7 @@ public partial class MainWindow : Window
     private void UpdateTabHeader(TabItem tab)
     {
         bool preview = tab == previewTab;
-        var label = tab.Content is EditorPane pane ? Label(pane.Document) : System.IO.Path.GetFileName(tab.Tag as string);
+        var label = tab.Content is EditorPane pane ? Label(pane.Document) : tab.Tag is string path ? System.IO.Path.GetFileName(path) : tab.Tag?.ToString();
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         header.Children.Add(new TextBlock { Text = label + (preview ? " · preview" : ""), FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
             FontStyle = preview ? FontStyle.Italic : FontStyle.Normal,
@@ -612,6 +618,7 @@ public partial class MainWindow : Window
             await SmokeLayoutAsync(output);
             await SmokeReorderAsync(root);
             await SmokeCatalogRowsAsync();
+            await SmokeGitAsync(root, output);
             var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
             File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
             new RunSettings(GameDirectory: detectedGame).Save(project!, Profile); RefreshLaunchTargets();

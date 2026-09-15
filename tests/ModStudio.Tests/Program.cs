@@ -33,6 +33,8 @@ try
     LayoutTests.Run(root, Check, Throws);
     BuildTests.Run(root, Check, Throws, Write);
     await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
+    await GitTests.RunAsync(root, Check, Throws, Write);
+    UnifiedDiffTests.Run(Check);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
     var encodedFile = Path.Combine(root, "utf16.bat");
     var encodedBytes = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes("@echo off\r\necho hello\r\n")).ToArray();

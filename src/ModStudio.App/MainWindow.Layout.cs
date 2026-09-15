@@ -28,7 +28,7 @@ public partial class MainWindow
     {
         toolPanels =
         [
-            new("explorer", ExplorerPanel, LeftSplitter, LeftStrip, () => WorkspaceGrid.ColumnDefinitions[1].Width, w => WorkspaceGrid.ColumnDefinitions[1].Width = w, new GridLength(240)),
+            new("explorer", LeftPanel, LeftSplitter, LeftStrip, () => WorkspaceGrid.ColumnDefinitions[1].Width, w => WorkspaceGrid.ColumnDefinitions[1].Width = w, new GridLength(240)),
             new("inspector", InspectorPanel, RightSplitter, RightStrip, () => WorkspaceGrid.ColumnDefinitions[5].Width, w => WorkspaceGrid.ColumnDefinitions[5].Width = w, new GridLength(270)),
             new("bottom", BottomPanel, BottomSplitter, BottomStrip, () => RootGrid.RowDefinitions[3].Height, h => RootGrid.RowDefinitions[3].Height = h, new GridLength(190)),
         ];
@@ -74,7 +74,8 @@ public partial class MainWindow
     private void RebuildStrips()
     {
         LeftStripItems.Children.Clear();
-        LeftStripItems.Children.Add(StripTab("Project", -90, "Show the project explorer", () => SetPanelVisible("explorer", true)));
+        foreach (var tab in LeftTabs.Items.OfType<TabItem>().Where(t => t.IsVisible))
+            LeftStripItems.Children.Add(StripTab(HeaderText(tab), -90, $"Show {HeaderText(tab)}", () => { SetPanelVisible("explorer", true); LeftTabs.SelectedItem = tab; }));
         RightStripItems.Children.Clear();
         foreach (var tab in InspectorTabs.Items.OfType<TabItem>().Where(t => t.IsVisible))
             RightStripItems.Children.Add(StripTab(HeaderText(tab), 90, $"Show {HeaderText(tab)}", () => { SetPanelVisible("inspector", true); InspectorTabs.SelectedItem = tab; }));
@@ -103,7 +104,9 @@ public partial class MainWindow
         Require(Documents.Bounds.Width > documentsBefore + 400, $"Documents did not grow when side panels were minimized ({documentsBefore} -> {Documents.Bounds.Width}).");
         Require(LeftStrip.Bounds.Width is > 0 and < 40 && RightStrip.Bounds.Width is > 0 and < 40 && BottomStrip.Bounds.Height is > 0 and < 40, "Strips are not slim bars.");
         var stripLabels = BottomStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
-        Require(stripLabels.SequenceEqual(["Problems", "Build / Game output", "Changes", "Terminal"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
+        Require(stripLabels.SequenceEqual(["Problems", "Build / Game output", "Changes", "Terminal", "Git"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
+        var leftLabels = LeftStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
+        Require(leftLabels.SequenceEqual(["Project", "Git"]), "Left strip tabs: " + string.Join(", ", leftLabels));
         using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96))) { image.Render(this); image.Save(System.IO.Path.Combine(output, "panels-minimized.png"), PngBitmapEncoderOptions.Default); }
         ShowBottomTab(1); Require(BottomPanel.IsVisible && BottomTabs.SelectedIndex == 1 && !BottomStrip.IsVisible, "Pushed output did not restore the bottom panel.");
         BottomStripItems.Children.Clear(); HideBottomButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); RebuildStrips();

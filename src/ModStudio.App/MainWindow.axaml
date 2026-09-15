@@ -15,7 +15,12 @@
   </Border>
   <Grid x:Name="WorkspaceGrid" Grid.Row="1" ColumnDefinitions="Auto,240,Auto,*,Auto,270,Auto">
    <Border x:Name="LeftStrip" IsVisible="False" Width="26" Background="#1D1E1F" BorderBrush="#494038" BorderThickness="0,0,1,0"><StackPanel x:Name="LeftStripItems" Margin="0,8,0,0" Spacing="4" /></Border>
-   <Grid x:Name="ExplorerPanel" Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*" Background="#1D1E1F">
+   <Grid x:Name="LeftPanel" Grid.Column="1" Background="#1D1E1F">
+   <TabControl x:Name="LeftTabs" Background="#1D1E1F">
+   <TabControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></TabControl.ItemsPanel>
+   <TabControl.Styles><Style Selector="TabItem"><Setter Property="Padding" Value="8,6" /><Setter Property="MinHeight" Value="32" /><Setter Property="FontSize" Value="12" /></Style></TabControl.Styles>
+   <TabItem><TabItem.Header><TextBlock Text="Project" FontSize="12" /></TabItem.Header>
+   <Grid x:Name="ExplorerPanel" RowDefinitions="Auto,Auto,Auto,*">
     <Grid ColumnDefinitions="*,Auto" Margin="12,8,6,4">
      <StackPanel VerticalAlignment="Center" Spacing="1">
       <TextBlock Text="PROJECT" FontSize="10" FontWeight="SemiBold" Foreground="#8E8578" />
@@ -25,7 +30,6 @@
       <Button x:Name="RevealActiveButton" Classes="explorerTool" ToolTip.Tip="Select the active file in the tree" />
       <Button x:Name="CollapseAllButton" Classes="explorerTool" ToolTip.Tip="Collapse all folders" />
       <Button x:Name="RefreshExplorerButton" Classes="explorerTool" ToolTip.Tip="Refresh the file tree" />
-      <Button x:Name="HideExplorerButton" Classes="explorerTool" ToolTip.Tip="Hide the project explorer" />
      </StackPanel>
     </Grid>
     <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="10,0,10,6">
@@ -45,6 +49,11 @@
       <Style Selector="TreeViewItem /template/ ToggleButton /template/ Path"><Setter Property="Width" Value="9" /><Setter Property="Height" Value="9" /><Setter Property="Fill" Value="#8E8578" /></Style>
      </TreeView.Styles>
     </TreeView>
+   </Grid>
+   </TabItem>
+   <TabItem x:Name="GitTab" ToolTip.Tip="Commit, push and pull (Ctrl+K)"><TabItem.Header><TextBlock Text="Git" FontSize="12" /></TabItem.Header></TabItem>
+   </TabControl>
+   <Button x:Name="HideExplorerButton" Classes="explorerTool" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,4,0" ToolTip.Tip="Hide the project panel" />
    </Grid>
    <GridSplitter x:Name="LeftSplitter" Grid.Column="2" Width="5" ResizeDirection="Columns" />
    <TabControl Grid.Column="3" x:Name="Documents" SelectionChanged="DocumentSelected">

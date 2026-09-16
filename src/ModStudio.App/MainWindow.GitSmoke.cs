@@ -18,7 +18,18 @@ public partial class MainWindow
     {
         if (!GitRepository.Available) { Console.WriteLine("SKIP git smoke: git executable not found"); return; }
         var fullRoot = System.IO.Path.GetFullPath(root);
-        async Task Settle(Func<bool>? until = null) { for (int i = 0; i < 200 && (git.Busy || git.Repository?.WorkTree != fullRoot || !(until?.Invoke() ?? true)); i++) await Task.Delay(50); await Task.Delay(50); UpdateLayout(); }
+        async Task Settle(Func<bool>? until = null)
+        {
+            bool Ready() => !git.Busy && git.Repository?.WorkTree == fullRoot && (until?.Invoke() ?? true);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            do
+            {
+                UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                if (Ready()) return;
+                await Task.Delay(50);
+            } while (DateTime.UtcNow < deadline);
+            Require(Ready(), $"Git panel did not settle: branch '{git.Status.Branch}', busy {git.Busy}, repository '{git.Repository?.WorkTree}', changes {git.Items.Count}, output '{Output.Text}'.");
+        }
         Require(git.Repository?.WorkTree != fullRoot, "Fixture must not already be its own repository.");
         LeftTabs.SelectedItem = GitTab; await Task.Delay(100);
         var init = git.GetVisualDescendants().OfType<Button>().Single(b => b.Content as string == "Create Git repository");
@@ -94,7 +105,13 @@ public partial class MainWindow
         Require(live.Summary == "No differences" && live.Rows.Count == 0, $"The open diff did not follow the rollback: {live.Summary}.");
         await CloseTabAsync(tabs.Single(t => t.Tag is GitDiffTag));
         // Branch creation through the repository the panel uses.
-        await repo.CheckoutAsync("smoke/branch", true); await git.RefreshAsync(); await Settle();
+        await repo.CheckoutAsync("smoke/branch", true);
+        // Overlap refresh requests as file-watcher callbacks do. A queued RefreshAsync returns before status is applied;
+        // Busy tracks Git operations, not status refreshes, so wait for both the branch and its rendered header.
+        var branchRefresh = git.RefreshAsync();
+        await git.RefreshAsync();
+        await Settle(() => git.Status.Branch == "smoke/branch" && git.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "smoke/branch"));
+        await branchRefresh;
         Require(git.Status.Branch == "smoke/branch" && git.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "smoke/branch"), "The header did not follow the branch switch.");
         gitTabs.SelectedIndex = 0; await Task.Delay(300); UpdateLayout();
         using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96))) { image.Render(this); image.Save(System.IO.Path.Combine(output, "git-panel.png"), PngBitmapEncoderOptions.Default); }

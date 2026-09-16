@@ -61,6 +61,8 @@ try
     Check(preferences.LastProject == native && preferences.HasIntroduced(target) && !preferences.HasIntroduced(native), "Settings introduction is tracked separately for each project");
     var tsv = "\uFEFFname\t\tname\tvalue\r\nExample\t0\t\t160\r\n\r\nExpansion\r\n";
     Write(Path.Combine(native, "global/excel/example.txt"), tsv); Write(Path.Combine(native, "global/excel/base/example.txt"), tsv);
+    var latin1Tsv = System.Text.Encoding.Latin1.GetBytes("name\t*Param8 Description\r\nExample\t\u00fcber10\r\n");
+    var latin1Source = Path.Combine(native, "global/excel/legacy.txt"); Directory.CreateDirectory(Path.GetDirectoryName(latin1Source)!); File.WriteAllBytes(latin1Source, latin1Tsv);
     Write(Path.Combine(native, "global/excel/different.txt"), "name\nMain"); Write(Path.Combine(native, "global/excel/base/different.txt"), "name\nBase");
     Write(Path.Combine(native, "global/dataversionbuild.txt"), "93847"); Write(Path.Combine(native, "hd/native.bin"), "unchanged");
     Write(Path.Combine(native, "local/lng/strings/example.json"), "[{\"id\":100,\"Key\":\"Example\",\"enUS\":\"Hello %d\",\"frFR\":\"Salut %d\"}]");
@@ -102,8 +104,10 @@ try
     Throws(() => ProjectImporter.Import(sparseNative, Path.Combine(root, "invalid-sparse-project"), "InvalidSparse"), "Import rejects non-string translation values");
     Write(sparseSource, sparseText);
     var report = ProjectImporter.Import(native, target, "TestMod"); var project = report.Project;
-    Check(report.Tables == 3 && report.Catalogs == 2 && report.VerifiedTables == 4, "Import shares only identical banks and recognizes catalogs, including vanilla duplicate keys and large IDs");
+    Check(report.Tables == 4 && report.Catalogs == 2 && report.VerifiedTables == 5, "Import shares only identical banks and recognizes catalogs, including vanilla duplicate keys and large IDs");
     Check(File.ReadAllBytes(Path.Combine(native, "global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Original source never changed");
+    var latin1Table = TableData.Load(Path.Combine(target, "source/tables/legacy.json"));
+    Check(latin1Table.Schema.S("encoding") == "latin1" && latin1Table.Cell(0, "*Param8 Description") == "\u00fcber10" && latin1Table.EncodeTsv().SequenceEqual(latin1Tsv), "Import preserves legacy single-byte table encoding");
     Throws(() => ProjectImporter.Import(native, target, "TestMod"), "Import rejects occupied destinations");
     Throws(() => ProjectImporter.Import(native, Path.Combine(native, "nested"), "TestMod"), "Import rejects overlapping paths");
     var records = Path.Combine(target, "source/tables/example.json"); var doc = new Document(records);
@@ -125,6 +129,9 @@ try
     Write(records, before); doc = new Document(records);
     var build = BuildService.Build(project, "standard");
     Check(File.ReadAllBytes(Path.Combine(build.Output, "TestMod.mpq/data/global/excel/example.txt")).SequenceEqual(Utf8.GetBytes(tsv)), "Portable compiler preserves original table bytes");
+    Check(File.ReadAllBytes(Path.Combine(build.Output, "TestMod.mpq/data/global/excel/legacy.txt")).SequenceEqual(latin1Tsv), "Portable compiler preserves legacy single-byte table bytes");
+    latin1Table.SetCell(0, "*Param8 Description", "not representable \u20ac");
+    Throws(() => latin1Table.EncodeTsv(), "Legacy table encoding rejects lossy edits");
     Check(File.Exists(Path.Combine(build.Output, "TestMod.mpq/data/hd/native.bin")), "Native assets included");
     Check(File.ReadAllText(Path.Combine(build.Output, "TestMod.mpq/data/local/lng/strings/overlay.json")).Contains("251780"), "Catalogs sharing IDs with other catalogs still build");
     var d2rl = BuildService.Build(project, "d2rl"); Check(build.Files.Select(f => f.Sha256).SequenceEqual(d2rl.Files.Select(f => f.Sha256)), "Profiles match without overrides");
@@ -176,8 +183,8 @@ try
     Throws(() => Inside(root, "../outside"), "Path traversal rejected");
     Throws(() => Inside(root, "safe\\outside"), "Cross-platform backslash traversal rejected");
     Throws(() => ModProject.ValidateName("../wrong"), "Invalid mod names rejected");
-    var corruptNative = Path.Combine(root, "corrupt"); Directory.CreateDirectory(Path.Combine(corruptNative, "global/excel")); File.WriteAllBytes(Path.Combine(corruptNative, "global/excel/bad.txt"), [255]);
-    var corruptTarget = Path.Combine(root, "corrupt-project"); Throws(() => ProjectImporter.Import(corruptNative, corruptTarget, "TestMod"), "Lossy UTF-8 conversion rejected"); Check(!Directory.Exists(corruptTarget), "Failed import leaves no partial project");
+    var corruptNative = Path.Combine(root, "corrupt"); Directory.CreateDirectory(Path.Combine(corruptNative, "global/excel")); File.WriteAllBytes(Path.Combine(corruptNative, "global/excel/bad.txt"), [0x41, 0x80, 0]);
+    var corruptTarget = Path.Combine(root, "corrupt-project"); Throws(() => ProjectImporter.Import(corruptNative, corruptTarget, "TestMod"), "Binary table input rejected"); Check(!Directory.Exists(corruptTarget), "Failed import leaves no partial project");
     Throws(() => TableData.FromTsv(Utf8.GetBytes("a\r\nb\nc"), "bad", "bad.txt"), "Mixed TSV newlines rejected");
     var game = Path.Combine(root, OperatingSystem.IsWindows() ? "game/D2R.exe" : "game/game-fixture"); Write(game, "test fixture only");
     var start = RunController.CreateStartInfo(project, new(deployment, game)); Check(start.ArgumentList.SequenceEqual(new[] { "-mod", "TestMod", "-txt" }) && !start.UseShellExecute, "Launch uses separate arguments without shell interpolation");

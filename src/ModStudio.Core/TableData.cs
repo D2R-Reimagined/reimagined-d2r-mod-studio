@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using static ModStudio.Core.Storage;
@@ -228,12 +229,28 @@ public sealed class TableData
         }
     }
     public static string[] Placeholders(string text) => Regex.Matches(text, @"%%|%(?:\d+\$)?[-+#0 ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[hlL]*[diuoxXfFeEgGaAcspn]").Select(m => m.Value).Where(v => v != "%%").ToArray();
+    private static Encoding TsvEncoding(JsonObject schema)
+    {
+        var encoding = schema.S("encoding", "utf-8");
+        Encoding value = encoding switch
+        {
+            "utf-8" => (Encoding)Utf8.Clone(),
+            "utf-16-le" => new UnicodeEncoding(false, false, true),
+            "utf-16-be" => new UnicodeEncoding(true, false, true),
+            "latin1" => (Encoding)Encoding.Latin1.Clone(),
+            _ => throw new InvalidDataException($"Unsupported table encoding: {encoding}")
+        };
+        value.EncoderFallback = EncoderFallback.ExceptionFallback;
+        value.DecoderFallback = DecoderFallback.ExceptionFallback;
+        return value;
+    }
     public byte[] EncodeTsv()
     {
         var newline = Schema.S("newline", "\n"); Require(newline is "\n" or "\r\n" or "\r", "Invalid newline.");
         var lines = new List<string> { string.Join('\t', ((JsonArray)Schema["columns"]!).Select(c => c.S("header"))) };
         for (int i = 0; i < Records.Count; i++) lines.Add(string.Join('\t', Columns.Take(Records[i].I("columnCount")).Select(k => Cell(i, k))));
-        return Utf8.GetBytes((Schema.B("bom") ? "\uFEFF" : "") + string.Join(newline, lines) + (Schema.B("finalNewline") ? newline : ""));
+        try { return TsvEncoding(Schema).GetBytes((Schema.B("bom") ? "\uFEFF" : "") + string.Join(newline, lines) + (Schema.B("finalNewline") ? newline : "")); }
+        catch (EncoderFallbackException e) { throw new InvalidDataException($"Table text cannot be represented in its {Schema.S("encoding", "utf-8")} encoding.", e); }
     }
     public byte[] EncodeCatalog(bool standard)
     {
@@ -249,13 +266,17 @@ public sealed class TableData
     }
     public static TableData FromTsv(byte[] bytes, string name, string target)
     {
-        var text = Utf8.GetString(bytes); bool bom = text.StartsWith('\uFEFF'); if (bom) text = text[1..];
+        Require(TextFileEncoding.LooksLikeText(bytes), "Table is not valid text.");
+        var (encoding, preamble) = TextFileEncoding.Detect(bytes);
+        var text = encoding.GetString(bytes, preamble, bytes.Length - preamble); bool bom = preamble > 0 || text.StartsWith('\uFEFF'); if (text.StartsWith('\uFEFF')) text = text[1..];
         var endings = Regex.Matches(text, "\r\n|\r|\n").Select(m => m.Value).Distinct().ToArray(); Require(endings.Length <= 1, "Mixed line endings require explicit normalization.");
         var newline = endings.FirstOrDefault() ?? "\n"; bool final = text.EndsWith(newline);
         var lines = text.Split(newline).ToList(); if (final) lines.RemoveAt(lines.Count - 1);
         var headers = lines[0].Split('\t'); var keys = new HashSet<string>(); var cols = new JsonArray();
         for (int i = 0; i < headers.Length; i++) { var key = headers[i].Length > 0 ? headers[i] : $"column-{i + 1}"; while (!keys.Add(key)) key += $"#{i + 1}"; cols.Add(new JsonObject { ["key"] = key, ["header"] = headers[i] }); }
+        var encodingName = encoding.CodePage switch { 1200 => "utf-16-le", 1201 => "utf-16-be", 28591 => "latin1", _ => "utf-8" };
         var schema = new JsonObject { ["schemaVersion"] = 1, ["name"] = name, ["targets"] = new JsonArray(target), ["identityColumns"] = new JsonArray(), ["columns"] = cols, ["bom"] = bom, ["newline"] = newline, ["finalNewline"] = final };
+        if (encodingName != "utf-8") schema["encoding"] = encodingName;
         var records = new JsonArray();
         foreach (var line in lines.Skip(1))
         {

@@ -132,13 +132,20 @@ public static class ProjectImporter
             Require(row is JsonObject && row["id"] is JsonValue && row["Key"] is JsonValue, $"Inconsistent catalog: {target}");
             var obj = (JsonObject)row!;
             var translations = new JsonObject();
+            var nullTranslations = new JsonArray();
             foreach (var locale in locales)
                 if (obj.ContainsKey(locale))
                 {
-                    Require(obj[locale] is JsonValue value && value.TryGetValue<string>(out _), $"Invalid translation {locale}: {target}");
-                    translations[locale] = obj[locale]!.GetValue<string>();
+                    if (obj[locale] is null) nullTranslations.Add(locale);
+                    else
+                    {
+                        Require(obj[locale] is JsonValue value && value.TryGetValue<string>(out _), $"Invalid translation {locale}: {target}");
+                        translations[locale] = obj[locale]!.GetValue<string>();
+                    }
                 }
-            records.Add(new JsonObject { ["order"] = records.Count, ["id"] = row!["id"]!.GetValue<int>(), ["Key"] = row["Key"]!.GetValue<string>(), ["translations"] = translations });
+            var record = new JsonObject { ["order"] = records.Count, ["id"] = row!["id"]!.GetValue<int>(), ["Key"] = row["Key"]!.GetValue<string>(), ["translations"] = translations };
+            if (nullTranslations.Count > 0) record["nullTranslations"] = nullTranslations;
+            records.Add(record);
         }
         var schema = new JsonObject { ["schemaVersion"] = 1, ["category"] = name, ["target"] = target, ["locales"] = new JsonArray(locales.Select(l => (JsonNode?)JsonValue.Create(l)).ToArray()), ["bom"] = text.StartsWith('\uFEFF'), ["newline"] = text.Contains("\r\n") ? "\r\n" : "\n", ["finalNewline"] = text.EndsWith('\n'), ["indent"] = 4 };
         var table = new TableData(schema, records); Require(table.Validate(target).Count == 0, $"Invalid catalog: {target}");

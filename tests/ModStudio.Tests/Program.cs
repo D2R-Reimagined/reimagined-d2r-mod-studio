@@ -70,12 +70,15 @@ try
     Write(Path.Combine(native, "local/lng/strings/overlay.json"), "[{\"id\":100,\"Key\":\"Jade\",\"enUS\":\"a\",\"frFR\":\"a\"},{\"id\":251780,\"Key\":\"Jade\",\"enUS\":\"b\",\"frFR\":\"b\"}]");
     var sparseNative = Path.Combine(root, "sparse-original"); var sparseTarget = Path.Combine(root, "sparse-project");
     var sparseSource = Path.Combine(sparseNative, "local/lng/strings/unfinished.json");
-    var sparseText = "[{\"id\":1,\"Key\":\"First\",\"enUS\":\"First\"},{\"id\":2,\"Key\":\"Second\",\"frFR\":\"Deuxième\",\"enUS\":\"\"},{\"id\":1,\"Key\":\"Third\",\"enUS\":\"Third\"}]";
+    var sparseText = "[{\"id\":1,\"Key\":\"First\",\"enUS\":\"First\"},{\"id\":2,\"Key\":\"Second\",\"frFR\":\"Deuxième\",\"enUS\":\"\",\"jaJP\":null},{\"id\":1,\"Key\":\"Third\",\"enUS\":\"Third\"}]";
     Write(sparseSource, sparseText);
     var sparseProject = ProjectImporter.Import(sparseNative, sparseTarget, "SparseMod").Project;
     var sparseCatalogFile = Path.Combine(sparseTarget, "source/strings/unfinished.json");
     var sparseCatalog = TableData.Load(sparseCatalogFile);
-    Check(sparseCatalog.Columns.SequenceEqual(["id", "Key", "enUS", "frFR"]) && sparseCatalog.Cell(0, "frFR") == "" && sparseCatalog.Cell(1, "frFR") == "Deuxième" && sparseCatalog.Validate("unfinished").Count == 0, "Import accepts locales first seen in later rows and missing translations");
+    Check(sparseCatalog.Columns.SequenceEqual(["id", "Key", "enUS", "frFR", "jaJP"]) && sparseCatalog.Cell(0, "frFR") == "" && sparseCatalog.Cell(1, "frFR") == "Deuxième" && sparseCatalog.Cell(1, "jaJP") == "" && sparseCatalog.Validate("unfinished").Count == 0, "Import accepts locales first seen in later rows, missing translations and explicit nulls");
+    sparseCatalog.SetCell(1, "jaJP", "Japanese");
+    var editedNullCatalog = (JsonArray)JsonNode.Parse(Utf8.GetString(sparseCatalog.EncodeCatalog(false)))!;
+    Check(editedNullCatalog[1]!["jaJP"]!.GetValue<string>() == "Japanese" && sparseCatalog.Records[1]!["nullTranslations"] is null, "Editing a null translation converts it to an ordinary string");
     Check(sparseCatalog.Cell(0, "id") == "1" && sparseCatalog.Cell(2, "id") == "1", "Imported duplicate string IDs are preserved");
     var idWarnings = sparseCatalog.DuplicateIdWarnings(sparseCatalogFile);
     Check(idWarnings.Count == 2 && idWarnings.All(d => d.Severity == "Warning" && d.Field == "id" && d.File == sparseCatalogFile) && idWarnings.Select(d => d.Row).Order().SequenceEqual([0, 2]), "Each imported duplicate ID has a navigable warning");
@@ -87,7 +90,7 @@ try
         var sparseBuild = BuildService.Build(sparseProject, mode);
         Check(sparseBuild.Diagnostics?.Count(d => d.Severity == "Warning" && d.Field == "id") == 2, $"{mode} build reports imported duplicate IDs without blocking output");
         var output = (JsonArray)Read(Path.Combine(sparseBuild.Output, "SparseMod.mpq/data/local/lng/strings/unfinished.json"));
-        Check(output[0]!["frFR"]!.GetValue<string>() == "" && output[1]!["frFR"]!.GetValue<string>() == "Deuxième" && output[2]!["frFR"]!.GetValue<string>() == "", $"{mode} build writes blank missing translations and preserves present values");
+        Check(output[0]!["frFR"]!.GetValue<string>() == "" && output[1]!["frFR"]!.GetValue<string>() == "Deuxième" && output[1]!["jaJP"] is null && output[2]!["frFR"]!.GetValue<string>() == "", $"{mode} build writes blank missing translations and preserves present and null values");
     }
     Check(BuildService.Build(sparseProject, "standard").Diagnostics?.Count(d => d.Severity == "Warning" && d.Field == "id") == 2, "Cached builds retain duplicate-ID warnings");
     var resolvedSource = (JsonObject)JsonNode.Parse(sparseDocument.Text)!;

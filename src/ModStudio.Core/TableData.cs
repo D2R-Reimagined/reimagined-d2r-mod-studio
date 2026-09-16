@@ -76,7 +76,15 @@ public sealed class TableData
                 if (column == "id") { Require(int.TryParse(value, out var id) && id >= 0, "String IDs are non-negative integers."); Records[row]!["id"] = id; }
                 else Records[row]!["Key"] = value;
             }
-            else Records[row]!["translations"]![column] = value;
+            else
+            {
+                Records[row]!["translations"]![column] = value;
+                if (Records[row]!["nullTranslations"] is JsonArray nulls)
+                {
+                    for (int i = nulls.Count - 1; i >= 0; i--) if (nulls[i]?.GetValue<string>() == column) nulls.RemoveAt(i);
+                    if (nulls.Count == 0) Records[row]!.AsObject().Remove("nullTranslations");
+                }
+            }
         }
         else
         {
@@ -215,6 +223,10 @@ public sealed class TableData
             }
             foreach (var key in new[] { "translations", "standardTranslations", "standardReviewedAgainst" })
                 if (r[key] is JsonObject o) foreach (var pair in o) Require(columnIndex.TryGetValue(pair.Key, out var c) && c >= 2, $"Unknown locale {pair.Key}");
+            if (r["nullTranslations"] is JsonArray nulls)
+                foreach (var locale in nulls.Select(x => x?.GetValue<string>()))
+                    Require(locale != null && columnIndex.TryGetValue(locale, out var c) && c >= 2 && translations?.ContainsKey(locale) != true, $"Invalid null translation {locale}");
+            else Require(r["nullTranslations"] is null, "Invalid null translations block.");
         }
         else
         {
@@ -258,7 +270,12 @@ public sealed class TableData
         foreach (var r in Records)
         {
             var output = new JsonObject { ["id"] = r!["id"]!.DeepClone(), ["Key"] = r["Key"]!.DeepClone() };
-            foreach (var locale in Columns.Skip(2)) output[locale] = (standard ? r["standardTranslations"]?[locale] : null)?.DeepClone() ?? r["translations"]?[locale]?.DeepClone() ?? JsonValue.Create("");
+            foreach (var locale in Columns.Skip(2))
+            {
+                var explicitNull = r["nullTranslations"] is JsonArray nulls && nulls.Any(x => x?.GetValue<string>() == locale);
+                var compact = standard ? r["standardTranslations"]?[locale] : null;
+                output[locale] = compact?.DeepClone() ?? (explicitNull ? null : r["translations"]?[locale]?.DeepClone() ?? JsonValue.Create(""));
+            }
             rows.Add(output);
         }
         var options = new System.Text.Json.JsonSerializerOptions(Pretty) { IndentSize = Schema.I("indent", 4) };

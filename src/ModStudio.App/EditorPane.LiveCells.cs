@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Data;
 using Avalonia.Media;
 using Avalonia.VisualTree;
 using ModStudio.Core;
@@ -9,39 +10,138 @@ namespace ModStudio.App;
 
 public sealed partial class EditorPane
 {
-    private sealed class LiveCellColumn(EditorPane owner, int index) : DataGridTextColumn
+    /// <summary>
+    /// The DataContext of a row's cells presenter, standing in for the row's item. Recycling a row would otherwise push the
+    /// new item through every object of every cell (several per column, all of them AvaloniaObjects with change
+    /// notification), which is the single largest cost of scrolling a wide table. The proxy is set once per row control and
+    /// never changes, so nothing below the presenter is notified; cells learn about the row through the proxy's events, and
+    /// the editing TextBox's indexer binding resolves against the proxy exactly as it did against the item.
+    /// </summary>
+    internal sealed class RowProxy(Func<int, int> slotColumn)
     {
-        protected override Control GenerateElement(DataGridCell cell, object dataItem)
-            => new LiveCellDisplay(owner, index, base.GenerateElement(cell, dataItem));
+        public RowView? Row { get; private set; }
+        public event Action? RowChanged;
+        public event Action? ValuesChanged;
+        public string this[int column] { get => Row?[column] ?? ""; set { if (Row != null) Row[column] = value; } }
+        /// <summary>What the editing TextBox binds to: column controls are recycled across table columns as the view scrolls, so the binding names the control's slot and the slot is mapped to the current table column.</summary>
+        public SlotIndexer Slot { get; } = new(slotColumn);
+        public sealed class SlotIndexer(Func<int, int> slotColumn)
+        {
+            public RowProxy? Owner { get; set; }
+            public string this[int slot] { get => Owner?.Row?[slotColumn(slot)] ?? ""; set { if (Owner?.Row is { } row) row[slotColumn(slot)] = value; } }
+        }
+        public void Attach(RowView? row)
+        {
+            if (ReferenceEquals(Row, row)) return;
+            if (Row != null) Row.PropertyChanged -= Forward;
+            Row = row;
+            if (row != null) row.PropertyChanged += Forward;
+            RowChanged?.Invoke();
+        }
+        private void Forward(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => ValuesChanged?.Invoke();
     }
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DataGridRow, RowProxy> rowProxies = new();
+    /// <summary>Called for every LoadingRow: points the row control's proxy at the row it now shows, creating the proxy (and shielding the presenter) on first use.</summary>
+    private void AttachRowProxy(DataGridRow rowControl)
+    {
+        if (!rowProxies.TryGetValue(rowControl, out var proxy))
+        {
+            proxy = new RowProxy(slot => slotColumns[slot]); proxy.Slot.Owner = proxy; rowProxies.Add(rowControl, proxy);
+            void Shield(DataGridCellsPresenter presenter) => presenter.DataContext = proxy;
+            if (rowControl.GetVisualDescendants().OfType<DataGridCellsPresenter>().FirstOrDefault() is { } presenter) Shield(presenter);
+            else rowControl.TemplateApplied += (_, e) => { if (e.NameScope.Find<DataGridCellsPresenter>("PART_CellsPresenter") is { } applied) Shield(applied); };
+        }
+        proxy.Attach(rowControl.DataContext as RowView);
+    }
+
+    /// <summary>
+    /// A text column whose display element is filled by <see cref="LiveCellDisplay"/> instead of a binding. A binding per
+    /// cell is what makes scrolling a 300-column table choppy: recycling a row re-evaluates every one of them, including
+    /// the hundreds of cells that are collapsed off the right edge. The editing element keeps the two-way binding.
+    /// </summary>
+    private sealed class LiveCellColumn : DataGridTextColumn
+    {
+        private readonly EditorPane owner;
+        /// <summary>The table column this control currently shows; changes when the control is recycled for another column (<see cref="Retarget"/>).</summary>
+        public int Index { get; private set; }
+        /// <summary>Stable id of this control, used by the editing binding path ("Slot[n]") so the binding never has to change.</summary>
+        public int Slot { get; }
+        public LiveCellColumn(EditorPane owner, int index)
+        {
+            this.owner = owner; Index = index; Slot = owner.slotColumns.Count; owner.slotColumns.Add(index);
+            Binding = new Binding($"Slot[{Slot}]") { Mode = BindingMode.TwoWay };
+        }
+        public void Retarget(int index) { Index = index; owner.slotColumns[Slot] = index; }
+        protected override Control GenerateElement(DataGridCell cell, object dataItem)
+        {
+            var text = new TextBlock { Name = "CellTextBlock" };
+            owner.cellTextTheme ??= owner.TableGrid.TryFindResource("DataGridCellTextBlockTheme", out var theme) ? theme as Avalonia.Styling.ControlTheme : null;
+            if (owner.cellTextTheme != null) text.Theme = owner.cellTextTheme;
+            return new LiveCellDisplay(owner, this, text, cell);
+        }
+    }
+    private Avalonia.Styling.ControlTheme? cellTextTheme;
+    /// <summary>Slot → table column, shared by every column control and row proxy of this pane.</summary>
+    private readonly List<int> slotColumns = [];
 
     private sealed class LiveCellDisplay : Grid
     {
         private static readonly Geometry ReferenceIcon = Geometry.Parse("M1,7 L7,1 M2,1 L7,1 L7,6");
         private static readonly IBrush ReferenceIconBrush = new SolidColorBrush(Color.Parse("#D8BC86"));
         private readonly EditorPane owner;
-        private readonly int column;
-        private readonly Control display;
-        private readonly Button? reference;
+        private readonly LiveCellColumn column;
+        private readonly TextBlock display;
+        private readonly DataGridCell cell;
+        private Button? reference;
+        private bool referenceMargin;
         private string? referenceKey;
-        private RowView? observedRow;
+        private RowProxy? proxy;
+        private RowView? Row => proxy?.Row ?? DataContext as RowView;
+        /// <summary>The row or its values changed while the cell was collapsed off screen; the text is refreshed when the cell is next shown.</summary>
+        private bool stale = true;
         private string? measuredText;
         private double measuredWidth;
         private bool measuredClipped;
-        private readonly TextBox mirror = new()
+        // Created on first use: a TextBox per cell would dominate the cost of realizing a row with hundreds of columns.
+        private TextBox? mirror;
+        private static readonly IBrush MirrorBorder = new SolidColorBrush(Color.Parse("#D8BC86")), MirrorBackground = new SolidColorBrush(Color.Parse("#4A4123"));
+        private TextBox Mirror => mirror ??= CreateMirror();
+        private TextBox CreateMirror()
         {
-            IsReadOnly = true, IsHitTestVisible = false, Focusable = false,
-            MinHeight = 0, Padding = new Thickness(4, 0), BorderThickness = new Thickness(1),
-            BorderBrush = new SolidColorBrush(Color.Parse("#D8BC86")),
-            Background = new SolidColorBrush(Color.Parse("#4A4123")), IsVisible = false
-        };
-        public LiveCellDisplay(EditorPane owner, int column, Control display)
-        {
-            this.owner = owner; this.column = column; this.display = display;
-            Children.Add(display); Children.Add(mirror);
-            if (owner.HasCellReference(column))
+            var box = new TextBox
             {
-                display.Margin = new Thickness(display.Margin.Left, display.Margin.Top, display.Margin.Right + 16, display.Margin.Bottom);
+                IsReadOnly = true, IsHitTestVisible = false, Focusable = false,
+                MinHeight = 0, Padding = new Thickness(4, 0), BorderThickness = new Thickness(1),
+                BorderBrush = MirrorBorder, Background = MirrorBackground, IsVisible = false
+            };
+            Children.Add(box); return box;
+        }
+        public LiveCellDisplay(EditorPane owner, LiveCellColumn column, TextBlock display, DataGridCell cell)
+        {
+            this.owner = owner; this.column = column; this.display = display; this.cell = cell;
+            Children.Add(display);
+            // The DataContext changes at most twice in a cell's life: the row item on creation, then the row proxy once the presenter is shielded.
+            DataContextChanged += (_, _) => ObserveRow();
+            // Cells scrolled off the right edge are collapsed by the grid; their text catches up when they come back into view.
+            cell.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && cell.IsVisible && stale) Update(); };
+            ObserveRow();
+        }
+        private void ObserveRow()
+        {
+            if (DataContext is RowProxy next && !ReferenceEquals(proxy, next))
+            {
+                if (proxy != null) { proxy.RowChanged -= Invalidate; proxy.ValuesChanged -= Invalidate; }
+                proxy = next; proxy.RowChanged += Invalidate; proxy.ValuesChanged += Invalidate;
+            }
+            Invalidate();
+        }
+        /// <summary>The column control now shows another table column; everything displayed is recomputed when the cell is next visible.</summary>
+        public void Invalidate() { stale = true; if (cell.IsVisible) Update(); }
+        /// <summary>The reference arrow exists only in cells that have shown a reference column; the margin that makes room for it follows the current column.</summary>
+        private void EnsureReference(bool wanted)
+        {
+            if (wanted && reference == null)
+            {
                 reference = new Button
                 {
                     Content = new Avalonia.Controls.Shapes.Path
@@ -54,31 +154,29 @@ public sealed partial class EditorPane
                     Background = Brushes.Transparent, BorderThickness = new Thickness(0), Focusable = false
                 };
                 reference.Classes.Add("cellReference");
-                reference.Click += (_, e) => { e.Handled = true; if (DataContext is RowView row) owner.RequestCellReference(row.Row, column, reference); };
+                reference.Click += (_, e) => { e.Handled = true; if (Row is { } row) owner.RequestCellReference(row.Row, column.Index, reference); };
                 Children.Add(reference);
             }
-            DataContextChanged += (_, _) => ObserveRow();
-            AttachedToVisualTree += (_, _) => ObserveRow();
-            DetachedFromVisualTree += (_, _) => { if (observedRow != null) observedRow.PropertyChanged -= RowChanged; observedRow = null; };
-            Update();
+            if (wanted != referenceMargin)
+            {
+                referenceMargin = wanted;
+                display.Margin = new Thickness(display.Margin.Left, display.Margin.Top, display.Margin.Right + (wanted ? 16 : -16), display.Margin.Bottom);
+            }
         }
-        private void ObserveRow()
-        {
-            if (observedRow != null) observedRow.PropertyChanged -= RowChanged;
-            observedRow = reference != null ? DataContext as RowView : null;
-            if (observedRow != null) observedRow.PropertyChanged += RowChanged;
-            Update();
-        }
-        private void RowChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => Update();
         public void Update()
         {
-            var value = DataContext is RowView row ? owner.PreviewCellValue(row.Row, column) : null;
-            mirror.IsVisible = value != null; display.IsVisible = value == null;
-            if (value != null) mirror.Text = value;
+            stale = false;
+            var row = Row; int index = column.Index;
+            var text = row == null ? "" : row[index];
+            if (display.Text != text) display.Text = text;
+            var value = row != null ? owner.PreviewCellValue(row.Row, index) : null;
+            if (value != null) { Mirror.Text = value; Mirror.IsVisible = true; } else if (mirror != null) mirror.IsVisible = false;
+            display.IsVisible = value == null;
+            EnsureReference(owner.HasCellReference(index));
             if (reference != null)
             {
-                var key = DataContext is RowView { IsPlaceholder: false } item ? item[column] : "";
-                var rule = CellReferences.Rule(owner.Document.Table!.Name, owner.Document.Table.Columns[column]);
+                var key = row is { IsPlaceholder: false } ? text : "";
+                var rule = referenceMargin ? CellReferences.Rule(owner.Document.Table!.Name, owner.Document.Table.Columns[index]) : null;
                 reference.IsVisible = value == null && !owner.Document.PendingSource && rule != null && CellReferences.CanNavigate(rule, key);
                 if (referenceKey != key)
                 {
@@ -90,7 +188,7 @@ public sealed partial class EditorPane
         }
         public bool TryGetClippedText(out string fullText)
         {
-            var visible = display.IsVisible ? display : mirror;
+            Control visible = display.IsVisible || mirror == null ? display : mirror;
             fullText = visible switch { TextBlock text => text.Text ?? "", TextBox box => box.Text ?? "", _ => "" };
             if (fullText.Length == 0 || visible.Bounds.Width <= 0) return false;
             var available = visible.Bounds.Width - (visible is TextBox editor ? editor.Padding.Left + editor.Padding.Right : 0);
@@ -124,9 +222,19 @@ public sealed partial class EditorPane
             return measuredClipped;
         }
     }
-    private void RefreshLiveCells()
+    /// <summary>Re-evaluates the live-edit mirror of the given cells (every realized cell when null).</summary>
+    private void RefreshLiveCells(IEnumerable<(int Row, int Col)>? cells = null)
     {
         foreach (var grid in new[] { TableGrid, FrozenGrid })
-            foreach (var display in grid.GetVisualDescendants().OfType<LiveCellDisplay>()) display.Update();
+        {
+            if (cells == null) { foreach (var rowControl in RealizedRows(grid)) foreach (var column in grid.Columns) if (column.GetCellContent(rowControl) is LiveCellDisplay display) display.Update(); continue; }
+            var rows = new Dictionary<int, DataGridRow>();
+            foreach (var rowControl in RealizedRows(grid)) if (rowControl.IsVisible && rowControl.DataContext is RowView { IsPlaceholder: false } item) rows[item.Row] = rowControl;
+            var columns = new Dictionary<int, DataGridColumn>();
+            foreach (var column in grid.Columns) if (columnMap.TryGetValue(column, out var col)) columns[col] = column;
+            foreach (var (row, col) in cells)
+                if (rows.TryGetValue(row, out var rowControl) && columns.TryGetValue(col, out var column) && column.GetCellContent(rowControl) is Visual content)
+                    (content as LiveCellDisplay ?? content.GetVisualDescendants().OfType<LiveCellDisplay>().FirstOrDefault())?.Update();
+        }
     }
 }

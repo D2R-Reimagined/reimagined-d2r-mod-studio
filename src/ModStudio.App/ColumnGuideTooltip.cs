@@ -4,10 +4,13 @@ using ModStudio.Core;
 
 namespace ModStudio.App;
 
-/// <summary>Hover card describing a game-table column, from the bundled d2rdoc data guide.</summary>
+/// <summary>
+/// Hover card describing a game-table column, from the bundled d2rdoc data guide. A tooltip cannot be scrolled or clicked, so
+/// the card stays short and points at <see cref="ColumnGuideFlyout"/> for the complete, searchable value table.
+/// </summary>
 internal static class ColumnGuideTooltip
 {
-    public const int TableRows = 12;
+    public const int TableRows = 6;
     private static readonly IBrush Muted = new SolidColorBrush(Color.Parse("#A8A29A"));
     private static readonly IBrush Accent = new SolidColorBrush(Color.Parse("#D8BC86"));
     private static readonly IBrush Mono = new SolidColorBrush(Color.Parse("#C9D4E0"));
@@ -29,6 +32,8 @@ internal static class ColumnGuideTooltip
         panel.Children.Add(header);
         panel.Children.Add(new TextBlock { Text = entry.Description, TextWrapping = TextWrapping.Wrap });
         if (!string.IsNullOrEmpty(entry.Format)) panel.Children.Add(new TextBlock { Text = "Format: " + entry.Format, TextWrapping = TextWrapping.Wrap, Foreground = Mono });
+        // The hint comes before the value table: a narrow card may clip the table's bottom, and the hint is what makes the rest reachable.
+        if (entry.Table is { Length: > 1 } || entry.Bits is { Length: > 0 }) panel.Children.Add(new TextBlock { Text = ColumnGuideFlyout.OpenHint, Foreground = Accent, FontSize = 11, TextWrapping = TextWrapping.Wrap });
         if (entry.Table is { Length: > 1 })
         {
             var grid = new Grid { Margin = new(0, 4, 0, 0) };
@@ -38,20 +43,22 @@ internal static class ColumnGuideTooltip
             // Share the available width so every column can wrap, favoring descriptions.
             for (int c = 0; c < columns; c++)
                 grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(c == columns - 1 ? 3 : c == 0 ? 1 : 2, GridUnitType.Star)));
-            var rows = entry.Table.Take(TableRows + 1).ToArray();
+            bool heading = entry.TableHasHeading;
+            var rows = entry.Table.Take(TableRows + (heading ? 1 : 0)).ToArray();
             for (int r = 0; r < rows.Length; r++)
             {
                 grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                bool isHeading = heading && r == 0;
                 for (int c = 0; c < rows[r].Length; c++)
                 {
                     var cell = new TextBlock { Text = rows[r][c], TextWrapping = TextWrapping.Wrap, Margin = new(0, 1, 12, 1), MaxWidth = 300,
-                        FontWeight = r == 0 ? FontWeight.SemiBold : FontWeight.Normal, Foreground = r == 0 ? Muted : c == 0 ? Mono : Brushes.White };
+                        FontWeight = isHeading ? FontWeight.SemiBold : FontWeight.Normal, Foreground = isHeading ? Muted : c == 0 ? Mono : Brushes.White };
                     Grid.SetRow(cell, r); Grid.SetColumn(cell, c); grid.Children.Add(cell);
                 }
             }
             panel.Children.Add(grid);
-            int total = entry.TableTruncated > 0 ? entry.TableTruncated : entry.Table.Length - 1;
-            if (total > TableRows) panel.Children.Add(new TextBlock { Text = $"… {total - TableRows} more values in the online guide", Foreground = Muted });
+            int total = entry.TableTruncated > 0 ? entry.TableTruncated : entry.Table.Length - (heading ? 1 : 0);
+            if (total > TableRows) panel.Children.Add(new TextBlock { Text = $"… {total - TableRows} more values in the searchable guide", Foreground = Muted });
         }
         if (entry.Bits is { Length: > 0 })
         {
@@ -60,6 +67,7 @@ internal static class ColumnGuideTooltip
             if (entry.Bits.Count(b => !string.IsNullOrWhiteSpace(b)) > TableRows) panel.Children.Add(new TextBlock { Text = "… more flags in the online guide", Foreground = Muted });
         }
         panel.Children.Add(new TextBlock { Text = "d2rdoc data guide · " + ColumnGuide.Url(tableName, column), Foreground = Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new(0, 4, 0, 0) });
+        // A tooltip cannot be scrolled; the viewer only bounds the card's height so a narrow card is clipped instead of covering the screen.
         return new ScrollViewer
         {
             Content = panel, MaxWidth = 460, MaxHeight = 560,

@@ -14,7 +14,7 @@ const checkout = process.argv[2];
 if (!checkout) { console.error("Usage: node scripts/import-column-guide.mjs <d2rdoc checkout>"); process.exit(1); }
 const filesDir = join(checkout, "data", "files");
 const output = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "ModStudio.Core", "Assets", "column-guide.json");
-const maxTableRows = 40;
+const maxTableRows = 400;
 
 const raw = {};
 for (const name of readdirSync(filesDir).filter(f => f.endsWith(".js"))) {

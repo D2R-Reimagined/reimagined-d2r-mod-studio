@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Data;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Threading;
 using ModStudio.Core;
@@ -43,7 +44,12 @@ public partial class MainWindow
             if (field == null) return new Border();
             var panel = new StackPanel { Spacing = 3, Margin = new(0, 0, 24, 10) };
             var label = new TextBlock { Text = field.Label, TextWrapping = TextWrapping.Wrap };
-            if (field.Guide != null) { label.TextDecorations = TextDecorations.Underline; label.Foreground = new SolidColorBrush(Color.Parse("#D8BC86")); }
+            if (field.Guide != null)
+            {
+                label.TextDecorations = TextDecorations.Underline; label.Foreground = new SolidColorBrush(Color.Parse("#D8BC86")); label.Cursor = new Cursor(StandardCursorType.Hand); label.Background = Brushes.Transparent;
+                // The hover card is a short summary; a click opens the searchable guide with the field's current value highlighted.
+                label.PointerPressed += (_, e) => { e.Handled = true; if (Active?.Document.Table is { } table) ColumnGuideFlyout.Show(label, table, field.Column, field.Value, ShowError); };
+            }
             panel.Children.Add(label);
             var input = new TextBox { IsReadOnly = field.ReadOnly, AcceptsReturn = field.Multiline,
                 TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };

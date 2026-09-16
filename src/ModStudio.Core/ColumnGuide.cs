@@ -6,6 +6,8 @@ namespace ModStudio.Core;
 /// <summary>Field documentation for game tables, imported from the community d2rdoc data guide (see scripts/import-column-guide.mjs).</summary>
 public sealed record ColumnGuideEntry(string Name, string Description, string[]? AltNames, string? Type, string? Format, string[][]? Table, int TableTruncated, string[]? Bits, string? RefFile = null, string? RefField = null)
 {
+    /// <summary>Whether the first row of <see cref="Table"/> names its columns. Most guide tables do; some start straight with a code such as "0".</summary>
+    public bool TableHasHeading => Table is { Length: > 0 } && Table[0].Length > 0 && Table[0][0].Length > 0 && !char.IsDigit(Table[0][0][0]);
     /// <summary>Plain-text summary suitable for a tooltip: description, type, parse format, and a bounded slice of any reference table.</summary>
     public string Summary(int maxTableRows = 12)
     {

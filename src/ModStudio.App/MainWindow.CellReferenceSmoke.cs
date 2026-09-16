@@ -43,7 +43,7 @@ public partial class MainWindow
             Require(ready(), "Gamble reference UI did not settle.");
         }
         Button? Arrow(int row, DataGrid? grid = null) => ((Control?)grid ?? source).GetVisualDescendants().OfType<Button>()
-            .FirstOrDefault(b => b.Classes.Contains("cellReference") && b.DataContext is RowView item && item.Row == row);
+            .FirstOrDefault(b => b.Classes.Contains("cellReference") && b.GetVisualAncestors().OfType<DataGridRow>().FirstOrDefault() is { IsVisible: true, DataContext: RowView item } && item.Row == row);
         async Task ShowSource(int row)
         {
             await OpenDocumentAsync(file); source.Jump(row, "code"); await Wait(() => Arrow(row) is { Bounds.Width: > 0 });
@@ -107,7 +107,7 @@ public partial class MainWindow
         var amuletPoint = amuletArrow.TranslatePoint(new Point(7, 7), this)!.Value;
         this.MouseDown(amuletPoint, MouseButton.Left); this.MouseUp(amuletPoint, MouseButton.Left);
         DataGridRow? LinkedRow() => misc.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
-            .FirstOrDefault(r => r.DataContext is RowView { Row: 302 });
+            .FirstOrDefault(r => r.IsVisible && r.DataContext is RowView { Row: 302 });
         bool VisibleAmulet()
         {
             var linked = LinkedRow();
@@ -119,7 +119,7 @@ public partial class MainWindow
         await Wait(() => LinkedRow()!.Background is not null);
         Require(rowFilter.Text == "" && misc.SelectedCells.Count == 1 && misc.SelectedCells.Contains((302, 1)),
             "Reference did not reveal Amulet with only its code selected for editing.");
-        var nameCell = misc.TableGrid.Columns[0].GetCellContent(LinkedRow()!)!.GetVisualAncestors().OfType<DataGridCell>().First();
+        var nameCell = misc.GridColumnOf(misc.TableGrid, 0)!.GetCellContent(LinkedRow()!)!.GetVisualAncestors().OfType<DataGridCell>().First();
         Require(nameCell.Background == LinkedRow()!.Background && nameCell.Background != null,
             "Reference highlighted only the code cell instead of the whole Amulet row.");
         var highlightBrush = nameCell.Background;
@@ -131,7 +131,7 @@ public partial class MainWindow
         misc.JumpToReference(302, "code"); misc.ToggleFrozenRows();
         await ShowSource(6); await NavigateCellReferenceAsync(source, 6, "code", Arrow(6)!);
         await Wait(() => misc.FrozenGrid.GetVisualDescendants().OfType<DataGridRow>()
-            .Any(r => r.DataContext is RowView { Row: 302 } && r.Background == highlightBrush));
+            .Any(r => r.IsVisible && r.DataContext is RowView { Row: 302 } && r.Background == highlightBrush));
         Require(misc.HighlightedReferenceRow == 302 && misc.SelectedCells.Count == 1, "Frozen reference destination lost its row highlight.");
         misc.Document.SetCells([(302, "code", "changed")]);
         Require(misc.HighlightedReferenceRow == -1, "Editing retained a stale reference highlight.");
@@ -180,7 +180,7 @@ public partial class MainWindow
                 await OpenDocumentAsync(pane.Document.FilePath); pane.Jump(row, column);
                 Button? CurrentArrow()
                 {
-                    var realized = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView item && item.Row == row);
+                    var realized = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.IsVisible && r.DataContext is RowView item && item.Row == row);
                     return realized == null ? null : pane.TableGrid.CurrentColumn?.GetCellContent(realized)?
                         .GetVisualDescendants().OfType<Button>().FirstOrDefault(b => b.Classes.Contains("cellReference") && b.IsVisible);
                 }
@@ -213,7 +213,7 @@ public partial class MainWindow
             properties.Document.SetRaw(validProperties); properties.Document.ApplySource(); properties.Document.Save();
             var missiles = (await OpenDocumentAsync(Semantics.TableFile(project!, "missiles")))!;
             await Click(missiles, 0, "SubMissile1", "missiles", 151);
-            await Wait(() => missiles.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Any(r => r.DataContext is RowView { Row: 151 } &&
+            await Wait(() => missiles.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Any(r => r.IsVisible && r.DataContext is RowView { Row: 151 } &&
                 r.TranslatePoint(new Point(), missiles.TableGrid) is { Y: >= 0 } p && p.Y + r.Bounds.Height <= missiles.TableGrid.Bounds.Height));
             using var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96));
             bitmap.Render(this); bitmap.Save(Path.Combine(output, "missile-reference-highlight.png"), PngBitmapEncoderOptions.Default);

@@ -115,11 +115,23 @@ internal static class FeatureTests
         document.SetRaw(document.Text.Replace("\"10\"", "\"11\"")); document.ApplySource(); document.LockedRows.Add(0); document.Undo(); document.Redo();
         check(document.Table!.Cell(0, "lvl") == "11", "Existing undo/redo remains usable with edit locks"); document.Undo(); document.LockedRows.Clear();
         table = document.Table!;
-        var rule = Semantics.Rules(project).Single(r => r.Table == "uniqueitems");
+        var rule = Semantics.Rules(project).Single(r => r.Table == "uniqueitems" && r.Column == "code");
         check(Semantics.References(project, rule, "axe1").Single().Column == "code", "Reference navigation locates the base item");
         var weaponFile = Semantics.TableFile(project, "weapons"); var buffer = TableData.Load(weaponFile); buffer.SetCell(0, "code", "axe2");
         check(Semantics.References(project, rule, "axe1", new Dictionary<string, TableData> { [weaponFile] = buffer }).Count == 0, "Unsaved reference targets replace disk values");
         check(Semantics.Check(project).Diagnostics.Count == 0, "Built-in reference checks accept coherent source");
+        // Item names are string keys: a key that no catalog defines is reported once a catalog exists to look it up in.
+        var catalogFile = TableData.FileFor(project, "strings", "item-names");
+        TableData.Write(catalogFile, new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "item-names", ["locales"] = new JsonArray("enUS"), ["target"] = "local/lng/strings/item-names.json" },
+            new JsonArray(new JsonObject { ["id"] = 1, ["Key"] = "Test", ["translations"] = new JsonObject { ["enUS"] = "Test Unique" } })));
+        var catalogCheck = Semantics.Check(project).Diagnostics;
+        check(catalogCheck.Count == 0, "Item name keys present in a string catalog pass the string-key check: " + string.Join("; ", catalogCheck));
+        var nameRule = Semantics.Rules(project).Single(r => r.Table == "uniqueitems" && r.Column == "index");
+        check(Semantics.References(project, nameRule, "Test").Single().File == catalogFile, "Reference navigation locates the item name in its string catalog");
+        var renamed = new Document(file); renamed.SetCells([(0, "index", "Missing")]); renamed.Save();
+        var nameIssues = Semantics.Check(project).Diagnostics;
+        check(nameIssues.Count == 1 && nameIssues[0].Field == "index" && nameIssues[0].Severity == "Warning" && nameIssues[0].Message.Contains("Missing"), "An item name without a string catalog entry is reported as a warning");
+        renamed.SetCells([(0, "index", "Test")]); renamed.Save(); File.Delete(catalogFile);
         var validationFile = Path.Combine(target, "source/semantics.json");
         WriteJson(validationFile, new JsonObject { ["schemaVersion"] = 1, ["rules"] = new JsonArray(new JsonObject { ["table"] = "uniqueitems", ["column"] = "lvl", ["type"] = "integer", ["min"] = 0, ["max"] = 99, ["severity"] = "Error" }) });
         document.SetCells([(0, "lvl", "100")]);

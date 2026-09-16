@@ -15,11 +15,11 @@ public partial class MainWindow
         var table = pane.Document.Table!; var columns = table.Columns; int rows = table.Records.Count;
         Require(columns.Length > 30 && rows > 2, "Row-insert fixture needs offscreen columns and several rows.");
         pane.Jump(1, columns[30]); await Task.Delay(100); UpdateLayout();
-        var page = pane.VisibleColumns(); var gridColumns = pane.TableGrid.Columns.ToArray();
-        Require(page.Contains(30) && pane.SelectedColumn == columns[30], "Jump did not land on the offscreen column page.");
+        var gridColumns = pane.TableGrid.Columns.ToArray();
+        Require(pane.ColumnIndexOf(pane.TableGrid.CurrentColumn!) == 30 && pane.SelectedColumn == columns[30], "Jump did not land on the offscreen column.");
         var timer = Stopwatch.StartNew(); pane.InsertRows(1); timer.Stop(); await Task.Delay(60);
         Require(pane.Document.Table!.Records.Count == rows + 1 && pane.SelectedRow == 1 && pane.SelectedColumn == columns[30] && pane.SelectedCells.SequenceEqual([(1, 30)]), "Add row above did not select the new row in the current column.");
-        Require(pane.VisibleColumns().SequenceEqual(page) && pane.TableGrid.Columns.SequenceEqual(gridColumns), "Adding a row moved the column page or rebuilt the grid columns.");
+        Require(pane.TableGrid.Columns.SequenceEqual(gridColumns), "Adding a row rebuilt the grid columns.");
         Require(pane.Document.Diagnostics.Any(d => d.Severity == "Warning" && d.Message == TableData.RowOrderAdvice) && pane.Document.Diagnostics.All(d => d.Severity != "Error"), "Inserting before original rows should raise only the order advisory.");
         var below = Stopwatch.StartNew(); pane.InsertRows(3, 2); below.Stop(); await Task.Delay(60);
         Require(pane.Document.Table!.Records.Count == rows + 3 && pane.SelectedCells.ToHashSet().SetEquals([(3, 30), (4, 30)]) && pane.SelectedRow == 3, "Add rows below did not select both new rows.");

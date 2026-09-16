@@ -104,7 +104,7 @@ public partial class MainWindow
         Require(Documents.Bounds.Width > documentsBefore + 400, $"Documents did not grow when side panels were minimized ({documentsBefore} -> {Documents.Bounds.Width}).");
         Require(LeftStrip.Bounds.Width is > 0 and < 40 && RightStrip.Bounds.Width is > 0 and < 40 && BottomStrip.Bounds.Height is > 0 and < 40, "Strips are not slim bars.");
         var stripLabels = BottomStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
-        Require(stripLabels.SequenceEqual(["Problems", "Build / Game output", "Changes", "Terminal", "Git"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
+        Require(stripLabels.SequenceEqual(["Problems", "Log", "Changes", "Terminal", "Git"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
         var leftLabels = LeftStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
         Require(leftLabels.SequenceEqual(["Project", "Git"]), "Left strip tabs: " + string.Join(", ", leftLabels));
         using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96))) { image.Render(this); image.Save(System.IO.Path.Combine(output, "panels-minimized.png"), PngBitmapEncoderOptions.Default); }

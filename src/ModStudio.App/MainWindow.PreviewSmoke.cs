@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.VisualTree;
 using ModStudio.Core;
 using static ModStudio.Core.Storage;
 
@@ -23,20 +24,45 @@ public partial class MainWindow
                 host.Show();
                 for (int attempt = 0; attempt < 100 && card.Bounds.Width == 0; attempt++) await Task.Delay(10);
                 host.UpdateLayout();
-                var grid = ((StackPanel)((ScrollViewer)card).Content!).Children.OfType<Grid>().Single();
+                var panel = (StackPanel)((ScrollViewer)card).Content!;
+                var grid = panel.Children.OfType<Grid>().Single();
                 var cells = grid.Children.OfType<TextBlock>().ToArray();
                 Require(cells.All(cell => cell.Bounds.Width >= 18), "Guide table squeezed a column at width " + width);
                 Require(cells.Where(cell => Grid.GetColumn(cell) == grid.ColumnDefinitions.Count - 1).All(cell => cell.Bounds.Width >= 80),
                     "Guide descriptions lost readable width at " + width);
                 Require(cells.Single(cell => Grid.GetRow(cell) == 0 && Grid.GetColumn(cell) == grid.ColumnDefinitions.Count - 1).Bounds.Height < 100,
                     "Short guide description wrapped into excessive height at " + width);
-                Require(card.Bounds.Height <= 560, "Guide card extends past its height limit.");
+                Require(card.Bounds.Height <= 560, $"Guide card extends past its height limit: {card.Bounds.Height} (desired {card.DesiredSize.Height}, align {card.VerticalAlignment}) at width {width}.");
+                Require(grid.RowDefinitions.Count <= ColumnGuideTooltip.TableRows + 1 && panel.Children.OfType<TextBlock>().Any(t => t.Text == ColumnGuideFlyout.OpenHint), "Hover card is not the short form with the searchable-guide hint.");
                 await Task.Delay(120);
                 using var image = new RenderTargetBitmap(new PixelSize(width, 800), new Vector(96, 96));
                 image.Render(host); image.Save(System.IO.Path.Combine(output, $"column-guide-{width}.png"), PngBitmapEncoderOptions.Default);
             }
             finally { host.Close(); }
         }
+        // The searchable flyout lists every bundled value, filters them, and highlights the current cell's code.
+        bool closed = false;
+        var flyoutCard = ColumnGuideFlyout.Create("skills", "cltdofunc", entry, "3", ex => throw ex, () => closed = true);
+        var flyoutHost = new Window { Width = 600, Height = 800, Content = flyoutCard, Background = Brushes.Black };
+        try
+        {
+            flyoutHost.Show();
+            for (int attempt = 0; attempt < 100 && flyoutCard.Bounds.Width == 0; attempt++) await Task.Delay(10);
+            flyoutHost.UpdateLayout(); await Task.Delay(50); flyoutHost.UpdateLayout();
+            var list = flyoutCard.GetVisualDescendants().OfType<ListBox>().Single();
+            var search = flyoutCard.GetVisualDescendants().OfType<TextBox>().Single();
+            Require(list.ItemCount == entry.Table!.Length - (entry.TableHasHeading ? 1 : 0) && list.ItemCount > ColumnGuideTooltip.TableRows, "Guide flyout does not list every bundled value.");
+            Require(list.SelectedIndex >= 0 && list.SelectedItem?.ToString()?.Contains("IsCurrent = True") == true, "Guide flyout did not highlight the current value.");
+            search.Text = entry.Table[5][1][..Math.Min(6, entry.Table[5][1].Length)]; await Task.Delay(30);
+            Require(list.ItemCount >= 1 && list.ItemCount < entry.Table.Length - 1, "Guide flyout search did not filter the values.");
+            Require(!entry.TableHasHeading && (ColumnGuide.Find("missiles", "pCltDoFunc")?.TableHasHeading ?? false), "Guide table heading detection is wrong for a known headed and a known unheaded table.");
+            Require(flyoutCard.GetVisualDescendants().OfType<Button>().Any(b => b.Content?.ToString()?.StartsWith("Open online guide") == true), "Guide flyout has no link to the online guide.");
+            flyoutCard.GetVisualDescendants().OfType<Button>().First(b => b.Content?.ToString() == "✕").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+            Require(closed, "Guide flyout close button did not close it.");
+            using var image = new RenderTargetBitmap(new PixelSize(600, 800), new Vector(96, 96));
+            image.Render(flyoutHost); image.Save(System.IO.Path.Combine(output, "column-guide-flyout.png"), PngBitmapEncoderOptions.Default);
+        }
+        finally { flyoutHost.Close(); }
     }
 
     private async Task SmokePreviewsAsync(string output, IEnumerable<string> realAssets)

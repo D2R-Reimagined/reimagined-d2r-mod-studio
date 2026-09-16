@@ -18,6 +18,14 @@ Well, there are a few reasons. First off I can't stand the amount of merge concl
 * New file system - Move away from the .txt files for much better collaboration and less merge conflicts
 * Built-in Git (Git tab beside the project tree, Ctrl+K): tick the files to include, commit, push, pull, switch branches, view diffs and history - driven by your installed `git`, so SSH keys and credential managers just work
 
+## Table editor notes
+
+* Every column of a table is shown. Under the hood only the columns near the horizontal viewport exist in the grid (the rest are stood in for by spacers), which is what keeps 300-column tables such as skills, missiles and monstats smooth to scroll in both directions.
+* Adding, deleting, pasting, saving, undo and redo keep the grid where you were scrolled; only a new filter goes back to the top.
+* **Column guide**: press **F1** (or use the toolbar's ? button, right-click a column header, or click a field name in the Row Editor) for the searchable d2rdoc guide of the current column, with the current cell's code highlighted and a link to the online page. Hovering a header shows a short summary only.
+* **Hover cards** on unique/set item rows can be switched off with the toolbar toggle (or in the Item Preview tab); the Item Preview tab always shows the selected item.
+* Build, Deploy and Play report warnings such as an item name with no string-catalog key; the details are in the Problems tab and the **Log** tab keeps every status-bar message (click the status bar to open it).
+
 ## Keep using your TXT editor
 
 Migration does not require using Studio's grid. **External editor** in the toolbar provides:

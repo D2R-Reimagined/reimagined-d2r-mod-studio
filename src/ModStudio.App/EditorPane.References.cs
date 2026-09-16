@@ -15,6 +15,7 @@ public sealed partial class EditorPane
     public void JumpToReference(int row, string column)
     {
         if (Document.Table is not { } table || Document.PendingSource || row < 0 || row >= table.Records.Count) return;
+        if (table.ColumnIndex(column) is var index and >= 0) EnsureColumnInWindow(index);
         var grid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
         var item = (grid.ItemsSource as IEnumerable<RowView>)?.FirstOrDefault(r => r.Row == row);
         if (tableHost.IsVisible && item != null)

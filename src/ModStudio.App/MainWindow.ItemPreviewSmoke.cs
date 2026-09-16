@@ -53,7 +53,7 @@ public partial class MainWindow
         Require(guidedField != null, "Row editor field for prop1 has no data-guide card.");
         Require(RowEditorFields.GetVisualDescendants().OfType<StackPanel>().Any(p => ToolTip.GetTip(p) == null && p.GetLogicalDescendants().OfType<TextBox>().Any(t => Avalonia.Automation.AutomationProperties.GetName(t) == "very_long_column_name_for_preview_testing")), "Undocumented row editor field shows a guide card.");
         InspectorTabs.SelectedItem = itemPreviewTab; await PendingItemPreview;
-        var anchor = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First();
+        var anchor = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().First(r => r.IsVisible);
         RequestItemPreview(pane, 0, anchor); var abandoned = PendingItemPreview;
         ScheduleItemTooltipClose(); await abandoned; await Task.Delay(450);
         Require(!ToolTip.GetIsOpen(anchor) && ToolTip.GetTip(anchor) == null, "Leaving a row before its hover resolved still opened the tooltip.");

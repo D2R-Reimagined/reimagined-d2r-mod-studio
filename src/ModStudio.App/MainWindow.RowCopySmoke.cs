@@ -22,7 +22,7 @@ public partial class MainWindow
         pane.Jump(0, columns[30]); await Task.Delay(100); UpdateLayout();
         void ClickRowNumber(int row, RawInputModifiers modifiers = RawInputModifiers.None)
         {
-            var header = pane.TableGrid.GetVisualDescendants().OfType<DataGridRowHeader>().First(h => h.GetVisualAncestors().OfType<DataGridRow>().FirstOrDefault()?.DataContext is RowView view && view.Row == row);
+            var header = pane.TableGrid.GetVisualDescendants().OfType<DataGridRowHeader>().First(h => h.GetVisualAncestors().OfType<DataGridRow>().FirstOrDefault() is { IsVisible: true, DataContext: RowView view } && view.Row == row);
             var point = header.TranslatePoint(new Point(header.Bounds.Width / 2, header.Bounds.Height / 2), this)!.Value;
             this.MouseDown(point, MouseButton.Left, modifiers); this.MouseUp(point, MouseButton.Left, modifiers);
         }

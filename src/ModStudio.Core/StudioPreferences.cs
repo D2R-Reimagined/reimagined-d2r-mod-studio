@@ -7,6 +7,8 @@ public sealed class StudioPreferences
     public ExternalEditorSettings ExternalEditor { get; set; } = new();
     public string? LastProject { get; set; }
     public string RowEditorSearch { get; set; } = "";
+    /// <summary>Whether hovering a unique/set item row shows its rendered tooltip; the Item Preview tab is unaffected.</summary>
+    public bool ItemHoverCards { get; set; } = true;
     public List<string> SettingsIntroduced { get; set; } = [];
     /// <summary>Tool panels the user minimized to their strip: "explorer", "inspector", "bottom".</summary>
     public List<string> HiddenPanels { get; set; } = [];

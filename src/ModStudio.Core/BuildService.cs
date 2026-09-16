@@ -193,8 +193,11 @@ public static class BuildService
         try
         {
             var rules = Semantics.Rules(snapshotProject);
-            var involved = rules.Select(r => r.Table).Concat(rules.SelectMany(r => r.ReferenceTables ?? [])).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
-                .Select(name => $"source/tables/{name}.json").Append("source/semantics.json");
+            var names = rules.Select(r => r.Table).Concat(rules.SelectMany(r => r.ReferenceTables ?? [])).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            var involved = names.Where(name => name != Semantics.StringCatalogs).Select(name => $"source/tables/{name}.json").Append("source/semantics.json");
+            // Rules that look keys up in the string catalogs depend on every catalog file.
+            if (names.Contains(Semantics.StringCatalogs) && Directory.Exists(Path.Combine(snapshot, "source/strings")))
+                involved = involved.Concat(Directory.GetFiles(Path.Combine(snapshot, "source/strings"), "*.json").Select(f => Relative(snapshot, f)).Order(StringComparer.Ordinal));
             key = Hash(typeof(BuildService).Module.ModuleVersionId + string.Join("\n", involved.Select(relative => relative + "=" + sourceHashes.GetValueOrDefault(Inside(project.Root, relative), "missing"))));
         }
         catch (Exception e) when (e is not OperationCanceledException) { key = ""; } // invalid rules: Check reports the problem itself, uncached

@@ -19,12 +19,18 @@ public record ReferenceHit(string File, int Row, string Column, string Value, st
 public record SemanticReport(List<Diagnostic> Diagnostics, int Rules, int Cells);
 public static class Semantics
 {
+    /// <summary>Reference-table name standing for every string catalog in the project (source/strings/*.json), matched on the given column ("Key").</summary>
+    public const string StringCatalogs = "strings";
     public static List<SemanticRule> Rules(ModProject project)
     {
         var rules = new List<SemanticRule> {
             new("superuniques", "Class", ReferenceTables: ["monstats"], ReferenceColumn: "Id"),
             new("uniqueitems", "code", ReferenceTables: ["weapons", "armor", "misc"]),
             new("setitems", "item", ReferenceTables: ["weapons", "armor", "misc"]),
+            // Item names are string keys; a renamed key with no catalog entry shows up in game as the raw key.
+            new("uniqueitems", "index", ReferenceTables: [StringCatalogs], ReferenceColumn: "Key"),
+            new("setitems", "index", ReferenceTables: [StringCatalogs], ReferenceColumn: "Key"),
+            new("sets", "name", ReferenceTables: [StringCatalogs], ReferenceColumn: "Key"),
             new("weapons", "type", ReferenceTables: ["itemtypes"], ReferenceColumn: "Code"),
             new("armor", "type", ReferenceTables: ["itemtypes"], ReferenceColumn: "Code"),
             new("misc", "type", ReferenceTables: ["itemtypes"], ReferenceColumn: "Code")
@@ -52,46 +58,61 @@ public static class Semantics
         return new(table, column, ReferenceTables: [entry.RefFile.ToLowerInvariant()], ReferenceColumn: entry.RefField ?? "code");
     }
     public static string TableFile(ModProject project, string name) => TableData.FileFor(project, "tables", name);
+    /// <summary>The files a reference-table name stands for: one table file, or every string catalog for <see cref="StringCatalogs"/> (including unsaved open catalogs).</summary>
+    public static string[] ReferenceFiles(ModProject project, string name, IReadOnlyDictionary<string, TableData>? buffers = null)
+    {
+        if (name != StringCatalogs) { var file = TableFile(project, name); return File.Exists(file) || buffers?.ContainsKey(file) == true ? [file] : []; }
+        var folder = Path.Combine(project.Root, "source", "strings");
+        return (Directory.Exists(folder) ? Directory.GetFiles(folder, "*.json") : [])
+            .Concat(buffers?.Where(b => b.Value.IsCatalog).Select(b => b.Key) ?? []).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray();
+    }
     public static List<ReferenceHit> References(ModProject project, SemanticRule rule, string value, IReadOnlyDictionary<string, TableData>? buffers = null, CancellationToken token = default)
     {
         var result = new List<ReferenceHit>();
         foreach (var name in rule.ReferenceTables ?? [])
-        {
-            token.ThrowIfCancellationRequested(); var file = TableFile(project, name);
-            if (!File.Exists(file)) continue;
-            var table = buffers?.GetValueOrDefault(file) ?? TableData.Load(file);
-            Require(table.Validate(file).Count == 0, "Reference table is invalid: " + name);
-            var column = table.Columns.FirstOrDefault(c => c == rule.ReferenceColumn) ?? table.Columns.FirstOrDefault(c => c.Equals(rule.ReferenceColumn, StringComparison.OrdinalIgnoreCase));
-            Require(column != null, $"Reference column {name}/{rule.ReferenceColumn} is missing.");
-            for (int row = 0; row < table.Records.Count; row++) if (table.Cell(row, column!) == value && value.Length > 0) result.Add(new(file, row, column!, value));
-        }
+            foreach (var file in ReferenceFiles(project, name, buffers))
+            {
+                token.ThrowIfCancellationRequested();
+                var table = buffers?.GetValueOrDefault(file) ?? TableData.Load(file);
+                Require(table.Validate(file).Count == 0, "Reference table is invalid: " + Path.GetFileNameWithoutExtension(file));
+                var column = table.Columns.FirstOrDefault(c => c == rule.ReferenceColumn) ?? table.Columns.FirstOrDefault(c => c.Equals(rule.ReferenceColumn, StringComparison.OrdinalIgnoreCase));
+                Require(column != null, $"Reference column {name}/{rule.ReferenceColumn} is missing.");
+                for (int row = 0; row < table.Records.Count; row++) if (table.Cell(row, column!) == value && value.Length > 0) result.Add(new(file, row, column!, value, table.IsCatalog ? null : table.Records[row]?["sourceId"]?.GetValue<string>(), table.IsCatalog ? table.Cell(row, "id") : null));
+            }
         return result;
     }
     // Checks shared authored values. Profile builds separately validate all runtime overrides and banks.
     public static SemanticReport Check(ModProject project, IReadOnlyDictionary<string, TableData>? buffers = null, CancellationToken token = default)
     {
         var diagnostics = new List<Diagnostic>(); int cells = 0, checkedRules = 0;
-        var tables = new Dictionary<string, TableData?>();
-        TableData? Load(string name)
+        var tables = new Dictionary<string, TableData?>(StringComparer.OrdinalIgnoreCase);
+        TableData? LoadFile(string file)
         {
-            if (tables.TryGetValue(name, out var existing)) return existing;
-            var file = TableFile(project, name); var table = buffers?.GetValueOrDefault(file) ?? (File.Exists(file) ? TableData.Load(file) : null);
+            if (tables.TryGetValue(file, out var existing)) return existing;
+            var table = buffers?.GetValueOrDefault(file) ?? (File.Exists(file) ? TableData.Load(file) : null);
             if (table != null) { var errors = table.Validate(file); diagnostics.AddRange(errors); if (errors.Count > 0) table = null; }
-            tables[name] = table; return table;
+            tables[file] = table; return table;
         }
+        TableData? Load(string name) => LoadFile(TableFile(project, name));
         try
         {
             foreach (var rule in Rules(project))
             {
                 token.ThrowIfCancellationRequested(); var file = TableFile(project, rule.Table); var table = Load(rule.Table); if (table == null) continue;
                 if (!table.Columns.Contains(rule.Column)) { diagnostics.Add(new(file, "Semantic rule references a missing column: " + rule.Column, rule.Severity)); continue; }
+                // A project without any string catalog has nothing to check keys against; the rule is skipped rather than reported as incomplete for every item table.
+                if (rule.ReferenceTables?.Contains(StringCatalogs) == true && ReferenceFiles(project, StringCatalogs, buffers).Length == 0) continue;
                 checkedRules++;
                 var keys = new HashSet<string>(StringComparer.Ordinal); bool missingTargets = false;
                 foreach (var name in rule.ReferenceTables ?? [])
                 {
-                    var target = Load(name);
-                    if (target == null || !target.Columns.Contains(rule.ReferenceColumn)) { missingTargets = true; continue; }
-                    for (int r = 0; r < target.Records.Count; r++) keys.Add(target.Cell(r, rule.ReferenceColumn));
+                    var files = ReferenceFiles(project, name, buffers); if (files.Length == 0) { missingTargets = true; continue; }
+                    foreach (var targetFile in files)
+                    {
+                        var target = LoadFile(targetFile);
+                        if (target == null || !target.Columns.Contains(rule.ReferenceColumn)) { missingTargets = true; continue; }
+                        for (int r = 0; r < target.Records.Count; r++) keys.Add(target.Cell(r, rule.ReferenceColumn));
+                    }
                 }
                 if (missingTargets) diagnostics.Add(new(file, $"Reference check for {rule.Column} is incomplete: a target table/column is absent or invalid.", "Warning", Field: rule.Column));
                 for (int row = 0; row < table.Records.Count; row++)

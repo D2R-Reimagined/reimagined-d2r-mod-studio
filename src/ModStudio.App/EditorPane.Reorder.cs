@@ -131,7 +131,7 @@ public partial class EditorPane
     private void ColumnReordered(DataGridColumn column)
     {
         if (!columnMap.TryGetValue(column, out var from)) return;
-        var display = TableGrid.Columns.OrderBy(c => c.DisplayIndex).Select(c => columnMap[c]).ToArray();
+        var display = TableGrid.Columns.OrderBy(c => c.DisplayIndex).Where(columnMap.ContainsKey).Select(c => columnMap[c]).ToArray();
         int to = ColumnMoveTarget(display, from, frozenColumns);
         if (to < 0) { RefreshColumns(); Storage.Require(false, "Unfreeze the column before moving it, and drop it next to an unfrozen column."); }
         MoveColumn(from, to);

@@ -46,7 +46,7 @@ public sealed partial class EditorPane
     {
         if (liveEditor == null || e.Property != TextBox.TextProperty || sender != liveEditor || editTargets.Length < 2 || liveValue == liveEditor.Text) return;
         liveValue = liveEditor.Text ?? "";
-        RefreshLiveCells();
+        RefreshLiveCells(editTargets);
     }
     private static readonly IBrush SelectedCellBrush = new SolidColorBrush(Color.Parse("#4A4123"));
     public IReadOnlyCollection<(int Row, int Col)> SelectedCells => selectedCells;
@@ -146,7 +146,7 @@ public sealed partial class EditorPane
             var cell = editingCell; var value = editedValue; var targets = editTargets;
             if (liveEditor != null) liveEditor.PropertyChanged -= LiveEditorChanged;
             liveEditor = null; liveValue = null; editingCell = null; editedValue = null; editTargets = [];
-            RefreshLiveCells();
+            RefreshLiveCells(targets);
             if (e.EditAction != DataGridEditAction.Commit || cell == null || value == null)
             { foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); return; }
             if (cell.Value.Row < 0 && e.Row.DataContext is RowView created && !created.IsPlaceholder) { Dispatcher.UIThread.Post(() => { Refresh(); Jump(created.Row, Document.Table!.Columns[cell.Value.Col]); }, DispatcherPriority.Background); return; }
@@ -215,7 +215,7 @@ public sealed partial class EditorPane
     private void SetCurrent(DataGrid grid, RowView item, DataGridColumn column)
     {
         settingCurrent = true;
-        try { activeGrid = grid; grid.SelectedItem = item; grid.CurrentColumn = column; selectedRow = item.Row; selectedColumn = Document.Table!.Columns[columnMap[column]]; grid.Focus(); }
+        try { activeGrid = grid; grid.SelectedItem = item; grid.CurrentColumn = column; selectedRow = item.Row; if (columnMap.TryGetValue(column, out var ci)) selectedColumn = Document.Table!.Columns[ci]; grid.Focus(); }
         finally { settingCurrent = false; }
         selection(this);
     }
@@ -230,7 +230,8 @@ public sealed partial class EditorPane
     private void SelectRectangle(DataGrid grid, (int Row, int Col) a, (int Row, int Col) b)
     {
         var rows = (grid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
-        var cols = grid.Columns.Select(c => columnMap.TryGetValue(c, out var i) ? i : -1).Where(i => i >= 0).ToList();
+        // Columns in display order across the whole table, not just the ones currently in the grid's window.
+        var cols = VisibleColumns().ToList();
         int r1 = rows.IndexOf(a.Row), r2 = rows.IndexOf(b.Row), c1 = cols.IndexOf(a.Col), c2 = cols.IndexOf(b.Col);
         selectedCells.Clear();
         if (r1 < 0 || r2 < 0 || c1 < 0 || c2 < 0) { selectedCells.Add(b); return; }
@@ -240,7 +241,7 @@ public sealed partial class EditorPane
     /// <summary>Programmatic selection used by tests and the inspector: same semantics as clicking with the given modifiers.</summary>
     public void SelectCell(int row, int col, bool control = false, bool shift = false)
     {
-        rowHeaderPress = false;
+        rowHeaderPress = false; EnsureColumnInWindow(col);
         var cell = (row, col);
         if (control) { if (!selectedCells.Remove(cell)) selectedCells.Add(cell); cellAnchor = cell; }
         else if (shift && cellAnchor != null) SelectRectangle(activeGrid, cellAnchor.Value, cell);
@@ -256,27 +257,37 @@ public sealed partial class EditorPane
         if (paintQueued) return; paintQueued = true;
         Dispatcher.UIThread.Post(() => { paintQueued = false; PaintCells(); }, DispatcherPriority.Background);
     }
+    /// <summary>Cells given a background by the last paint. Clearing just these keeps a paint proportional to the selection, not to rows × columns.</summary>
+    private readonly List<DataGridCell> paintedCells = [];
+    private DataGridCell? CellOf(DataGridColumn column, DataGridRow rowControl) =>
+        column.GetCellContent(rowControl) is Visual content ? content as DataGridCell ?? content.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault() : null;
     private void PaintCells()
     {
         if (HighlightedReferenceRow >= 0 && SelectedRow != HighlightedReferenceRow) ClearReferenceHighlight();
+        foreach (var cell in paintedCells) cell.ClearValue(DataGridCell.BackgroundProperty);
+        paintedCells.Clear();
         foreach (var grid in new[] { TableGrid, FrozenGrid })
         {
             if (!grid.IsVisible) continue;
-            foreach (var rowControl in grid.GetVisualDescendants().OfType<DataGridRow>())
+            var rows = new Dictionary<int, DataGridRow>();
+            // Recycled rows stay in the tree hidden, still bound to whatever they last showed; only visible rows are painted.
+            foreach (var rowControl in RealizedRows(grid))
             {
-                if (rowControl.DataContext is not RowView item) continue;
+                if (!rowControl.IsVisible || rowControl.DataContext is not RowView item) continue;
                 bool referenceRow = !item.IsPlaceholder && item.Row == HighlightedReferenceRow;
                 if (referenceRow) rowControl.Background = ReferenceRowBrush;
                 else rowControl.ClearValue(DataGridRow.BackgroundProperty);
-                foreach (var column in grid.Columns)
-                {
-                    if (column.GetCellContent(rowControl) is not Visual content || !columnMap.TryGetValue(column, out var col)) continue;
-                    var cell = content as DataGridCell ?? content.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault(); if (cell == null) continue;
-                    if (!item.IsPlaceholder && selectedCells.Contains((item.Row, col))) cell.Background = SelectedCellBrush;
-                    else if (referenceRow) cell.Background = ReferenceRowBrush;
-                    else cell.ClearValue(DataGridCell.BackgroundProperty);
-                }
+                if (!item.IsPlaceholder) rows[item.Row] = rowControl;
             }
+            if (rows.Count == 0) continue;
+            var columns = new Dictionary<int, DataGridColumn>();
+            foreach (var column in grid.Columns) if (columnMap.TryGetValue(column, out var col)) columns[col] = column;
+            if (HighlightedReferenceRow >= 0 && rows.TryGetValue(HighlightedReferenceRow, out var highlighted))
+                foreach (var column in columns.Values)
+                    if (CellOf(column, highlighted) is { } cell) { cell.Background = ReferenceRowBrush; paintedCells.Add(cell); }
+            foreach (var (row, col) in selectedCells)
+                if (rows.TryGetValue(row, out var rowControl) && columns.TryGetValue(col, out var column) && CellOf(column, rowControl) is { } cell)
+                { cell.Background = SelectedCellBrush; paintedCells.Add(cell); }
         }
     }
     /// <summary>Writes one value into every selected editable cell (except the cell that was just committed by the grid itself).</summary>

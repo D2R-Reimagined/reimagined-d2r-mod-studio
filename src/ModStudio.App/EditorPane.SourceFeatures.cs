@@ -1,3 +1,4 @@
+using ModStudio.Core;
 using Avalonia.Controls;
 using AvaloniaEdit.Folding;
 using Avalonia.Threading;
@@ -98,18 +99,21 @@ public sealed partial class EditorPane
             item.Click += (_, _) => { try { action(); } catch (Exception ex) { error(ex); } };
             return item;
         }
+        var guide = Item("Column guide… (F1)", () => ShowColumnGuide(name, null));
+        guide.IsEnabled = !Document.Table.IsCatalog && ColumnGuide.Find(Document.Table.Name, name) != null;
         return new ContextMenu { ItemsSource = new Control[] {
+            guide, new Separator(),
             Item((frozenColumns.Contains(index) ? "Unfreeze " : "Freeze ") + name, () => ToggleFrozenColumn(name)),
             Item((Document.LockedColumns.Contains(name) ? "Unlock " : "Lock ") + name + " against edits", () => { if (!Document.LockedColumns.Remove(name)) Document.LockedColumns.Add(name); Refresh(); }),
             new Separator(),
-            Item("Fit this column to contents", () => { widths.Remove(index); fittedWidths.Remove(index); RefreshColumns(); }),
+            Item("Fit this column to contents", () => { widths.Remove(index); fittedWidths.Remove(index); ApplyColumnWidths(); }),
             Item("Set column width…", async () => {
                 if (TopLevel.GetTopLevel(this) is not Window owner) return;
-                var input = new NumericUpDown { Minimum = 40, Maximum = 2000, Value = (decimal)TableGrid.Columns.First(c => columnMap[c] == index).ActualWidth, Increment = 10 };
+                var input = new NumericUpDown { Minimum = 40, Maximum = 2000, Value = (decimal)(TableGrid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var ci) && ci == index)?.ActualWidth ?? FitColumn(index)), Increment = 10 };
                 var apply = new Button { Content = "Apply width" };
                 var dialog = new Window { Title = "Column width: " + name, Width = 330, Height = 170, WindowStartupLocation = WindowStartupLocation.CenterOwner };
                 dialog.Content = new StackPanel { Margin = new(18), Spacing = 10, Children = { input, apply } };
-                apply.Click += (_, _) => { widths[index] = new((double)(input.Value ?? 80)); RefreshColumns(); dialog.Close(); };
+                apply.Click += (_, _) => { widths[index] = new((double)(input.Value ?? 80)); ApplyColumnWidths(); dialog.Close(); };
                 await dialog.ShowDialog(owner);
             }),
             Item("Clear sorting", () => { sortColumn = null; Refresh(); })

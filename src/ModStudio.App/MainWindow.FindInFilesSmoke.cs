@@ -38,7 +38,7 @@ public partial class MainWindow
         window.Results.SelectedItem = window.Result.Hits.Single(h => h.File == tallFile);
         await Wait(() => window.PreviewGrid.IsVisible && window.PreviewGrid.ItemsSource is PreviewRow[] { Length: 80 }, "Tall table preview did not show.");
         await Task.Delay(200); window.UpdateLayout();
-        var tallRow = window.PreviewGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is PreviewRow { Row: 45 });
+        var tallRow = window.PreviewGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.IsVisible && r.DataContext is PreviewRow { Row: 45 });
         var tallY = tallRow?.TranslatePoint(new Point(0, 0), window.PreviewGrid)?.Y ?? -1;
         Require(tallRow != null && tallY > window.PreviewGrid.Bounds.Height * 0.3 && tallY < window.PreviewGrid.Bounds.Height * 0.7, $"Hit row is not centered in the preview: y={tallY:F0} of {window.PreviewGrid.Bounds.Height:F0}.");
 

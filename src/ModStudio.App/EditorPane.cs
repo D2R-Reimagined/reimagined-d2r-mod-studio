@@ -21,6 +21,10 @@ public sealed class RowView(Document document, int row, Action<Exception> error,
     /// <summary>Table row index; -1 while this is the blank "type here to add a row" line at the bottom.</summary>
     public int Row { get; private set; } = row;
     public bool IsPlaceholder => Row < 0;
+    /// <summary>The record this view was created for. Rows are matched by record when the view is updated in place, since indexes shift with every insertion.</summary>
+    public System.Text.Json.Nodes.JsonNode? Record { get; } = row >= 0 ? document.Table?.Records[row] : null;
+    /// <summary>Points the view at the slot its record now occupies after rows were inserted or removed above it.</summary>
+    internal void Renumber(int row) => Row = row;
     public event PropertyChangedEventHandler? PropertyChanged;
     public void RefreshValues()
     {
@@ -84,7 +88,6 @@ public sealed partial class EditorPane : Grid
     private readonly Func<string, Document?>? findOpenDocument;
     private DataGrid activeGrid;
     private bool syncing, refreshing, synchronizingBars, synchronizingWidths;
-    private int offset;
     private string columnSignature = "";
     private int viewVersion;
     private int selectedRow;
@@ -92,7 +95,10 @@ public sealed partial class EditorPane : Grid
     private bool acceptingInput;
     private bool descending;
     private string? sortColumn;
-    private ScrollBar? mainBar, frozenBar;
+    private ScrollBar? mainBar, frozenBar, verticalBar;
+    private readonly Dictionary<DataGrid, Panel> rowPanels = [];
+    /// <summary>Realized rows of a grid, straight from its rows presenter: walking the whole visual tree would touch every cell of every row.</summary>
+    private IEnumerable<DataGridRow> RealizedRows(DataGrid grid) => rowPanels.TryGetValue(grid, out var panel) ? panel.Children.OfType<DataGridRow>() : grid.GetVisualDescendants().OfType<DataGridRow>();
     public Markdown.Avalonia.MarkdownScrollViewer? MarkdownPreview { get; private set; }
     private Border? markdownHost;
     public void ShowMarkdownPreview()
@@ -105,6 +111,7 @@ public sealed partial class EditorPane : Grid
     public string SelectedColumn => Document.Table?.Columns.Contains(selectedColumn) == true ? selectedColumn : Document.Table?.Columns.FirstOrDefault() ?? "";
     private static DataGrid CreateGrid() => new()
     {
+        CellTheme = Application.Current?.TryFindResource("TableCellTheme", out var theme) == true ? theme as Avalonia.Styling.ControlTheme : null,
         AutoGenerateColumns = false, CanUserReorderColumns = false, CanUserSortColumns = true, CanUserResizeColumns = true,
         RowHeight = 30, RowHeaderWidth = 60, HeadersVisibility = DataGridHeadersVisibility.All, SelectionMode = DataGridSelectionMode.Extended, IsReadOnly = false,
         HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
@@ -123,9 +130,8 @@ public sealed partial class EditorPane : Grid
         Button("Source", () => { syncing = true; Source.Text = document.Text.TrimStart('\uFEFF'); syncing = false; Source.IsVisible = true; tableHost.IsVisible = false; UpdateNote(); });
         Button("Apply source", () => { document.ApplySource(); Refresh(); });
         Button("Undo", Undo); Button("Redo", Redo);
-        Button("◀ columns", () => { offset = Math.Max(0, offset - 23); RefreshColumns(); });
-        Button("columns ▶", () => { if (offset + 24 < (document.Table?.Columns.Length ?? 0)) offset += 23; RefreshColumns(); });
-        Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); RefreshColumns(); });
+        Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); ApplyColumnWidths(); });
+        Button("Column guide", () => ShowColumnGuide(SelectedColumn, null));
         var view = EditorToolbarIcons.Create("Freeze / Lock"); var menu = new ContextMenu();
         MenuItem Item(string title, Action action) { var item = new MenuItem { Header = title }; item.Click += (_, _) => { try { action(); } catch (Exception e) { error(e); } }; return item; }
         menu.ItemsSource = new Control[] {
@@ -139,6 +145,7 @@ public sealed partial class EditorPane : Grid
         view.Click += (_, _) => menu.Open(view); toolbar.Children.Add(view);
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
         InitializeSkillClassDropdown(toolbar);
+        InitializeItemCardToggle(toolbar);
         filter.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } e.Handled = true; } };
         Children.Add(toolbar);
         FrozenGrid.IsVisible = false; FrozenGrid.HeadersVisibility = DataGridHeadersVisibility.All;
@@ -209,6 +216,7 @@ public sealed partial class EditorPane : Grid
             if (Document.Table?.Name is not ("uniqueitems" or "setitems")) return;
             var rowControl = (e.Source as Visual)?.GetSelfAndVisualAncestors().OfType<DataGridRow>().FirstOrDefault();
             int row = (rowControl?.DataContext as RowView)?.Row ?? -1;
+            if (rowControl != null) HoverPosition = e.GetPosition(rowControl);
             if (row == hoveredRow && rowControl == hoveredItem) return;
             hoveredRow = row; hoveredItem = rowControl; ItemHovered?.Invoke(this, row, rowControl);
         };
@@ -217,11 +225,16 @@ public sealed partial class EditorPane : Grid
         DetachedFromVisualTree += (_, _) => { HideCellTip(); hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); };
         // The document host hides rather than detaches panes on a tab switch.
         PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !IsVisible) { HideCellTip(); hoveredRow = -1; hoveredItem = null; ItemHovered?.Invoke(this, -1, null); } };
-        grid.LoadingRow += (_, e) => { if (e.Row.DataContext is RowView row) e.Row.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
+        grid.LoadingRow += (_, e) => { AttachRowProxy(e.Row); if (grid == TableGrid) QueueWarmup(e.Row); if (e.Row.DataContext is RowView row) e.Row.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row; };
         grid.TemplateApplied += (_, e) =>
         {
             if (e.NameScope.Find<ScrollBar>("PART_VerticalScrollbar") is { } vertical)
+            {
                 vertical.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) HideCellTip(); };
+                if (grid == TableGrid) verticalBar = vertical;
+            }
+            // The template lets the rows presenter run underneath the vertical scrollbar, which then covers the last visible cells.
+            if (e.NameScope.Find<Panel>("PART_RowsPresenter") is { } presenter) { SetColumnSpan(presenter, 2); rowPanels[grid] = presenter; }
             var bar = e.NameScope.Find<ScrollBar>("PART_HorizontalScrollbar"); if (bar == null) return;
             bar.AllowAutoHide = false; bar.Height = 22; bar.MinHeight = 22;
             if (grid == FrozenGrid) { bar.Height = 0; bar.MinHeight = 0; bar.Opacity = 0; bar.IsHitTestVisible = false; }
@@ -232,7 +245,8 @@ public sealed partial class EditorPane : Grid
             }
             if (e.NameScope.Find<Control>("PART_RowsPresenter") is { } rows) SetRowSpan(rows, 1);
             if (grid == TableGrid) mainBar = bar; else frozenBar = bar;
-            bar.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) { HideCellTip(); SyncBars(bar); } };
+            bar.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) { HideCellTip(); SyncBars(bar); if (grid == TableGrid) QueueWindowUpdate(); } };
+            if (grid == TableGrid) grid.SizeChanged += (_, _) => QueueWindowUpdate();
         };
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
@@ -274,11 +288,12 @@ public sealed partial class EditorPane : Grid
             {
                 e.Handled = true; RequestCellReference(SelectedRow, Array.IndexOf(table.Columns, SelectedColumn), grid); return;
             }
+            if (e.Key == Key.F1 && e.KeyModifiers == KeyModifiers.None && Document.Table != null) { e.Handled = true; ShowColumnGuide(SelectedColumn, null); return; }
             BeginInput(grid);
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         grid.GotFocus += (_, e) => { if (e.NavigationMethod is NavigationMethod.Tab or NavigationMethod.Directional) BeginInput(grid); };
         grid.SelectionChanged += (_, _) => CaptureSelection(grid);
-        grid.CurrentCellChanged += (_, _) => CaptureSelection(grid);
+        grid.CurrentCellChanged += (_, _) => { if (!refreshing && LeaveSpacer(grid)) return; CaptureSelection(grid); };
         grid.Sorting += async (_, e) => { e.Handled = true; if (columnMap.TryGetValue(e.Column, out var i)) { try { await SortAsync(Document.Table!.Columns[i]); } catch (Exception ex) { error(ex); } } };
         grid.KeyDown += async (_, e) =>
         {
@@ -373,7 +388,8 @@ public sealed partial class EditorPane : Grid
         synchronizingBars = true;
         try { (source == mainBar ? frozenBar : mainBar).Value = source.Value; } finally { synchronizingBars = false; }
     }
-    public int[] VisibleColumns() => Document.Table == null ? [] : frozenColumns.Where(i => i < Document.Table.Columns.Length).Concat(Enumerable.Range(offset, Math.Min(24, Math.Max(0, Document.Table.Columns.Length - offset)))).Distinct().ToArray();
+    /// <summary>Every table column in display order: frozen columns first, then the rest in schema order.</summary>
+    public int[] VisibleColumns() => Document.Table == null ? [] : frozenColumns.Where(i => i < Document.Table.Columns.Length).Concat(Enumerable.Range(0, Document.Table.Columns.Length)).Distinct().ToArray();
     private string Header(int column, bool sortMark = true)
     {
         var name = Document.Table!.Columns[column];
@@ -410,53 +426,14 @@ public sealed partial class EditorPane : Grid
         }
         return fittedWidths[index] = Math.Ceiling(width);
     }
-    public void RefreshColumns()
-    {
-        if (Document.Table == null) return;
-        HideCellTip();
-        bool previous = refreshing; refreshing = true; var selectedColumn = SelectedColumn;
-        try
-        {
-            columnMap.Clear(); TableGrid.CanUserReorderColumns = !Document.Table.IsCatalog;
-            foreach (var grid in new[] { TableGrid, FrozenGrid })
-            {
-                grid.FrozenColumnCount = 0; grid.Columns.Clear();
-                foreach (var i in VisibleColumns())
-                {
-                    var column = new LiveCellColumn(this, i) { Header = Header(i), Binding = new Binding($"[{i}]") { Mode = BindingMode.TwoWay }, MinWidth = 40, CanUserResize = true, Width = widths.TryGetValue(i, out var savedWidth) ? savedWidth : new(FitColumn(i)), IsReadOnly = Document.LockedColumns.Contains(Document.Table.Columns[i]) };
-                    column.HeaderTemplate = new FuncDataTemplate<object>((_, _) => {
-                        var label = new TextBlock { Text = Header(i, sortMark: false), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-                        // Documented columns show the data-guide card; others keep their complete name.
-                        ColumnGuideTooltip.Attach(label, Document.Table, Document.Table.Columns[i], Document.Table.Columns[i]);
-                        if (Document.Table.Columns[i] != sortColumn) return label;
-                        // The sort chevron sits at the far edge so a narrow column trims the name, never the indicator.
-                        var chevron = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(descending ? "M0,0 L3.5,4 L7,0" : "M0,4 L3.5,0 L7,4"), Stroke = new SolidColorBrush(Color.Parse("#D8BC86")), StrokeThickness = 1.5, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round, Width = 7, Height = 4, Stretch = Stretch.None, Margin = new Thickness(4, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
-                        DockPanel.SetDock(chevron, Dock.Right);
-                        return new DockPanel { Children = { chevron, label } };
-                    });
-                    columnMap[column] = i; grid.Columns.Add(column);
-                    column.PropertyChanged += (_, e) =>
-                    {
-                        if (e.Property.Name != "Width" || synchronizingWidths) return; HideCellTip(); synchronizingWidths = true;
-                        try { widths[i] = column.Width; foreach (var pair in columnMap.Where(p => p.Value == i && p.Key != column)) pair.Key.Width = column.Width; }
-                        finally { synchronizingWidths = false; }
-                    };
-                }
-                grid.FrozenColumnCount = Math.Min(frozenColumns.Count, grid.Columns.Count);
-                if (grid.SelectedItem != null) grid.CurrentColumn = grid.Columns.FirstOrDefault(c => Document.Table.Columns[columnMap[c]] == selectedColumn) ?? grid.Columns.FirstOrDefault();
-            }
-            columnsLabel.Text = $"{offset + 1}–{Math.Min(offset + 24, Document.Table.Columns.Length)} / {Document.Table.Columns.Length} columns";
-            columnSignature = ColumnSignature();
-        }
-        finally { refreshing = previous; }
-        UpdateNote();
-    }
     /// <summary>
-    /// Rebuilds the view from the document. Column controls are rebuilt only when something about them changed (the table,
-    /// the visible window, headers, locks): recreating two dozen DataGrid columns regenerates every realized cell, which is
-    /// the slowest part of a refresh and pointless after a change that only touched rows.
+    /// Rebuilds the view from the document. Column controls are rebuilt only when the set of columns changed (a re-parsed
+    /// table with different columns, a frozen column): recreating hundreds of DataGrid columns regenerates every realized
+    /// cell, which is the slowest part of a refresh, resets the horizontal scroll, and is pointless after a change that only
+    /// touched rows or headers. The vertical scroll position is kept too, unless <paramref name="keepScroll"/> is false
+    /// (a new filter) or <paramref name="scrollToSelection"/> asks for the selected cell to be brought on screen.
     /// </summary>
-    public void Refresh(bool scrollToSelection = false)
+    public void Refresh(bool scrollToSelection = false, bool keepScroll = true)
     {
         viewVersion++;
         int selected = SelectedRow; string column = SelectedColumn; refreshing = true;
@@ -469,7 +446,8 @@ public sealed partial class EditorPane : Grid
             {
                 frozenRows.RemoveAll(i => i >= Document.Table.Records.Count); frozenColumns.RemoveAll(i => i >= Document.Table.Columns.Length);
                 Document.LockedRows.RemoveWhere(i => i < 0 || i >= Document.Table.Records.Count); Document.LockedColumns.RemoveWhere(c => !Document.Table.Columns.Contains(c));
-                if (ColumnSignature() != columnSignature) RefreshColumns(); ApplyView(selected, column, scrollToSelection);
+                if (ColumnSignature() != columnSignature) RefreshColumns(); else UpdateColumnHeaders();
+                ApplyView(selected, column, scrollToSelection, keepScroll);
                 if (selectedCells.Count == 0 && selectedRow >= 0 && Array.IndexOf(Document.Table.Columns, SelectedColumn) is var ci and >= 0) { selectedCells.Add((selectedRow, ci)); cellAnchor = (selectedRow, ci); }
                 QueuePaint();
             }
@@ -477,18 +455,59 @@ public sealed partial class EditorPane : Grid
         finally { refreshing = false; }
         UpdateNote(); selection(this);
     }
-    /// <summary>Everything RefreshColumns bakes into the column controls; equal signatures mean the existing columns can stay.</summary>
+    /// <summary>The column set RefreshColumns bakes into the column controls; equal signatures mean the existing columns can stay (headers are updated in place).</summary>
     private string ColumnSignature() => Document.Table == null ? "" :
-        $"{RuntimeHelpers.GetHashCode(Document.Table)}|{Document.Table.IsCatalog}|{string.Join(',', VisibleColumns().Select(i => $"{i}:{Header(i)}:{Document.LockedColumns.Contains(Document.Table.Columns[i])}"))}";
-    private void ApplyView(int selected, string column, bool scroll = false)
+        $"{Document.Table.IsCatalog}|{string.Join(',', frozenColumns)}|{string.Join(',', VisibleColumns().Select(i => $"{i}:{Document.Table.Columns[i]}"))}";
+    /// <summary>The row shown at the top of the scrolling grid and how far it is scrolled past the edge, so a rebuilt view can land where it was.</summary>
+    private (int Row, double Remainder)? TopOfView()
+    {
+        if (verticalBar == null || TableGrid.ItemsSource is not IList<RowView> rows || rows.Count == 0 || TableGrid.RowHeight <= 0) return null;
+        double offset = verticalBar.Value; if (offset <= 0) return null;
+        int index = Math.Clamp((int)(offset / TableGrid.RowHeight), 0, rows.Count - 1);
+        return (rows[index].Row, offset - index * TableGrid.RowHeight);
+    }
+    /// <summary>
+    /// Scrolls the rebuilt grid back to the row that was at the top. Runs synchronously right after the items were replaced:
+    /// a deferred restore could land before or after the grid's own measure depending on dispatcher timing, and anything queued
+    /// behind it (a ScrollIntoView for the selection) must see the final position.
+    /// </summary>
+    private void RestoreTopOfView((int Row, double Remainder) top)
+    {
+        if (verticalBar == null || TableGrid.ItemsSource is not IList<RowView> rows || rows.Count == 0 || !TableGrid.IsEffectivelyVisible) return;
+        // The grid measures the new items lazily; until it has, the scrollbar range is stale and a move would be clamped away.
+        TableGrid.UpdateLayout();
+        if (verticalBar.Maximum <= 0) return;
+        // The row itself may have been deleted: fall back to the row now occupying its place in the list.
+        int index = -1, next = -1;
+        for (int k = 0; k < rows.Count; k++) { if (rows[k].Row == top.Row) { index = k; break; } if (next < 0 && rows[k].Row > top.Row) next = k; }
+        if (index < 0) index = next >= 0 ? next : rows.Count - 1;
+        double target = Math.Clamp(index * TableGrid.RowHeight + top.Remainder, 0, verticalBar.Maximum);
+        if (Math.Abs(verticalBar.Value - target) < 0.5) return;
+        // The grid only follows its scrollbar through the bar's Scroll notification, which a value change alone does not raise.
+        // PageDown with a zero page raises it without moving the value. The grid applies the move during its next rows measure.
+        double page = verticalBar.LargeChange;
+        try { verticalBar.LargeChange = 0; verticalBar.Value = target; verticalBar.PageDown(); }
+        finally { verticalBar.LargeChange = page; }
+        TableGrid.UpdateLayout();
+    }
+    private void ApplyView(int selected, string column, bool scroll = false, bool keepScroll = true)
     {
         var table = Document.Table!; var term = filter.Text ?? "";
+        var top = keepScroll ? TopOfView() : null;
         var classFilter = SelectedSkillClassFilter();
         IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && SkillClassMatches(i, classFilter) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
         if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
-        // A blank line at the bottom creates a new row as soon as something is typed into it.
-        var views = rows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit));
-        TableGrid.ItemsSource = views.Append(new RowView(Document, -1, error, MaterializePlaceholder)).ToArray();
+        RowView View(int i) => new(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit);
+        var desired = rows.ToList();
+        // Rows are updated in place whenever their order survived: the grid then keeps every realized row and its scroll
+        // position, and an insertion or deletion costs one row instead of re-creating every cell of every visible row.
+        if (!UpdateRowsInPlace(desired, View))
+        {
+            // A blank line at the bottom creates a new row as soon as something is typed into it.
+            TableGrid.ItemsSource = new System.Collections.ObjectModel.ObservableCollection<RowView>(desired.Select(View).Append(new RowView(Document, -1, error, MaterializePlaceholder)));
+            // Replacing the items resets the grid to the top; put the previous top row back first, then the selection can still be scrolled into view on request.
+            if (top != null) RestoreTopOfView(top.Value);
+        }
         var visibleFrozenRows = frozenRows.Where(i => SkillClassMatches(i, classFilter)).ToArray();
         FrozenGrid.ItemsSource = visibleFrozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
         FrozenGrid.IsVisible = visibleFrozenRows.Length > 0; FrozenGrid.Height = visibleFrozenRows.Length * 30 + 34;
@@ -497,9 +516,46 @@ public sealed partial class EditorPane : Grid
         activeGrid.SelectedItem = ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault(r => r.Row == selected);
         activeGrid.SelectedItem ??= ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault();
         selectedRow = (activeGrid.SelectedItem as RowView)?.Row ?? -1; selectedColumn = column;
-        if (activeGrid.SelectedItem != null) activeGrid.CurrentColumn = activeGrid.Columns.FirstOrDefault(c => table.Columns[columnMap[c]] == column) ?? activeGrid.Columns.FirstOrDefault();
+        if (activeGrid.SelectedItem != null) activeGrid.CurrentColumn = activeGrid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var ci) && table.Columns[ci] == column) ?? activeGrid.Columns.FirstOrDefault(c => columnMap.ContainsKey(c));
         RestoreAfterLayout(activeGrid, activeGrid.SelectedItem as RowView, activeGrid.CurrentColumn, scroll);
         if (mainBar != null) Dispatcher.UIThread.Post(() => SyncBars(mainBar), DispatcherPriority.Background);
+    }
+    /// <summary>
+    /// Reconciles the scrolling grid's rows with the rows the view should now show, matching rows by record so an
+    /// insertion or deletion above a row does not make it a different row. Succeeds when the surviving rows are still in
+    /// the same relative order (edits, undo, inserts, deletes, the placeholder turning into a row); a sort, filter, move
+    /// or re-parsed table returns false so the caller rebuilds the list.
+    /// </summary>
+    private bool UpdateRowsInPlace(List<int> desired, Func<int, RowView> view)
+    {
+        var table = Document.Table!;
+        // The list always ends with the placeholder line; once it has been typed into it is a real row and the list is rebuilt to get a fresh one.
+        if (TableGrid.ItemsSource is not System.Collections.ObjectModel.ObservableCollection<RowView> current || current.Count == 0 || !current[^1].IsPlaceholder) return false;
+        var records = new Dictionary<System.Text.Json.Nodes.JsonNode, int>(ReferenceEqualityComparer.Instance);
+        for (int k = 0; k < desired.Count; k++) { var record = table.Records[desired[k]]; if (record == null || !records.TryAdd(record, k)) return false; }
+        // Surviving rows must keep their relative order; a reordering is a rebuild.
+        int last = -1;
+        foreach (var item in current) { if (item.Record == null) continue; if (records.TryGetValue(item.Record, out var at)) { if (at < last) return false; last = at; } }
+        if (current.Count == desired.Count + 1 && current.Take(desired.Count).Select(r => r.Record).SequenceEqual(desired.Select(i => table.Records[i]!)))
+        {
+            // Same rows in the same slots: only values (and lock markers in the headers) can have changed.
+            for (int k = 0; k < desired.Count; k++) { current[k].Renumber(desired[k]); current[k].RefreshValues(); }
+            RefreshRowHeaders();
+            return true;
+        }
+        for (int k = current.Count - 2; k >= 0; k--) if (current[k].Record is not { } record || !records.ContainsKey(record)) current.RemoveAt(k);
+        for (int k = 0; k < desired.Count; k++)
+            if (k >= current.Count - 1 || !ReferenceEquals(current[k].Record, table.Records[desired[k]])) current.Insert(k, view(desired[k]));
+        if (current.Count != desired.Count + 1) { return false; }
+        for (int k = 0; k < desired.Count; k++) { current[k].Renumber(desired[k]); current[k].RefreshValues(); }
+        RefreshRowHeaders();
+        return true;
+    }
+    /// <summary>Row numbers in the headers of realized rows follow their views after in-place renumbering.</summary>
+    private void RefreshRowHeaders()
+    {
+        foreach (var rowControl in RealizedRows(TableGrid))
+            if (rowControl.IsVisible && rowControl.DataContext is RowView row) rowControl.Header = row.IsPlaceholder ? "＋" : (Document.LockedRows.Contains(row.Row) ? "L " : "") + row.Row;
     }
     private void RestoreAfterLayout(DataGrid grid, RowView? item, DataGridColumn? column, bool scroll)
     {
@@ -528,7 +584,7 @@ public sealed partial class EditorPane : Grid
             (sortColumn == null ? " · source order" : $" · {sortColumn} {(descending ? "▼ descending" : "▲ ascending")}") +
             (Source.IsVisible && Document.HasEditLocks ? " · Unlock edits to change Source" : "");
     }
-    public Task FilterAsync() { Refresh(); return Task.CompletedTask; }
+    public Task FilterAsync() { Refresh(keepScroll: false); return Task.CompletedTask; }
     public void RefreshRowValues(int row) => RefreshRowValues([row]);
     public void RefreshRowValues(IEnumerable<int> rows)
     {
@@ -557,13 +613,13 @@ public sealed partial class EditorPane : Grid
     }
     /// <summary>
     /// Brings a cell on screen and makes it the selected cell without moving keyboard focus, so the Row Editor can show where
-    /// the field it is editing lives in the table. Columns outside the current window scroll the window; filtered-out rows stay put.
+    /// the field it is editing lives in the table. Filtered-out rows stay put.
     /// </summary>
     public void Reveal(int row, string column)
     {
         var table = Document.Table; if (table == null || Document.PendingSource || !tableHost.IsVisible || row < 0 || row >= table.Records.Count) return;
         int index = table.ColumnIndex(column); if (index < 0) return;
-        if (!VisibleColumns().Contains(index)) { offset = index > 0 ? ((index - 1) / 23) * 23 : 0; RefreshColumns(); }
+        EnsureColumnInWindow(index);
         var grid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
         var item = (grid.ItemsSource as IEnumerable<RowView>)?.FirstOrDefault(r => r.Row == row); if (item == null) return;
         var target = grid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var i) && i == index); if (target == null) return;
@@ -601,7 +657,9 @@ public sealed partial class EditorPane : Grid
         ClearReferenceHighlight();
         Source.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
         if (skillClassDropdown.IsVisible) skillClassDropdown.SelectedIndex = 0;
-        var i = Array.IndexOf(Document.Table.Columns, column); offset = i > 0 ? ((i - 1) / 23) * 23 : 0; Refresh(); viewVersion++;
+        var i = Array.IndexOf(Document.Table.Columns, column);
+        // The refresh keeps the top of view and its own deferred selection restore is cancelled by the version bump; the jump then scrolls to its target.
+        Refresh(); viewVersion++; if (i >= 0) EnsureColumnInWindow(i);
         activeGrid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
         var item = ((IEnumerable<RowView>)activeGrid.ItemsSource!).FirstOrDefault(r => r.Row == row);
         if (item != null)
@@ -609,7 +667,7 @@ public sealed partial class EditorPane : Grid
             selectedRow = row; selectedColumn = i >= 0 ? column : Document.Table.Columns.FirstOrDefault() ?? "";
             selectedCells.Clear(); selectedCells.Add((row, Math.Max(i, 0))); cellAnchor = (row, Math.Max(i, 0)); QueuePaint();
             activeGrid.SelectedItem = item;
-            var col = activeGrid.Columns.FirstOrDefault(c => Document.Table.Columns[columnMap[c]] == column) ?? activeGrid.Columns.FirstOrDefault();
+            var col = activeGrid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var ci) && Document.Table.Columns[ci] == column) ?? activeGrid.Columns.FirstOrDefault(c => columnMap.ContainsKey(c));
             if (col != null) { activeGrid.CurrentColumn = col; RestoreAfterLayout(activeGrid, item, col, true); }
         }
         selection(this);
@@ -635,8 +693,8 @@ public sealed partial class EditorPane : Grid
             PasteRows(block);
             return;
         }
-        // A copied whole row spans the table, not the current 24-column page. Adding a row selects a cell,
-        // so recognize a table-width block there too and paste from column zero across every page.
+        // A copied whole row is pasted from column zero, whichever cell is selected: adding a row selects a cell,
+        // so a table-width block there means "fill this row".
         if (block.All(r => r.Length == Document.Table.Columns.Length) && SelectedRow >= 0)
         {
             PasteRows(block, fromCell: true);
@@ -644,9 +702,9 @@ public sealed partial class EditorPane : Grid
         }
         var displayed = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
         int start = SelectedRow < 0 ? displayed.Count : displayed.IndexOf(SelectedRow); Storage.Require(start >= 0, "Select the cell to paste at.");
-        var columns = VisibleColumns(); int firstColumn = Math.Max(0, activeGrid.CurrentColumn?.DisplayIndex ?? 0);
+        var columns = VisibleColumns(); int firstColumn = Math.Max(0, Array.IndexOf(columns, Document.Table.ColumnIndex(SelectedColumn)));
         int width = block.Max(r => r.Length);
-        Storage.Require(firstColumn + width <= columns.Length, $"Pasting {width} cell(s) at {Document.Table.Columns[columns[firstColumn]]} runs past the displayed columns. Copy a single cell, or paste further left.");
+        Storage.Require(firstColumn + width <= columns.Length, $"Pasting {width} cell(s) at {Document.Table.Columns[columns[firstColumn]]} runs past the last column. Copy fewer cells, or paste further left.");
         int missing = start + block.Length - displayed.Count;
         if (missing > 0)
         {

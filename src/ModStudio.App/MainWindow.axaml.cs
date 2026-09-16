@@ -47,7 +47,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
         catalogWarningTimer.Tick += async (_, _) => { catalogWarningTimer.Stop(); if (project is { } current) await RefreshCatalogIdWarningsAsync(current); };
         // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
         ToolbarActions.PropertyChanged += (_, e) =>
@@ -101,8 +101,20 @@ public partial class MainWindow : Window
         StopButton.Content = operation != null ? "■ Cancel" : "■ Stop";
         if (runningBuild != null && !controller.Running && operation == null) RunState.Text = "Last game: " + runningBuild + " · exited";
     }
-    private void Log(string text) => Dispatcher.UIThread.Post(() => { Output.Text = ((Output.Text ?? "") + text + Environment.NewLine); if (Output.Text.Length > 60000) Output.Text = Output.Text[^50000..]; Status.Text = text; });
-    private void ShowError(Exception e) { if (Program.Arguments.Contains("--smoke")) Console.Error.WriteLine(e); Status.Text = e.Message; Output.Text += e.Message + Environment.NewLine; ShowBottomTab(1); }
+    private bool logging;
+    private void Log(string text) => Dispatcher.UIThread.Post(() => { AppendLog(text); logging = true; try { Status.Text = text; } finally { logging = false; } });
+    private void AppendLog(string text)
+    {
+        Output.Text = (Output.Text ?? "") + DateTime.Now.ToString("HH:mm:ss") + "  " + text + Environment.NewLine;
+        if (Output.Text.Length > 60000) Output.Text = Output.Text[^50000..];
+    }
+    /// <summary>Every status-bar message is also kept in the Log tab, so a message that was only glimpsed can be read back later; clicking the status bar opens that tab.</summary>
+    private void InitializeLog()
+    {
+        Status.PropertyChanged += (_, e) => { if (e.Property == TextBlock.TextProperty && !logging && Status.Text is { Length: > 0 } text) AppendLog(text); };
+        Status.PointerPressed += (_, _) => ShowBottomTab(1);
+    }
+    private void ShowError(Exception e) { if (Program.Arguments.Contains("--smoke")) Console.Error.WriteLine(e); logging = true; try { Status.Text = e.Message; } finally { logging = false; } AppendLog("Error: " + e.Message); ShowBottomTab(1); }
     private async Task<string?> PickFolderAsync(string title)
     {
         var result = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false }); return result.FirstOrDefault()?.TryGetLocalPath();
@@ -421,7 +433,7 @@ public partial class MainWindow : Window
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane, FindOpenDocument);
         pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
-        pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) RequestItemPreview(sender, row, anchor); else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
+        pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) { if (EditorPane.ItemHoverCards) RequestItemPreview(sender, row, anchor, sender.HoverPosition); } else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview, activate); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
         var menu = new ContextMenu(); var reload = new MenuItem { Header = "Reload from disk…" }; var close = new MenuItem { Header = "Close document…" }; menu.ItemsSource = new[] { CreateOpenLocationItem(file), reload, close }; tab.ContextMenu = menu;
@@ -509,7 +521,8 @@ public partial class MainWindow : Window
     private async void SaveAllClicked(object? sender, RoutedEventArgs e) => await SaveAllAsync();
     private void SavePane(EditorPane pane)
     {
-        pane.Document.ApplySource(); pane.Document.Save();
+        // Save applies pending raw source itself; re-parsing an already applied table would only replace the model the grid is showing.
+        pane.Document.Save();
         var recovery = RecoveryFile(pane.Document); if (File.Exists(recovery)) File.Delete(recovery);
         pane.Refresh();
     }
@@ -519,7 +532,7 @@ public partial class MainWindow : Window
         {
             foreach (var pane in tabs.Select(t => t.Content).OfType<EditorPane>())
             {
-                if (!pane.Document.IsDirty) continue; pane.Document.ApplySource(); pane.Document.Save(); var recovery = RecoveryFile(pane.Document); if (File.Exists(recovery)) File.Delete(recovery); pane.Refresh();
+                if (!pane.Document.IsDirty) continue; pane.Document.Save(); var recovery = RecoveryFile(pane.Document); if (File.Exists(recovery)) File.Delete(recovery); pane.Refresh();
             }
             Status.Text = "All documents saved."; await Task.CompletedTask; return true;
         }
@@ -624,7 +637,10 @@ public partial class MainWindow : Window
                 var build = await controller.ExecuteAsync(project!, Profile, settings, deploy, play, operation.Token, Log, ReviewDeploymentOwnershipAsync);
                 buildDiagnostics.AddRange(build.Diagnostics ?? []); RefreshStatus();
                 if (play) { runningBuild = build.Id[..8]; RunState.Text = "Game: " + runningBuild + (revisions.Any(p => p.Key.Revision != p.Value) ? " · newer edits" : " · " + build.Profile); }
-                Log($"Build {build.Id[..8]} complete. Output: {build.Output}");
+                var warnings = build.Diagnostics ?? [];
+                foreach (var warning in warnings.Take(25)) AppendLog($"  {warning.Severity}: {Path.GetFileName(warning.File)}{(warning.Row >= 0 ? $" row {warning.Row}" : "")}{(warning.Field.Length > 0 ? $" {warning.Field}" : "")}: {warning.Message}");
+                if (warnings.Count > 25) AppendLog($"  … {warnings.Count - 25} more in the Problems tab");
+                Log($"Build {build.Id[..8]} complete{(warnings.Count > 0 ? $" with {warnings.Count} warning(s) — see the Problems tab" : "")}. Output: {build.Output}");
             }
             finally { operation.Dispose(); operation = null; }
         }
@@ -681,11 +697,11 @@ public partial class MainWindow : Window
             {
                 var pane = await OpenDocumentAsync(Path.Combine(root, "source/strings/cell-tip.json"));
                 Require(pane != null, "Cell tooltip smoke needs a catalog.");
-                pane!.TableGrid.Columns[2].Width = new DataGridLength(100);
+                pane!.GridColumnOf(pane.TableGrid, 2)!.Width = new DataGridLength(100);
                 DataGridCell? Cell(int rowIndex)
                 {
-                    var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView view && view.Row == rowIndex);
-                    return row == null ? null : pane.TableGrid.Columns[2].GetCellContent(row)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                    var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.IsVisible && r.DataContext is RowView view && view.Row == rowIndex);
+                    return row == null ? null : pane.GridColumnOf(pane.TableGrid, 2)!.GetCellContent(row)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
                 }
                 var timeout = Stopwatch.StartNew();
                 while (timeout.Elapsed < TimeSpan.FromSeconds(10) && (Cell(0)?.Bounds.Width ?? 0) == 0)
@@ -705,13 +721,13 @@ public partial class MainWindow : Window
                 var shortPoint = shortCell!.TranslatePoint(new Point(22, shortCell!.Bounds.Height / 2), this)!.Value;
                 this.MouseMove(shortPoint, RawInputModifiers.None);
                 Require(!tip.IsVisible, "A fully visible cell showed the tooltip.");
-                pane.TableGrid.Columns[2].Width = new DataGridLength(220); UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                pane.GridColumnOf(pane.TableGrid, 2)!.Width = new DataGridLength(220); UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
                 this.MouseMove(longPoint, RawInputModifiers.None);
                 Require(!tip.IsVisible, "Widening the column did not clear the truncated-cell tooltip.");
-                pane.TableGrid.Columns[2].Width = new DataGridLength(100);
+                pane.GridColumnOf(pane.TableGrid, 2)!.Width = new DataGridLength(100);
                 pane.Jump(0, "enUS"); pane.ToggleFrozenRows(); UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
-                var frozenRow = pane.FrozenGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView view && view.Row == 0);
-                var frozenCell = frozenRow == null ? null : pane.FrozenGrid.Columns[2].GetCellContent(frozenRow)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
+                var frozenRow = pane.FrozenGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.IsVisible && r.DataContext is RowView view && view.Row == 0);
+                var frozenCell = frozenRow == null ? null : pane.GridColumnOf(pane.FrozenGrid, 2)!.GetCellContent(frozenRow)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
                 Require(frozenCell != null, "Frozen catalog row was not realized for the tooltip check.");
                 var frozenPoint = frozenCell!.TranslatePoint(new Point(22, frozenCell!.Bounds.Height / 2), this)!.Value;
                 this.MouseMove(frozenPoint, RawInputModifiers.None);
@@ -909,7 +925,7 @@ public partial class MainWindow : Window
                 var timer = Stopwatch.StartNew(); var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables", name + ".json"));
                 Require(pane != null, "No table pane."); pane!.Jump(Math.Min(200, pane.Document.Table!.Records.Count - 1));
                 await Task.Delay(300);
-                var realizedRows = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Count();
+                var realizedRows = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Count(r => r.IsVisible);
                 Require(realizedRows < 80, "Grid realized too many rows.");
                 var field = pane.Document.Table.Columns[0]; var before = pane.Document.Table.Cell(0, field);
                 var rowView = new RowView(pane.Document, 0, e => throw e); rowView[0] = before + " smoke";
@@ -946,7 +962,7 @@ public partial class MainWindow : Window
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
                 DataGridCell? LiveCell(int row, DataGridColumn column)
                 {
-                    var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.DataContext is RowView rv && rv.Row == row); if (container == null) return null;
+                    var container = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().FirstOrDefault(r => r.IsVisible && r.DataContext is RowView rv && rv.Row == row); if (container == null) return null;
                     var cell = column.GetCellContent(container)?.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
                     // Realized cells may be clipped or covered by a frozen column. Check the actual hit target.
                     if (cell == null || cell.TranslatePoint(new Point(cell.Bounds.Width / 2, 15), pane.TableGrid) is not { } center ||
@@ -990,7 +1006,7 @@ public partial class MainWindow : Window
                 Require(pane.SelectedCells.Count == 1 && pane.SelectedCells.Contains((clickedRow, fieldIndex)), $"Click did not select exactly one cell: [{string.Join(" ", pane.SelectedCells)}] expected ({clickedRow}, {fieldIndex}).");
                 await Task.Delay(80);
                 Require(LiveCell(clickedRow, fieldColumn)?.Background is SolidColorBrush { Color: var paint } && paint == Color.Parse("#4A4123"), "Selected cell is not painted.");
-                var clickableRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Single(r => r.DataContext is RowView rv && rv.Row == clickedRow);
+                var clickableRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>().Single(r => r.IsVisible && r.DataContext is RowView rv && rv.Row == clickedRow);
                 var rowRectangle = clickableRow.GetVisualDescendants().OfType<Avalonia.Controls.Shapes.Rectangle>().FirstOrDefault(r => r.Name == "BackgroundRectangle");
                 Require(rowRectangle != null && rowRectangle.Opacity == 0, "Row-wide selection highlight still hides which cells are selected.");
                 var secondRowIndex = await ClickableRowAsync(clickedRow);
@@ -1091,7 +1107,7 @@ public partial class MainWindow : Window
                 // Match the reported case: drag down one column, type 1, then click another cell.
                 pane.Jump(secondRowIndex, cols[startIndex]); await Task.Delay(600);
                 var verticalRows = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
-                    .Where(r => r.DataContext is RowView { IsPlaceholder: false } && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is { Y: > 50 } point && point.Y < pane.TableGrid.Bounds.Height - 40)
+                    .Where(r => r.IsVisible && r.DataContext is RowView { IsPlaceholder: false } && r.TranslatePoint(new Point(0, 15), pane.TableGrid) is { Y: > 50 } point && point.Y < pane.TableGrid.Bounds.Height - 40)
                     .OrderBy(r => r.TranslatePoint(new Point(), pane.TableGrid)!.Value.Y).Take(3).Select(r => ((RowView)r.DataContext!).Row).ToArray();
                 var verticalColumn = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).First(c => verticalRows.All(r => LiveCell(r, c) != null));
                 int verticalIndex = pane.ColumnIndexOf(verticalColumn);
@@ -1099,7 +1115,8 @@ public partial class MainWindow : Window
                 this.MouseDown(verticalStart, MouseButton.Left, RawInputModifiers.None); this.MouseMove(verticalEnd, RawInputModifiers.LeftMouseButton); this.MouseUp(verticalEnd, MouseButton.Left, RawInputModifiers.None);
                 pane.TableGrid.Focus(); this.KeyTextInput("1"); await Task.Delay(120);
                 Require(pane.SelectedCells.Count == 3 && pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Count(t => t.IsVisible && t.Text == "1") == 3, "A vertical selection did not visibly edit all three cells live.");
-                var clickAwayColumn = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).First(c => c != verticalColumn && LiveCell(verticalRows[^1], c) != null);
+                var clickAwayColumn = pane.TableGrid.Columns.Skip(pane.TableGrid.FrozenColumnCount).FirstOrDefault(c => c != verticalColumn && LiveCell(verticalRows[^1], c) != null)
+                    ?? throw new InvalidOperationException($"No click-away column beside column {verticalIndex}; clickable: {string.Join(",", pane.TableGrid.Columns.Where(c => LiveCell(verticalRows[^1], c) != null).Select(c => pane.ColumnIndexOf(c)))}.");
                 var clickAway = Centre(LiveCell(verticalRows[^1], clickAwayColumn));
                 this.MouseDown(clickAway, MouseButton.Left, RawInputModifiers.None); this.MouseUp(clickAway, MouseButton.Left, RawInputModifiers.None); await Task.Delay(150);
                 Require(verticalRows.All(r => pane.Document.Table.Cell(r, cols[verticalIndex]) == "1" && DisplayedCell(r, verticalIndex) == "1"), $"Clicking away erased a typed value in the vertical selection: {string.Join(", ", verticalRows.Select(r => $"{r}: model='{pane.Document.Table.Cell(r, cols[verticalIndex])}', display='{DisplayedCell(r, verticalIndex)}'"))}; editors: {string.Join(",", pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Where(t => t.IsVisible).Select(t => t.Text))}.");
@@ -1142,6 +1159,7 @@ public partial class MainWindow : Window
                 Require(pane.FrozenRows.Contains(rowToFreeze), "Row context action froze the wrong row.");
                 pane.ToggleFrozenRows();
                 pane.Jump(200, name == "skills" ? pane.Document.Table!.Columns[^1] : field);
+                Require(pane.TableGrid.Columns.Count <= pane.Document.Table!.Columns.Length + 2 && pane.TableGrid.Columns.Count < 80, $"The grid should hold only a window of columns plus spacers: {pane.TableGrid.Columns.Count} of {pane.Document.Table.Columns.Length}.");
                 results.Add(new { table = name, elapsedMs = timer.Elapsed.TotalMilliseconds, rows = pane.Document.Table!.Records.Count, displayedColumns = pane.TableGrid.Columns.Count, realizedRows, editingAndUndo = true });
             }
             InspectorTabs.SelectedIndex = 1; await SettleRowEditorAsync();
@@ -1158,19 +1176,22 @@ public partial class MainWindow : Window
             Require(RowEditorFields.ItemCount == 0, "Unmatched row search should be empty.");
             RowEditorSearch.Text = ""; await Task.Delay(60); widePane.Jump(200); await SettleRowEditorAsync();
             var columnIndex = 1;
+            // The table is still scrolled to the last column from the earlier jump; bring column 1 on screen for the header click.
+            widePane.Jump(200, widePane.Document.Table!.Columns[columnIndex]); await SettleRowEditorAsync();
             await Task.Delay(100);
-            var columnHeader = widePane.TableGrid.GetVisualDescendants().OfType<DataGridColumnHeader>().First(h => Equals(h.Content, widePane.TableGrid.Columns[1].Header));
+            var columnHeader = widePane.TableGrid.GetVisualDescendants().OfType<DataGridColumnHeader>().First(h => Equals(h.Content, widePane.GridColumnOf(widePane.TableGrid, 1)!.Header));
             var headerPoint = columnHeader.TranslatePoint(new Point(columnHeader.Bounds.Width / 2, 12), this)!.Value;
             this.MouseDown(headerPoint, MouseButton.Right, RawInputModifiers.None); this.MouseUp(headerPoint, MouseButton.Right, RawInputModifiers.None); await Task.Delay(80);
             var columnMenu = columnHeader.ContextMenu!;
             Require(columnMenu is { IsOpen: true }, "Column header right-click did not open its menu.");
             columnMenu!.Close();
-            columnMenu.Items.OfType<MenuItem>().First().RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Require(columnMenu.Items.OfType<MenuItem>().First().Header?.ToString()?.StartsWith("Column guide") == true, "Column header menu does not offer the searchable guide first.");
+            columnMenu.Items.OfType<MenuItem>().First(m => m.Header?.ToString()?.StartsWith("Freeze ") == true).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Require(widePane.FrozenColumns.Contains(columnIndex), "Column header freeze action failed.");
             widePane.ToggleFrozenColumn(widePane.Document.Table.Columns[columnIndex]);
-            var resized = widePane.TableGrid.Columns[1]; resized.Width = new DataGridLength(123);
+            var resized = widePane.GridColumnOf(widePane.TableGrid, 1)!; resized.Width = new DataGridLength(123);
             widePane.RefreshColumns();
-            Require(widePane.TableGrid.Columns[1].Width.Value == 123 && widePane.FrozenGrid.Columns[1].Width.Value == 123 && widePane.TableGrid.CanUserResizeColumns, "Column resize was not retained and synchronized.");
+            Require(widePane.GridColumnOf(widePane.TableGrid, 1)!.Width.Value == 123 && widePane.GridColumnOf(widePane.FrozenGrid, 1)!.Width.Value == 123 && widePane.TableGrid.CanUserResizeColumns, "Column resize was not retained and synchronized.");
             Require(EditorPane.JsonFolds("{\n\"text\": \"[}]\",\n\"items\": [\n1,2\n]\n}").Count() == 2, "JSON folds mishandled braces in strings.");
             await terminal.SendAsync(OperatingSystem.IsWindows() ? "echo studio-terminal-%COMSPEC%" : "printf studio-terminal-$((6*7))");
             var terminalDeadline = DateTime.UtcNow.AddSeconds(5);
@@ -1202,13 +1223,14 @@ public partial class MainWindow : Window
             widePane.Undo(); await Task.Delay(100);
             Require(widePane.Document.Table.Cell(203, lastField.Column) == lastBefore && lastInput.Text == lastBefore, "Virtualized row edit undo failed, or the Row Editor did not pick up the restored value.");
             Require(ReferenceEquals(fieldsBeforeUndo, RowEditorFields.ItemsSource) && rowEditorRefreshCount == refreshesBeforeUndo, "Undo rebuilt the Row Editor fields instead of refreshing them in place.");
-            // Focusing a Row Editor field brings its cell into the table window and selects it, while the field keeps keyboard focus.
+            // Focusing a Row Editor field scrolls the table to its cell and selects it, while the field keeps keyboard focus.
             widePane.Jump(203, widePane.Document.Table.Columns[0]); await Task.Delay(100);
-            Require(!widePane.VisibleColumns().Contains(widePane.Document.Table.Columns.Length - 1), "The last column should start outside the table window.");
+            var horizontalBefore = widePane.TableGrid.GetVisualDescendants().OfType<ScrollBar>().Single(b => b.Name == "PART_HorizontalScrollbar").Value;
             lastInput.Focus(); await Task.Delay(120);
-            Require(lastInput.IsFocused && widePane.SelectedColumn == lastField.Column && widePane.SelectedRow == 203 && widePane.VisibleColumns().Contains(widePane.Document.Table.Columns.Length - 1)
-                && widePane.SelectedCells.SequenceEqual([(203, widePane.Document.Table.Columns.Length - 1)]) && widePane.TableGrid.CurrentColumn is { } revealed && widePane.ColumnIndexOf(revealed) == widePane.Document.Table.Columns.Length - 1,
-                $"Focusing a Row Editor field did not reveal its cell: focused {lastInput.IsFocused}, column {widePane.SelectedColumn}, window {string.Join(",", widePane.VisibleColumns().Take(3))}…");
+            Require(lastInput.IsFocused && widePane.SelectedColumn == lastField.Column && widePane.SelectedRow == 203
+                && widePane.SelectedCells.SequenceEqual([(203, widePane.Document.Table.Columns.Length - 1)]) && widePane.TableGrid.CurrentColumn is { } revealed && widePane.ColumnIndexOf(revealed) == widePane.Document.Table.Columns.Length - 1
+                && widePane.TableGrid.GetVisualDescendants().OfType<ScrollBar>().Single(b => b.Name == "PART_HorizontalScrollbar").Value > horizontalBefore,
+                $"Focusing a Row Editor field did not reveal its cell: focused {lastInput.IsFocused}, column {widePane.SelectedColumn}, row {widePane.SelectedRow}.");
             InspectorTabs.SelectedIndex = 0; var hiddenFields = RowEditorFields.ItemsSource;
             widePane.Jump(204, widePane.SelectedColumn); await Task.Delay(80);
             Require(ReferenceEquals(hiddenFields, RowEditorFields.ItemsSource), "Hidden Row Editor rebuilt its fields.");

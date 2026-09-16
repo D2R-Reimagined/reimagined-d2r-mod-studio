@@ -1,6 +1,8 @@
 using System.Text.Json.Nodes;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Primitives.PopupPositioning;
 using Avalonia.Layout;
 using Avalonia.Media;
 using ModStudio.Core;
@@ -36,6 +38,20 @@ public partial class MainWindow
         var panel = new DockPanel { Margin = new(8) }; DockPanel.SetDock(options, Dock.Top); panel.Children.Add(options);
         panel.Children.Add(new ScrollViewer { Content = itemPreviewContent });
         itemPreviewTab = new TabItem { Header = new TextBlock { Text = "Item Preview", FontSize = 12 }, Content = panel, IsVisible = false }; InspectorTabs.Items.Add(itemPreviewTab);
+        var hoverCards = new CheckBox { Content = "Hover cards over table rows", IsChecked = EditorPane.ItemHoverCards, Margin = new(0, 6, 0, 0) };
+        ToolTip.SetTip(hoverCards, "Also available as the Hover cards toggle on the table toolbar. Off keeps the rendered item in this tab only.");
+        Grid.SetRow(hoverCards, 2); Grid.SetColumnSpan(hoverCards, 2); options.RowDefinitions.Add(new RowDefinition(GridLength.Auto)); options.Children.Add(hoverCards);
+        hoverCards.IsCheckedChanged += (_, _) => { if (EditorPane.ItemHoverCards != (hoverCards.IsChecked == true)) { EditorPane.ItemHoverCards = hoverCards.IsChecked == true; EditorPane.RaiseItemHoverCardsChanged(); } };
+        EditorPane.ItemHoverCardsChanged += () =>
+        {
+            if (hoverCards.IsChecked != EditorPane.ItemHoverCards) hoverCards.IsChecked = EditorPane.ItemHoverCards;
+            if (!EditorPane.ItemHoverCards && itemHoverRequest) CancelItemPreview();
+            if (Program.Arguments.Contains("--smoke")) return;
+            try { var prefs = StudioPreferences.Load(StudioPreferences.DefaultFile); prefs.ItemHoverCards = EditorPane.ItemHoverCards; prefs.Save(StudioPreferences.DefaultFile); }
+            catch (Exception ex) { ShowError(ex); }
+        };
+        if (!Program.Arguments.Contains("--smoke"))
+            try { EditorPane.ItemHoverCards = StudioPreferences.Load(StudioPreferences.DefaultFile).ItemHoverCards; hoverCards.IsChecked = EditorPane.ItemHoverCards; } catch (Exception) { }
         itemLevel.ValueChanged += (_, _) => RefreshItemPreview(); itemLocale.SelectionChanged += (_, _) => { if (!refreshingItemLocales && itemLocale.SelectedItem != null) RefreshItemPreview(); };
         InspectorTabs.SelectionChanged += (_, _) => RefreshItemPreview();
         Closed += (_, _) => CancelItemPreview();
@@ -45,7 +61,7 @@ public partial class MainWindow
     {
         CancelScheduledItemTooltipClose();
         itemPreviewCancellation?.Cancel();
-        if (itemTooltipAnchor != null) { ToolTip.SetIsOpen(itemTooltipAnchor, false); ToolTip.SetTip(itemTooltipAnchor, null); itemTooltipAnchor = null; }
+        if (itemTooltipAnchor != null) { ToolTip.SetIsOpen(itemTooltipAnchor, false); ToolTip.SetTip(itemTooltipAnchor, null); itemTooltipAnchor.ClearValue(ToolTip.PlacementProperty); itemTooltipAnchor.ClearValue(ToolTip.CustomPopupPlacementCallbackProperty); itemTooltipAnchor = null; }
     }
     private void CancelScheduledItemTooltipClose()
     {
@@ -103,13 +119,13 @@ public partial class MainWindow
         if (Active is { } pane && pane.Document.Table?.Name is "uniqueitems" or "setitems") RequestItemPreview(pane, pane.SelectedRow, null);
         else itemPreviewContent.Content = new TextBlock { Text = "Select a Unique or Set item.", TextWrapping = TextWrapping.Wrap };
     }
-    private void RequestItemPreview(EditorPane pane, int row, Control? anchor)
+    private void RequestItemPreview(EditorPane pane, int row, Control? anchor, Point? at = null)
     {
         CancelItemPreview();
         itemRequestPane = pane; itemHoverRequest = anchor != null;
-        PendingItemPreview = LoadItemPreviewAsync(pane, row, anchor);
+        PendingItemPreview = LoadItemPreviewAsync(pane, row, anchor, at);
     }
-    private async Task LoadItemPreviewAsync(EditorPane pane, int row, Control? anchor)
+    private async Task LoadItemPreviewAsync(EditorPane pane, int row, Control? anchor, Point? at)
     {
         var work = itemPreviewCancellation = new CancellationTokenSource(); var token = work.Token;
         var selectedProject = project; var table = pane.Document.Table; var profile = Profile;
@@ -133,7 +149,7 @@ public partial class MainWindow
             if (token.IsCancellationRequested || selectedProject != project || revision != pane.Document.Revision || workspace != workspaceRevision || Active != pane || Profile != profile) return;
             LastItemPreview = result;
             if (anchor == null) itemPreviewContent.Content = ItemCard(result);
-            else ShowItemTooltip(anchor, result);
+            else ShowItemTooltip(anchor, result, at);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex)
@@ -141,16 +157,32 @@ public partial class MainWindow
             if (token.IsCancellationRequested) return;
             var failed = new ItemPreviewResult("Preview unavailable", false, [], [ex.Message]); LastItemPreview = failed;
             if (anchor == null) itemPreviewContent.Content = ItemCard(failed);
-            else ShowItemTooltip(anchor, failed);
+            else ShowItemTooltip(anchor, failed, at);
         }
         finally { if (ReferenceEquals(itemPreviewCancellation, work)) itemPreviewCancellation = null; work.Dispose(); }
     }
-    private void ShowItemTooltip(Control anchor, ItemPreviewResult result)
+    private void ShowItemTooltip(Control anchor, ItemPreviewResult result, Point? at = null)
     {
         // The default tooltip theme constrains and centers its content. A wider child
         // was consequently clipped on both sides. Size the popup and its viewport together.
         double width = Math.Min(440, Math.Max(1, Bounds.Width - 32));
-        double height = Math.Min(560, Math.Max(1, Bounds.Height - 48));
+        // A card that fits neither below nor above the row would be slid over it and end up under the pointer; the row
+        // then loses the pointer, the card closes, the next move reopens it, and the card flickers for as long as the
+        // pointer moves. Cap the height to the roomier side of the row and place the card there, beside the pointer.
+        var rowTop = anchor.TranslatePoint(new Point(), this)?.Y ?? 0; double rowHeight = Math.Max(1, anchor.Bounds.Height);
+        double below = Bounds.Height - rowTop - rowHeight - 16, above = rowTop - 16;
+        bool placeBelow = below >= above || below >= 320;
+        double height = Math.Clamp(Math.Min(560, placeBelow ? below : above), 120, Math.Max(120, Bounds.Height - 48));
+        double pointerX = Math.Clamp(at?.X ?? 0, 0, Math.Max(0, anchor.Bounds.Width - 1));
+        ToolTip.SetPlacement(anchor, PlacementMode.Custom);
+        ToolTip.SetCustomPopupPlacementCallback(anchor, placement =>
+        {
+            placement.AnchorRectangle = new Rect(pointerX, 0, 1, rowHeight);
+            placement.Anchor = placeBelow ? PopupAnchor.Bottom : PopupAnchor.Top;
+            placement.Gravity = placeBelow ? PopupGravity.BottomRight : PopupGravity.TopRight;
+            placement.Offset = new Point(12, placeBelow ? 4 : -4);
+            placement.ConstraintAdjustment = PopupPositionerConstraintAdjustment.SlideX | PopupPositionerConstraintAdjustment.FlipY | PopupPositionerConstraintAdjustment.ResizeY;
+        });
         var scroll = new ScrollViewer {
             Content = ItemCard(result), MaxHeight = height,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,

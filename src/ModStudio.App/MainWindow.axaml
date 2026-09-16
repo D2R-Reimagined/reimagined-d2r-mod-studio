@@ -42,7 +42,7 @@
      <Button x:Name="ClearExplorerSearch" Grid.Column="1" Content="×" ToolTip.Tip="Clear file search" IsVisible="False" Padding="8,2" />
     </Grid>
     <TextBlock x:Name="ExplorerSearchStatus" Grid.Row="2" IsVisible="False" Margin="6,0,6,8" Classes="muted" Text="No matching files" />
-    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" Background="Transparent" Padding="0,0,0,8">
+    <TreeView x:Name="ProjectTree" Grid.Row="3" Tapped="TreeTapped" DoubleTapped="TreeDoubleTapped" KeyDown="TreeKeyDown" Background="Transparent" Padding="0,0,0,8" ScrollViewer.AllowAutoHide="False">
      <TreeView.Styles>
       <Style Selector="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" /><Setter Property="MinHeight" Value="24" /><Setter Property="Padding" Value="0" /></Style>
       <Style Selector="TreeViewItem /template/ Border#PART_LayoutRoot"><Setter Property="MinHeight" Value="24" /><Setter Property="CornerRadius" Value="4" /><Setter Property="Margin" Value="0,0,6,0" /></Style>
@@ -107,12 +107,12 @@
   <Grid x:Name="BottomPanel" Grid.Row="3">
   <TabControl x:Name="BottomTabs">
    <TabItem><TabItem.Header><TextBlock Text="Problems" FontSize="13" /></TabItem.Header><DockPanel><WrapPanel DockPanel.Dock="Top"><Button Content="Check source references / rules" Click="CheckSemanticsClicked" /><Button Content="Edit validation rules…" Click="EditRulesClicked" /><TextBlock x:Name="SemanticStatus" Margin="8" Text="Shared-source checks; game coverage is partial" /></WrapPanel><ListBox x:Name="Problems" DoubleTapped="ProblemDoubleTapped" /></DockPanel></TabItem>
-   <TabItem><TabItem.Header><TextBlock Text="Build / Game output" FontSize="13" /></TabItem.Header><TextBox x:Name="Output" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" /></TabItem>
+   <TabItem ToolTip.Tip="Every status-bar message, error, build and game line in order"><TabItem.Header><TextBlock Text="Log" FontSize="13" /></TabItem.Header><TextBox x:Name="Output" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" /></TabItem>
    <TabItem><TabItem.Header><TextBlock Text="Changes" FontSize="13" /></TabItem.Header><DockPanel><Button DockPanel.Dock="Top" Content="Compare active table with disk…" Click="CompareClicked" HorizontalAlignment="Left" /><ListBox x:Name="Changes" /></DockPanel></TabItem>
   </TabControl>
   <Button x:Name="HideBottomButton" Classes="explorerTool" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,4,0" ToolTip.Tip="Hide the tool panel" />
   </Grid>
   <Border x:Name="BottomStrip" Grid.Row="4" IsVisible="False" Height="26" Background="#1D1E1F" BorderBrush="#494038" BorderThickness="0,1,0,0"><StackPanel x:Name="BottomStripItems" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0" Spacing="4" /></Border>
-  <Border Grid.Row="5" Background="#292727" Padding="12,6"><DockPanel><Button x:Name="UpdateButton" DockPanel.Dock="Right" Height="22" MinHeight="0" Padding="6,0" Margin="8,0,0,0" Content="Check for updates" Click="UpdateClicked" ToolTip.Tip="Check GitHub for a Studio update" /><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" /></DockPanel></Border>
+  <Border Grid.Row="5" Background="#292727" Padding="12,6"><DockPanel><Button x:Name="UpdateButton" DockPanel.Dock="Right" Height="22" MinHeight="0" Padding="6,0" Margin="8,0,0,0" Content="Check for updates" Click="UpdateClicked" ToolTip.Tip="Check GitHub for a Studio update" /><TextBlock x:Name="RunState" DockPanel.Dock="Right" Margin="12,0,0,0" Foreground="#D8BC86" /><TextBlock x:Name="Status" Text="Ready · Source and deployment remain separate" TextTrimming="CharacterEllipsis" Cursor="Hand" Background="Transparent" ToolTip.Tip="Click to open the Log tab with every message in order" /></DockPanel></Border>
  </Grid>
 </Window>

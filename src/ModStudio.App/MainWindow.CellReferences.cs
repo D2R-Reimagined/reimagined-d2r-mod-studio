@@ -106,7 +106,8 @@ public partial class MainWindow
             if (result.Issues.Count > 0)
             {
                 items.Add(new Separator());
-                foreach (var issue in result.Issues) items.Add(new MenuItem { Header = issue, IsEnabled = false });
+                // A disabled menu item clips a long explanation; wrap it so the whole sentence is readable.
+                foreach (var issue in result.Issues) items.Add(new MenuItem { Header = new TextBlock { Text = issue, TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxWidth = 420 }, IsEnabled = false });
             }
             Status.Text = result.Hits.Count == 0 ? $"No record matches ‘{value}’ in the available reference tables." : $"Choose the record referenced by ‘{value}’.";
             var menu = new ContextMenu { ItemsSource = items };

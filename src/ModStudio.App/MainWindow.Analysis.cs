@@ -106,6 +106,7 @@ public partial class MainWindow
             Require(!tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.PendingSource), "Apply pending source before checking references.");
             Require(!tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty && p.Document.FilePath == Inside(project!.Root, "source/semantics.json")), "Save semantic rule changes before running checks.");
             var rules = Semantics.Rules(project!); var buffers = OpenBuffers(rules.Select(r => r.Table).Concat(rules.SelectMany(r => r.ReferenceTables ?? [])));
+            foreach (var pair in ReferenceBuffers([Semantics.StringCatalogs])) buffers.TryAdd(pair.Key, pair.Value);
             var revisions = tabs.Select(t => t.Content).OfType<EditorPane>().ToDictionary(p => p.Document, p => p.Document.Revision);
             var selectedProject = project!; int workspaceAtStart = workspaceRevision; operation = new(); RefreshRunControls(); SemanticStatus.Text = "Checking shared-source references and rules…";
             try

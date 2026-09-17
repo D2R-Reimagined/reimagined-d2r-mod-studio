@@ -88,6 +88,8 @@ public sealed partial class EditorPane
     {
         private static readonly Geometry ReferenceIcon = Geometry.Parse("M1,7 L7,1 M2,1 L7,1 L7,6");
         private static readonly IBrush ReferenceIconBrush = new SolidColorBrush(Color.Parse("#D8BC86"));
+        /// <summary>Translucent warm tint over frozen-column cells, so the pinned columns read as one block; selection painted on the cell underneath still shows through.</summary>
+        private static readonly IBrush FrozenTint = new SolidColorBrush(Color.Parse("#1AD8BC86"));
         private readonly EditorPane owner;
         private readonly LiveCellColumn column;
         private readonly TextBlock display;
@@ -169,6 +171,8 @@ public sealed partial class EditorPane
             var row = Row; int index = column.Index;
             var text = row == null ? "" : row[index];
             if (display.Text != text) display.Text = text;
+            var tint = owner.frozenColumns.Contains(index) ? FrozenTint : null;
+            if (!ReferenceEquals(Background, tint)) Background = tint;
             var value = row != null ? owner.PreviewCellValue(row.Row, index) : null;
             if (value != null) { Mirror.Text = value; Mirror.IsVisible = true; } else if (mirror != null) mirror.IsVisible = false;
             display.IsVisible = value == null;

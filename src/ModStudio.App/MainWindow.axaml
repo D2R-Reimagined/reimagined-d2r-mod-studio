@@ -8,6 +8,7 @@
     <Button Content="Open project" Click="OpenClicked" ToolTip.Tip="Open a Studio project (JSON source)" /><Button Content="Import mod…" Click="MigrateClicked" ToolTip.Tip="Turn an existing mod, unpacked .mpq or data folder into an editable Studio project" />
     <Button Content="Save all" Click="SaveAllClicked" /><Button x:Name="FindInFilesButton" Content="Find in files…" ToolTip.Tip="Search every table cell, string and file in the project; preview and edit matches without opening them (Ctrl+Shift+F)" /><Button Content="Run settings" Click="SettingsClicked" />
     <Button Content="External editor" Click="ExternalEditorClicked" ToolTip.Tip="Open deployed TXT files or a workspace in your own editor; synchronize and resolve conflicts" />
+    <Button x:Name="ViewSettingsButton" Content="View" ToolTip.Tip="View settings: table and source editor fonts and sizes, column letters, hover cards (Ctrl + wheel zooms the view under the pointer)" />
     <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
     </StackPanel>
     </ScrollViewer>
@@ -83,7 +84,7 @@
    <TabItem><TabItem.Header><TextBlock Text="Details" FontSize="12" /></TabItem.Header><ScrollViewer><StackPanel Margin="14" Spacing="9">
     <TextBlock Text="INSPECTOR" Foreground="#D8BC86" /><TextBlock x:Name="SelectionLabel" Text="Select a document or row" TextWrapping="Wrap" />
     <TextBlock Text="Field" Classes="muted" /><ComboBox x:Name="FieldPicker" SelectionChanged="FieldSelected" />
-    <TextBox x:Name="CellValue" AcceptsReturn="True" MinHeight="60" TextWrapping="Wrap" /><Button Content="Apply cell" Click="ApplyCellClicked" />
+    <TextBox x:Name="CellValue" AcceptsReturn="True" MinHeight="60" TextWrapping="Wrap" /><TextBlock x:Name="CellValueInfo" Classes="muted" FontSize="11" TextWrapping="Wrap" /><Button Content="Apply cell" Click="ApplyCellClicked" />
     <TextBlock x:Name="InspectorInfo" Text="Calculations and specialized item previews are planned for the next milestone." TextWrapping="Wrap" Classes="muted" />
     <TextBlock Text="PROFILE / REFERENCES" Foreground="#D8BC86" Margin="0,10,0,0" />
     <TextBlock x:Name="ProfileValue" TextWrapping="Wrap" />

@@ -23,6 +23,7 @@ internal static class EditorToolbarIcons
             "Fit columns" => ("Fit column widths to contents", "M2,3 V21 M22,3 V21 M9,8 L5,12 L9,16 M15,8 L19,12 L15,16 M5,12 H19"),
             "Column guide" => ("Column guide: what the selected column means and its documented values (F1)", "M12,3 A9,9 0 1 0 12,21 A9,9 0 1 0 12,3 Z M9,9.5 C9,7 15,7 15,9.5 C15,11.5 12,11.5 12,14 M12,17.5 V17.6"),
             "Freeze / Lock" => ("Freeze, lock, and sorting options", "M5,3 H15 M7,3 V8 L4,12 V14 H16 V12 L13,8 V3 M10,14 V22 M18,17 L21,20 L24,17"),
+            "View" => ("View options: column letters, hover cards", "M3,5 H21 V19 H3 Z M3,10 H21 M9,5 V19 M15,5 V19"),
             "Schema…" => ("Edit table schema", "M8,3 H4 V21 H8 M16,3 H20 V21 H16 M9,8 H15 M9,12 H15 M9,16 H15"),
             "Preview" => ("Preview rendered Markdown", "M1,12 C6,2 18,2 23,12 C18,22 6,22 1,12 Z M16,12 A4,4 0 1 1 8,12 A4,4 0 1 1 16,12"),
             "Refresh preview" => ("Refresh Markdown preview", "M20,9 A9,9 0 1 0 21,15 M20,3 V9 H14"),

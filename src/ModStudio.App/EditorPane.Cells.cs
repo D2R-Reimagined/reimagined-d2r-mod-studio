@@ -22,6 +22,8 @@ public sealed partial class EditorPane
     private (int Row, int Col)? editingCell;
     private (int Row, int Col)[] editTargets = [];
     private string? editedValue, typedText;
+    /// <summary>The cell's value when the edit began, restored when the edit is canceled.</summary>
+    private string? editingOriginal;
     private TextBox? liveEditor;
     private string? liveValue;
     private TopLevel? editInputRoot;
@@ -69,6 +71,25 @@ public sealed partial class EditorPane
             };
         }
         grid.ClipboardCopyMode = DataGridClipboardCopyMode.None; // the grid's own Ctrl+C copies whole rows; ours copies cells
+        // While a cell is being edited the arrow keys stay in its text. Left/Right went to the grid whenever the editor had lost
+        // focus (it can, right after an edit started by typing) and Up/Down always did, so a key that moved the caret one moment
+        // moved the selection the next. Enter and Tab commit; Escape cancels.
+        grid.AddHandler(KeyDownEvent, (_, e) =>
+        {
+            if (editingCell == null || liveEditor is not { } editor || (e.KeyModifiers & ~KeyModifiers.Shift) != 0) return;
+            int length = editor.Text?.Length ?? 0;
+            switch (e.Key)
+            {
+                case Key.Up or Key.PageUp: if (!editor.IsFocused) editor.Focus(); if (!editor.AcceptsReturn) { editor.SelectionStart = editor.SelectionEnd = editor.CaretIndex = 0; e.Handled = true; } return;
+                case Key.Down or Key.PageDown: if (!editor.IsFocused) editor.Focus(); if (!editor.AcceptsReturn) { editor.SelectionStart = editor.SelectionEnd = editor.CaretIndex = length; e.Handled = true; } return;
+                case Key.Left or Key.Right or Key.Home or Key.End:
+                    if (editor.IsFocused) return;
+                    editor.Focus();
+                    int caret = e.Key switch { Key.Left => Math.Max(0, editor.CaretIndex - 1), Key.Right => Math.Min(length, editor.CaretIndex + 1), Key.Home => 0, _ => length };
+                    if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) editor.SelectionEnd = caret; else editor.SelectionStart = editor.SelectionEnd = editor.CaretIndex = caret;
+                    e.Handled = true; return;
+            }
+        }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
             if (IsReferenceButton(e.Source)) return;
@@ -129,7 +150,11 @@ public sealed partial class EditorPane
             if (e.Cancel) return;
             ClearReferenceHighlight();
             draggingCells = false; Document.BeginEditGroup(); // one undo step per committed cell value, not per keystroke
-            if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col)) { editingCell = (row.Row, col); editTargets = selectedCells.Contains((row.Row, col)) ? selectedCells.ToArray() : [(row.Row, col)]; }
+            if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col))
+            {
+                editingCell = (row.Row, col); editTargets = selectedCells.Contains((row.Row, col)) ? selectedCells.ToArray() : [(row.Row, col)];
+                editingOriginal = row.IsPlaceholder || row.Row >= Document.Table!.Records.Count ? null : Document.Table.Cell(row.Row, Document.Table.Columns[col]);
+            }
         };
         grid.CellEditEnding += (_, e) =>
         {
@@ -143,12 +168,17 @@ public sealed partial class EditorPane
         };
         void OnCellEditEnded(DataGridCellEditEndedEventArgs e)
         {
-            var cell = editingCell; var value = editedValue; var targets = editTargets;
+            var cell = editingCell; var value = editedValue; var targets = editTargets; var original = editingOriginal;
             if (liveEditor != null) liveEditor.PropertyChanged -= LiveEditorChanged;
-            liveEditor = null; liveValue = null; editingCell = null; editedValue = null; editTargets = [];
-            RefreshLiveCells(targets);
+            liveEditor = null; liveValue = null; editingCell = null; editedValue = null; editTargets = []; editingOriginal = null;
+            RefreshLiveCells(targets); UpdateNote();
             if (e.EditAction != DataGridEditAction.Commit || cell == null || value == null)
-            { foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); return; }
+            {
+                // A single cell's editor writes through to the document as it is typed; Escape means "as it was", so put the value back.
+                if (e.EditAction == DataGridEditAction.Cancel && cell is { } canceled && original != null && targets.Length == 1 && IsEditableCell(canceled) && Document.Table!.Cell(canceled.Row, Document.Table.Columns[canceled.Col]) != original)
+                    try { Document.SetCells([(canceled.Row, Document.Table.Columns[canceled.Col], original)]); } catch (Exception ex) { error(ex); }
+                foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); return;
+            }
             if (cell.Value.Row < 0 && e.Row.DataContext is RowView created && !created.IsPlaceholder) { Dispatcher.UIThread.Post(() => { Refresh(); Jump(created.Row, Document.Table!.Columns[cell.Value.Col]); }, DispatcherPriority.Background); return; }
             // Editing one of several selected cells writes the value into all of them. The selection captured when
             // editing began is used, because committing by clicking elsewhere changes the selection first.
@@ -181,6 +211,10 @@ public sealed partial class EditorPane
             var typed = typedText; typedText = null;
             if (e.EditingElement is not TextBox editor) return;
             liveEditor = editor;
+            // The row is shorter than the app-wide TextBox minimum, so the editor's inner ScrollViewer thought its text overflowed and
+            // showed a squashed vertical scrollbar: a lone "^" at the right end of the cell. The cell never scrolls vertically.
+            editor.MinHeight = 0; ScrollViewer.SetVerticalScrollBarVisibility(editor, ScrollBarVisibility.Hidden);
+            EditorTextInfo.Attach(editor, () => UpdateNote());
             if (editTargets.Length > 1)
             {
                 // Own the edit buffer. A two-way grid binding can push the old value back while focus moves,

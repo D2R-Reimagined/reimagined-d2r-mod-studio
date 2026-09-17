@@ -22,7 +22,8 @@ public partial class MainWindow
     private void FilterRowEditor()
     {
         var term = (RowEditorSearch.Text ?? "").Trim();
-        RowEditorFields.ItemsSource = term.Length == 0 ? rowEditorAllFields : rowEditorAllFields.Where(f => f.Column.Contains(term, StringComparison.OrdinalIgnoreCase)).ToArray();
+        // The label is searched too so a column letter ("AB") finds its field when letters are shown.
+        RowEditorFields.ItemsSource = term.Length == 0 ? rowEditorAllFields : rowEditorAllFields.Where(f => f.Column.Contains(term, StringComparison.OrdinalIgnoreCase) || EditorPane.ColumnLetters && f.Label.StartsWith(term + " · ", StringComparison.OrdinalIgnoreCase)).ToArray();
         if (rowEditorTable != null) RowEditorLabel.Text = $"{rowEditorTable.Name} · row {rowEditorRow} · {RowEditorFields.ItemCount}/{rowEditorAllFields.Length} fields";
     }
 
@@ -50,7 +51,16 @@ public partial class MainWindow
                 // The hover card is a short summary; a click opens the searchable guide with the field's current value highlighted.
                 label.PointerPressed += (_, e) => { e.Handled = true; if (Active?.Document.Table is { } table) ColumnGuideFlyout.Show(label, table, field.Column, field.Value, ShowError); };
             }
-            panel.Children.Add(label);
+            if (PaletteShifts.IsTransformColumn(field.Table, field.Column))
+            {
+                // Hue table numbers are picked by colour: the swatch flyout writes the choice into this row's cell.
+                var pickTransform = new Button { Content = "Pick colour…", Padding = new(8, 2), MinHeight = 0, Height = 24, FontSize = 12, Margin = new(0) };
+                ToolTip.SetTip(pickTransform, "Show every colour transform of the act palette as a swatch and pick one");
+                pickTransform.Click += (_, _) => { try { Active?.ShowColorTransformPicker(pickTransform, field.Column); } catch (Exception ex) { ShowError(ex); } };
+                var labelRow = new DockPanel(); DockPanel.SetDock(pickTransform, Dock.Right); labelRow.Children.Add(pickTransform); label.VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center; labelRow.Children.Add(label);
+                panel.Children.Add(labelRow);
+            }
+            else panel.Children.Add(label);
             var input = new TextBox { IsReadOnly = field.ReadOnly, AcceptsReturn = field.Multiline,
                 TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
             Avalonia.Automation.AutomationProperties.SetName(input, field.Column);
@@ -65,7 +75,15 @@ public partial class MainWindow
             };
             input.LostFocus += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
             input.DetachedFromVisualTree += (_, _) => { grouped?.EndEditGroup(); grouped = null; };
+            // Arrow keys stay inside the field: unhandled ones would bubble to the list and move the highlight to another field mid-edit.
+            input.KeyDown += (_, e) => { if (e.Key is Key.Up or Key.Down or Key.Left or Key.Right or Key.Home or Key.End or Key.PageUp or Key.PageDown) e.Handled = true; };
             panel.Children.Add(input);
+            // Character count and bracket balance of the field being typed go to the status line above the list: a line under the
+            // field would change the item's height inside the virtualized list, which loses focus.
+            void Describe() { if (input.IsFocused) RowEditorStatus.Text = $"{field.Column} · {EditorTextInfo.Describe(input.Text)} · edits apply immediately, Save writes to disk"; }
+            // Posted so it lands after the binding's own "Edits applied" status for the same keystroke.
+            EditorTextInfo.Attach(input, () => Dispatcher.UIThread.Post(Describe, DispatcherPriority.Input));
+            input.GotFocus += (_, _) => Describe();
             // Hovering the label or the input shows what the column means, from the bundled data guide.
             if (field.Guide != null) ToolTip.SetTip(panel, ColumnGuideTooltip.Create(field.Table, field.Column, field.Guide));
             return panel;
@@ -104,7 +122,7 @@ public partial class MainWindow
             RowEditorLabel.Text = document?.PendingSource == true ? "Apply valid source before editing rows." : "Select a table row";
             return;
         }
-        var locks = string.Join('\n', document.LockedColumns.Order()) + "|" + document.LockedRows.Contains(row);
+        var locks = string.Join('\n', document.LockedColumns.Order()) + "|" + document.LockedRows.Contains(row) + "|" + EditorPane.ColumnLetters;
         if (rowEditorPane == pane && rowEditorRow == row && rowEditorTable == table && rowEditorLocks == locks)
         {
             // Same row, new revision (an undo, a grid edit, a paste): refresh the values in the existing inputs instead of
@@ -119,11 +137,11 @@ public partial class MainWindow
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";
         RowEditorStatus.Text = "Edits apply immediately to the shared source. Save to write to disk.";
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
-        rowEditorAllFields = table.Columns.Select(column =>
+        rowEditorAllFields = table.Columns.Select((column, index) =>
         {
             bool identity = table.IsCatalog ? column is "id" or "Key" && table.IsOriginalRow(row) : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
-            return new RowEditorField(column, column + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
+            return new RowEditorField(column, EditorPane.ColumnLabel(index, column) + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
                 table.Cell(row, column), identity || locked, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>
                 {
                     // Detached controls and queued binding updates must never edit a newly selected row/document.

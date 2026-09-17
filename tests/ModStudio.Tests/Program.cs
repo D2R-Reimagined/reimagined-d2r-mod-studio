@@ -36,6 +36,7 @@ try
     await GitTests.RunAsync(root, Check, Throws, Write);
     UnifiedDiffTests.Run(Check);
     TextFileEncodingTests.Run(Check);
+    TextChecksTests.Run(Check);
     var native = Path.Combine(root, "original"); var target = Path.Combine(root, "project");
     var encodedFile = Path.Combine(root, "utf16.bat");
     var encodedBytes = System.Text.Encoding.Unicode.GetPreamble().Concat(System.Text.Encoding.Unicode.GetBytes("@echo off\r\necho hello\r\n")).ToArray();
@@ -191,6 +192,15 @@ try
     Throws(() => TableData.FromTsv(Utf8.GetBytes("a\r\nb\nc"), "bad", "bad.txt"), "Mixed TSV newlines rejected");
     var game = Path.Combine(root, OperatingSystem.IsWindows() ? "game/D2R.exe" : "game/game-fixture"); Write(game, "test fixture only");
     var start = RunController.CreateStartInfo(project, new(deployment, game)); Check(start.ArgumentList.SequenceEqual(new[] { "-mod", "TestMod", "-txt" }) && !start.UseShellExecute, "Launch uses separate arguments without shell interpolation");
+    // A deployment folder with another name is a second copy of the mod under that name: the build is laid out for it and the game is launched with it.
+    var secondary = Path.Combine(root, "game/mods/TestMod-test"); var secondarySettings = new RunSettings(secondary, game);
+    Check(secondarySettings.ModName(project) == "TestMod-test" && secondarySettings.PathIssues(project).Count == 0, "A differently named deployment folder is accepted and names the deployed mod");
+    Throws(() => DeploymentService.Deploy(project, build, secondary), "A build laid out for one mod name cannot deploy under another");
+    var secondaryBuild = BuildService.Build(project, "standard", modName: secondarySettings.ModName(project)); DeploymentService.Deploy(project, secondaryBuild, secondary);
+    Check(File.Exists(Path.Combine(secondary, "TestMod-test.mpq/data/hd/native.bin")) && File.Exists(Path.Combine(secondary, "TestMod-test.mpq/modinfo.json")), "Deploying to a renamed folder lays the mod out under that name");
+    Check(RunController.CreateStartInfo(project, secondarySettings).ArgumentList.SequenceEqual(new[] { "-mod", "TestMod-test", "-txt" }), "Play launches the mod under the deployment folder's name");
+    Check(new RunSettings(Path.Combine(root, "game/mods"), game).PathIssues(project).Any(p => p.Contains("final mod folder")), "The mods folder itself is still refused as a deployment target");
+    build = BuildService.Build(project, "standard"); DeploymentService.Deploy(project, build, deployment);
     var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? Environment.ProcessPath!;
     var runnerArgs = Path.GetFileNameWithoutExtension(host).Equals("dotnet", StringComparison.OrdinalIgnoreCase) ? new[] { typeof(Document).Assembly.Location.Replace("ModStudio.Core.dll", "ModStudio.Tests.dll"), "--studio-child" } : new[] { "--studio-child" };
     using (var run = new RunController())

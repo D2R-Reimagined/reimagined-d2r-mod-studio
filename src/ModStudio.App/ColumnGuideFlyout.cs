@@ -31,15 +31,21 @@ internal static class ColumnGuideFlyout
     {
         var entry = table == null || table.IsCatalog ? null : ColumnGuide.Find(table.Name, column);
         var flyout = new Flyout { Placement = PlacementMode.Bottom, ShowMode = FlyoutShowMode.Standard };
+        // The guide is opened on purpose (F1, header menu, toolbar), unlike the hover card, so it can take a good share of the window:
+        // the function tables of skills/missiles run to dozens of rows with paragraph-long descriptions.
+        var window = TopLevel.GetTopLevel(anchor)?.ClientSize ?? new Size(1440, 920);
+        var size = new Size(Math.Clamp(window.Width * 0.55, 520, 1000), Math.Clamp(window.Height * 0.6, 380, 1000));
         flyout.Content = entry == null
             ? new TextBlock { Text = table == null ? "No table is selected." : $"‘{column}’ has no entry in the bundled d2rdoc data guide for {table.Name}.", TextWrapping = TextWrapping.Wrap, MaxWidth = 360, Margin = new(4) }
-            : Create(table!.Name, column, entry, currentValue, error, () => flyout.Hide());
+            : Create(table!.Name, column, entry, currentValue, error, () => flyout.Hide(), size);
         flyout.ShowAt(anchor);
     }
 
-    public static Control Create(string tableName, string column, ColumnGuideEntry entry, string? currentValue, Action<Exception> error, Action close)
+    /// <param name="size">Width of the card and the height its value list may grow to; the default is the compact size used by tests.</param>
+    public static Control Create(string tableName, string column, ColumnGuideEntry entry, string? currentValue, Action<Exception> error, Action close, Size? size = null)
     {
-        var panel = new StackPanel { Spacing = 8, Width = 520 };
+        var (width, listHeight) = size is { } s ? (s.Width, s.Height) : (520, 380);
+        var panel = new StackPanel { Spacing = 8, Width = width };
         var header = new DockPanel();
         var closeButton = new Button { Content = "✕", Padding = new(8, 2), MinHeight = 0, Height = 26, VerticalAlignment = VerticalAlignment.Top };
         ToolTip.SetTip(closeButton, "Close (Escape)"); closeButton.Click += (_, _) => close();
@@ -80,7 +86,7 @@ internal static class ColumnGuideFlyout
                 return grid;
             }
             if (headings != null) panel.Children.Add(Row(headings, true, false));
-            var list = new ListBox { MaxHeight = 380, Background = Brushes.Transparent, BorderThickness = new(0), Padding = new(0), SelectionMode = SelectionMode.Single };
+            var list = new ListBox { MaxHeight = listHeight, Background = Brushes.Transparent, BorderThickness = new(0), Padding = new(0), SelectionMode = SelectionMode.Single };
             list.Styles.Add(new Style(x => x.OfType<ListBoxItem>()) { Setters = { new Setter(ListBoxItem.PaddingProperty, new Thickness(0)), new Setter(ListBoxItem.MinHeightProperty, 0.0), new Setter(ListBoxItem.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch) } });
             ScrollViewer.SetAllowAutoHide(list, false); ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
             list.ItemTemplate = new FuncDataTemplate<GuideRow>((row, _) => row == null ? new Border() : Row(row.Cells, false, row.IsCurrent));
@@ -105,7 +111,7 @@ internal static class ColumnGuideFlyout
             long.TryParse(currentValue?.Trim(), out var mask);
             var set = mask > 0 ? entry.Bits.Select((text, i) => (text, i)).Where(b => !string.IsNullOrWhiteSpace(b.text) && (mask & (1L << b.i)) != 0).Select(b => $"bit {b.i}: {b.text}").ToArray() : [];
             if (set.Length > 0) panel.Children.Add(new SelectableTextBlock { Text = $"Set in ‘{mask}’: " + string.Join(" · ", set), TextWrapping = TextWrapping.Wrap, Foreground = Accent });
-            panel.Children.Add(new ScrollViewer { MaxHeight = 220, Content = new SelectableTextBlock { Text = string.Join("\n", bits), TextWrapping = TextWrapping.Wrap, Foreground = Mono }, AllowAutoHide = false });
+            panel.Children.Add(new ScrollViewer { MaxHeight = Math.Max(220, listHeight / 2), Content = new SelectableTextBlock { Text = string.Join("\n", bits), TextWrapping = TextWrapping.Wrap, Foreground = Mono }, AllowAutoHide = false });
         }
         var footer = new DockPanel { Margin = new(0, 4, 0, 0) };
         var url = ColumnGuide.Url(tableName, column);

@@ -123,7 +123,7 @@ public partial class MainWindow
                 var build = await controller.ExecuteAsync(current, profile, settings, true, false, operation.Token, Log, ReviewDeploymentOwnershipAsync);
                 var session = await Task.Run(() => ExternalEditorSync.Begin(current, build, settings.DeploymentDirectory));
                 WatchExternalSession();
-                var workspace = Inside(session.Target, current.Name + ".mpq/data/global/excel");
+                var workspace = Inside(session.Target, build.ModName + ".mpq/data/global/excel");
                 var file = "";
                 if (source != null)
                 {

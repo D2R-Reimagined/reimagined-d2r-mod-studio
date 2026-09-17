@@ -9,9 +9,11 @@ public sealed class BuildFailure(List<Diagnostic> diagnostics) : Exception(strin
 
 public static class BuildService
 {
-    public static BuildResult Build(ModProject project, string profile, CancellationToken token = default, Action<string>? progress = null)
+    /// <param name="modName">The mod folder name the output is laid out for (its .mpq folder and the game's -mod argument); the project name unless the deployment folder is called something else.</param>
+    public static BuildResult Build(ModProject project, string profile, CancellationToken token = default, Action<string>? progress = null, string? modName = null)
     {
         Require(project.Profiles.Contains(profile), "Unknown runtime profile.");
+        modName ??= project.Name; ModProject.ValidateName(modName);
         using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
         ExternalEditorSync.RequireClean(project);
         var id = Guid.NewGuid().ToString("N"); var folder = Inside(project.Cache, "builds/current");
@@ -52,13 +54,13 @@ public static class BuildService
             var modInfoPath = Inside(snapshot, "modinfo.json");
             var modInfo = File.Exists(modInfoPath) ? Read(modInfoPath) : new JsonObject { ["name"] = project.Name, ["version"] = "1.0.0", ["savepath"] = project.Name + "/" };
             var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>()))).ToArray();
-            var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + project.Name + profile + Json(settings) + string.Join("", rules.Select(Json)));
+            var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + modName + profile + Json(settings) + string.Join("", rules.Select(Json)));
             var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>();
             void Emit(string relative, byte[] bytes)
             {
                 Require(generated.Add(relative), $"Duplicate generated target: {relative}"); var target = Inside(output, relative); if (BuildCache.WriteChanged(target, bytes)) written++;
             }
-            var dataPrefix = project.Name + ".mpq/data/";
+            var dataPrefix = modName + ".mpq/data/";
             foreach (var kind in new[] { "tables", "strings" })
             {
                 var sourceRoot = Path.Combine(snapshot, "source", kind); if (!Directory.Exists(sourceRoot)) continue;
@@ -168,12 +170,12 @@ public static class BuildService
                 }
                 if (BuildCache.WriteChanged(destination, bytes)) written++; generated.Add(relative);
             }
-            Emit(project.Name + ".mpq/modinfo.json", File.Exists(modInfoPath) ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
+            Emit(modName + ".mpq/modinfo.json", File.Exists(modInfoPath) ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
             token.ThrowIfCancellationRequested();
             progress?.Invoke("Writing build manifest…");
             foreach (var old in Files(output)) if (!generated.Contains(Relative(output, old))) File.Delete(old);
             var entries = FileEntries(output).Select(f => new BuildFile(Relative(output, f.FullName), BuildCache.FileHash(f), f.Length)).ToList();
-            var result = new BuildResult(id, profile, project.Id, project.Name, output, entries, snapshot, [.. catalogWarnings, .. semanticDiagnostics]);
+            var result = new BuildResult(id, profile, project.Id, modName, output, entries, snapshot, [.. catalogWarnings, .. semanticDiagnostics]);
             AtomicWrite(Inside(folder, "build.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(result, Pretty));
             AtomicWrite(cacheFile, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(cache, Pretty));
             BuildCache.SaveFingerprints(project);

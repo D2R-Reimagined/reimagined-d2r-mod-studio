@@ -83,7 +83,7 @@ public static class ExternalEditorSync
             _ = Inside(project.Root, table.Source);
             foreach (var path in table.Outputs.Keys)
             {
-                Require(path.StartsWith(project.Name + ".mpq/data/global/excel/", StringComparison.Ordinal) && path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase), "Invalid external output mapping.");
+                Require(path.StartsWith(DeploymentService.ModName(session.Target) + ".mpq/data/global/excel/", StringComparison.Ordinal) && path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase), "Invalid external output mapping.");
                 _ = Inside(session.Target, path);
             }
         }
@@ -120,8 +120,7 @@ public static class ExternalEditorSync
     {
         target = Path.GetFullPath(target); NoLinks(target);
         Require(!Contains(project.Root, target) && !Contains(target, project.Root), "External editor deployment must not overlap source.");
-        Require(Path.GetFileName(target) == project.Name, "External editor deployment must be the project's mod folder.");
-        Require(build.ProjectId == project.Id && build.ModName == project.Name, "Build belongs to another project.");
+        Require(build.ProjectId == project.Id && build.ModName == DeploymentService.ModName(target), "Build belongs to another project or was laid out for a different mod folder.");
         var owner = JsonSerializer.Deserialize<DeploymentManifest>(File.ReadAllBytes(Inside(target, ".studio-owner.json")), Pretty)!;
         Require(owner.ProjectId == project.Id && owner.BuildId == build.Id && owner.Profile == build.Profile, "Deploy this build before opening the external editor.");
         var tables = new List<ExternalTable>();
@@ -130,7 +129,7 @@ public static class ExternalEditorSync
             var table = TableData.Load(source); var outputs = new Dictionary<string, byte[]>();
             foreach (var bank in (JsonArray)table.Schema["targets"]!)
             {
-                var path = project.Name + ".mpq/data/" + bank!.GetValue<string>();
+                var path = build.ModName + ".mpq/data/" + bank!.GetValue<string>();
                 var bytes = File.ReadAllBytes(Inside(target, path));
                 Require(build.Files.Any(f => f.Path == path && f.Sha256 == Hash(bytes)), "Deployed TXT changed while starting external editing: " + path);
                 outputs.Add(path, bytes);
@@ -224,7 +223,7 @@ public static class ExternalEditorSync
         var conflicts = new List<string>(); var proposals = new Dictionary<string, string>();
         JsonNode? Rule(TableData table, int row, string column, string output)
         {
-            var bank = output[(project.Name + ".mpq/data/").Length..];
+            var bank = output[(DeploymentService.ModName(session.Target) + ".mpq/data/").Length..];
             var matches = rules.Values.Where(r => r.S("table") == table.Name && r.S("record") == table.Records[row].S("sourceId") && r["changes"]?[column] != null &&
                 (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))).ToArray();
             Require(matches.Length <= 1, "Competing profile overrides.");
@@ -235,7 +234,7 @@ public static class ExternalEditorSync
         TableData Effective(TableData table, string output)
         {
             var resolved = ParseSource(Json(table.ToFile()));
-            var bank = output[(project.Name + ".mpq/data/").Length..];
+            var bank = output[(DeploymentService.ModName(session.Target) + ".mpq/data/").Length..];
             var indices = table.Records.Select((r, i) => (Id: r.S("sourceId"), Index: i)).ToDictionary(r => r.Id, r => r.Index);
             var occupied = new HashSet<string>();
             foreach (var rule in rules.Values.Where(r => r.S("table") == table.Name && (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))))

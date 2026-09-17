@@ -27,6 +27,7 @@ public sealed partial class EditorPane
         protected override Control GenerateEditingElement(DataGridCell cell, object dataItem, out BindingExpressionBase? binding) { binding = null; return new Panel(); }
         protected override object? PrepareCellForEdit(Control editingElement, Avalonia.Interactivity.RoutedEventArgs editingEventArgs) => null;
     }
+    private static readonly IBrush FrozenHeaderTint = new SolidColorBrush(Color.Parse("#33D8BC86"));
     /// <summary>Non-frozen columns in display order (table column indexes); the window is a range of positions in this array.</summary>
     private int[] scrollOrder = [];
     private int windowStart, windowEnd;
@@ -79,11 +80,16 @@ public sealed partial class EditorPane
             var label = new TextBlock { Text = Header(i, sortMark: false), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
             // Documented columns show the data-guide card; others keep their complete name.
             ColumnGuideTooltip.Attach(label, Document.Table, Document.Table!.Columns[i], Document.Table.Columns[i]);
-            if (Document.Table.Columns[i] != sortColumn) return label;
-            // The sort chevron sits at the far edge so a narrow column trims the name, never the indicator.
-            var chevron = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(descending ? "M0,0 L3.5,4 L7,0" : "M0,4 L3.5,0 L7,4"), Stroke = new SolidColorBrush(Color.Parse("#D8BC86")), StrokeThickness = 1.5, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round, Width = 7, Height = 4, Stretch = Stretch.None, Margin = new Thickness(4, 0, 6, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
-            DockPanel.SetDock(chevron, Dock.Right);
-            return new DockPanel { Children = { chevron, label } };
+            // Frozen columns carry the same tint as their cells, so the pinned block is recognizable at the header too.
+            Control content = label;
+            if (Document.Table.Columns[i] == sortColumn)
+            {
+                // The sort chevron sits at the far edge so a narrow column trims the name, never the indicator.
+                var chevron = new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(descending ? "M0,0 L3.5,4 L7,0" : "M0,4 L3.5,0 L7,4"), Stroke = new SolidColorBrush(Color.Parse("#D8BC86")), StrokeThickness = 1.5, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round, Width = 7, Height = 4, Stretch = Stretch.None, Margin = new Thickness(4, 0, 6, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+                DockPanel.SetDock(chevron, Dock.Right);
+                content = new DockPanel { Children = { chevron, label } };
+            }
+            return frozenColumns.Contains(i) ? new Border { Background = FrozenHeaderTint, Child = content, Padding = new Thickness(6, 3), CornerRadius = new CornerRadius(3) } : content;
         });
         column.PropertyChanged += (_, e) =>
         {

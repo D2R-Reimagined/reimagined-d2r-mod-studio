@@ -22,6 +22,12 @@ public sealed class TableData
     }
     /// <summary>Position of a column key; -1 when the table has no such column.</summary>
     public int ColumnIndex(string column) => columnIndex.TryGetValue(column, out var index) ? index : -1;
+    /// <summary>Spreadsheet letter of a physical column: 0 → A, 25 → Z, 26 → AA. It follows the TXT column order, not the order columns are shown in.</summary>
+    public static string ColumnLetter(int index)
+    {
+        var letters = ""; for (int n = index; n >= 0; n = n / 26 - 1) letters = (char)('A' + n % 26) + letters;
+        return letters;
+    }
     private static readonly Regex OriginalId = new("^row-([0-9]{5})$");
     /// <summary>Slot number of an imported row (its sourceId is row-NNNNN below protectedRows); -1 for rows added in Studio.</summary>
     public int OriginalSlot(int row)

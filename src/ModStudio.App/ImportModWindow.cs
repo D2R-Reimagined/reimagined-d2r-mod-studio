@@ -25,6 +25,7 @@ public sealed class ImportModWindow : Window
     private readonly ComboBox candidates = new() { HorizontalAlignment = HorizontalAlignment.Stretch, IsVisible = false };
     private readonly RadioButton convert = new() { Content = "Convert this folder in place, keeping a timestamped backup beside it (recommended)", IsChecked = true, GroupName = "mode" }, copy = new() { Content = "Create a new project in a separate folder", GroupName = "mode" };
     private readonly Button import = new() { Content = "Import", Classes = { "accent" } };
+    private readonly Button browseDestination;
     private readonly DispatcherTimer detectTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly string projectsFolder;
     private IReadOnlyList<LegacyProject> detected = [];
@@ -45,7 +46,8 @@ public sealed class ImportModWindow : Window
         panel.Children.Add(candidates); panel.Children.Add(sourceStatus);
         panel.Children.Add(Row("Mod name", name, null));
         var modes = new StackPanel { Spacing = 4 }; modes.Children.Add(convert); modes.Children.Add(copy); panel.Children.Add(modes);
-        panel.Children.Add(Row("Project folder\n(where you edit)", destination, Browse("Choose where the project should live", path => { destinationEdited = true; destination.Text = ChooseInside(path, name.Text ?? ""); })));
+        browseDestination = Browse("Choose where the project should live", path => { destinationEdited = true; destination.Text = ChooseInside(path, name.Text ?? ""); });
+        panel.Children.Add(Row("Project folder\n(where you edit)", destination, browseDestination));
         panel.Children.Add(destinationStatus);
         panel.Children.Add(Row("Game mods folder\n(where Studio deploys)", deployment, Browse("Choose the game's mods/<mod-name> folder", path => { deploymentEdited = true; deployment.Text = path; })));
         panel.Children.Add(deploymentStatus);
@@ -134,7 +136,8 @@ public sealed class ImportModWindow : Window
         // Old one-file-per-record projects can only be imported as a copy; fall back before the rest of the form reads the mode.
         if (!convert.IsEnabled && convert.IsChecked == true) { updating = false; copy.IsChecked = true; return; }
         if (!destinationEdited) destination.Text = inPlace && selected != null ? selected.Root : Path.Combine(projectsFolder, modName);
-        destination.IsEnabled = !inPlace;
+        // In-place conversion has no separate project folder: the box and its Browse button both go inactive, so a picked folder cannot be silently ignored.
+        destination.IsEnabled = !inPlace; browseDestination.IsEnabled = !inPlace;
         var install = installations.FirstOrDefault();
         if (!deploymentEdited) deployment.Text = install == null ? "" : Path.Combine(install.Directory, "mods", modName);
         destinationStatus.Text = inPlace ? "The converted project replaces this folder after verification. Close other tools using it first." : "Editable source files, migration report and local build output live here. Git-friendly.";

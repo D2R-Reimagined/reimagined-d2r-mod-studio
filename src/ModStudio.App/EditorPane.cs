@@ -57,7 +57,41 @@ public sealed partial class EditorPane : Grid
     public Document Document { get; }
     public DataGrid TableGrid { get; } = CreateGrid();
     public DataGrid FrozenGrid { get; } = CreateGrid();
-    public TextEditor Source { get; } = new() { ShowLineNumbers = true, FontFamily = new("Consolas, Menlo, monospace"), FontSize = 13, IsVisible = false };
+    public TextEditor Source { get; } = new() { ShowLineNumbers = true, FontFamily = new(ViewSettings.DefaultSourceFontFamily), FontSize = ViewSettings.DefaultSourceFontSize, IsVisible = false };
+    /// <summary>Live JSON check of the source editor: the offending line is marked in the editor and named in the status line while typing, before Apply.</summary>
+    private readonly SourceCodeEditing.ErrorMarks sourceErrors;
+    private readonly DispatcherTimer sourceCheck = new() { Interval = TimeSpan.FromMilliseconds(350) };
+    public IReadOnlyList<(int Line, int Column, string Message)> SourceErrors => sourceErrors.Errors;
+    private double appliedTableFontSize = ViewSettings.DefaultTableFontSize;
+    private bool viewSettingsStale;
+    /// <summary>
+    /// Restyles the pane for the current view settings. Column widths are scaled with the font instead of re-measured, so a
+    /// zoom step is a handful of property sets rather than a text measurement per column; the next Fit columns re-measures.
+    /// </summary>
+    private void ApplyViewSettings()
+    {
+        if (!IsVisible) { viewSettingsStale = true; return; }
+        viewSettingsStale = false;
+        ViewSettings.Apply(Source); ViewSettings.Apply(TableGrid); ViewSettings.Apply(FrozenGrid);
+        double ratio = ViewSettings.TableFontSize / appliedTableFontSize; appliedTableFontSize = ViewSettings.TableFontSize;
+        if (Math.Abs(ratio - 1) < 0.001 || Document.Table == null || columnMap.Count == 0) return;
+        foreach (var key in fittedWidths.Keys.ToArray()) fittedWidths[key] = Math.Round(fittedWidths[key] * ratio);
+        foreach (var key in widths.Keys.ToArray()) if (widths[key].IsAbsolute) widths[key] = new DataGridLength(Math.Round(widths[key].Value * ratio));
+        ApplyColumnWidths();
+    }
+    private void CheckSource()
+    {
+        sourceCheck.Stop();
+        if (!System.IO.Path.GetExtension(Document.FilePath).Equals(".json", StringComparison.OrdinalIgnoreCase)) return;
+        try { using var _ = System.Text.Json.JsonDocument.Parse(Source.Text ?? "", Document.SourceJsonOptions); sourceErrors.Set([]); }
+        catch (System.Text.Json.JsonException ex)
+        {
+            // Byte positions are what the reader offers; for the ASCII that JSON mostly is they equal columns.
+            var message = ex.Message; int cut = message.IndexOf(" LineNumber:", StringComparison.Ordinal); if (cut > 0) message = message[..cut].TrimEnd();
+            sourceErrors.Set([((int)(ex.LineNumber ?? 0) + 1, (int)(ex.BytePositionInLine ?? 0), message)]);
+        }
+        UpdateNote();
+    }
     public IReadOnlyList<int> FrozenRows => frozenRows;
     public IReadOnlyList<int> FrozenColumns => frozenColumns;
     public string? SortColumn => sortColumn;
@@ -78,6 +112,8 @@ public sealed partial class EditorPane : Grid
     private readonly ComboBox skillClassDropdown = new() { Width = 145, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0) };
     private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Enter)", Width = 180, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap };
+    /// <summary>The status line under the table or source view (record counts, the cell being edited, source errors).</summary>
+    public string StatusText => note.Text ?? "";
     private readonly Dictionary<DataGridColumn, int> columnMap = [];
     private readonly Dictionary<int, DataGridLength> widths = [];
     private readonly Dictionary<int, double> fittedWidths = [];
@@ -113,7 +149,7 @@ public sealed partial class EditorPane : Grid
     {
         CellTheme = Application.Current?.TryFindResource("TableCellTheme", out var theme) == true ? theme as Avalonia.Styling.ControlTheme : null,
         AutoGenerateColumns = false, CanUserReorderColumns = false, CanUserSortColumns = true, CanUserResizeColumns = true,
-        RowHeight = 30, RowHeaderWidth = 60, HeadersVisibility = DataGridHeadersVisibility.All, SelectionMode = DataGridSelectionMode.Extended, IsReadOnly = false,
+        FontSize = ViewSettings.DefaultTableFontSize, RowHeight = 30, RowHeaderWidth = 60, HeadersVisibility = DataGridHeadersVisibility.All, SelectionMode = DataGridSelectionMode.Extended, IsReadOnly = false,
         HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Visible, VerticalScrollBarVisibility = ScrollBarVisibility.Visible
     };
@@ -123,6 +159,16 @@ public sealed partial class EditorPane : Grid
         Document = document; error = onError; selection = onSelection; this.findOpenDocument = findOpenDocument; activeGrid = TableGrid;
         Source.SyntaxHighlighting = SourceCodeEditing.Highlighting(document.FilePath);
         Source.Options.ConvertTabsToSpaces = true; Source.Options.IndentationSize = 4;
+        ViewSettings.Follow(this, ApplyViewSettings);
+        // Hidden panes (other tabs) catch up when shown, so a zoom step only costs the pane on screen.
+        PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && IsVisible && viewSettingsStale) ApplyViewSettings(); };
+        InitializeZoom();
+        SourceCodeEditing.AttachContextMenu(Source);
+        SourceCodeEditing.AttachBracketHighlighting(Source);
+        sourceErrors = SourceCodeEditing.AttachErrorMarks(Source);
+        sourceCheck.Tick += (_, _) => CheckSource();
+        Source.TextChanged += (_, _) => { sourceCheck.Stop(); sourceCheck.Start(); };
+        DetachedFromVisualTree += (_, _) => sourceCheck.Stop();
         RowDefinitions = new("Auto,*,Auto");
         var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(6) };
         void Button(string label, Action action) { var b = EditorToolbarIcons.Create(label); b.Click += (_, _) => { try { action(); } catch (Exception e) { error(e); } }; toolbar.Children.Add(b); }
@@ -143,6 +189,7 @@ public sealed partial class EditorPane : Grid
             Item("Lock / unlock current column against edits", ToggleColumnLock),
             Item("Unlock all edits", () => { document.LockedRows.Clear(); document.LockedColumns.Clear(); Refresh(); }) };
         view.Click += (_, _) => menu.Open(view); toolbar.Children.Add(view);
+        InitializeViewMenu(toolbar);
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
         InitializeSkillClassDropdown(toolbar);
         InitializeItemCardToggle(toolbar);
@@ -179,6 +226,7 @@ public sealed partial class EditorPane : Grid
                     if (document.Text.Contains("\r\n")) formatted = formatted.Replace("\r\n", "\n").Replace("\n", "\r\n");
                     document.SetRaw(bom + formatted); document.ApplySource(); Refresh();
                 });
+            InitializeViewMenu(toolbar);
         }
         if (System.IO.Path.GetExtension(document.FilePath).Equals(".md", StringComparison.OrdinalIgnoreCase) || System.IO.Path.GetExtension(document.FilePath).Equals(".markdown", StringComparison.OrdinalIgnoreCase))
         {
@@ -198,6 +246,7 @@ public sealed partial class EditorPane : Grid
             Button("Preview", ShowMarkdownPreview);
             Button("Undo", Undo); Button("Redo", Redo);
             Button("Refresh preview", ShowMarkdownPreview);
+            InitializeViewMenu(toolbar);
             toolbar.Children.Add(new TextBlock { Text = "GitHub-style Markdown preview", Margin = new(10, 7) });
         }
         var saveButton = EditorToolbarIcons.Create("Save");
@@ -357,7 +406,9 @@ public sealed partial class EditorPane : Grid
         clear.Click += (_, _) => { try { activeGrid = grid; ApplyToSelection("", null); } catch (Exception ex) { error(ex); } };
         int rowsToAdd = Math.Max(1, rows.Length); string added = rowsToAdd == 1 ? "row" : $"{rowsToAdd} rows";
         int above = rows.Length > 0 ? rows.Min() : table.Records.Count, below = rows.Length > 0 ? rows.Max() + 1 : table.Records.Count;
-        return new ContextMenu { ItemsSource = new Control[] {
+        var transform = SelectedCellIsColorTransform ? new Control[] { Item($"Pick colour transform for {SelectedColumn}…", () => ShowColorTransformPicker(grid), !Document.PendingSource), new Separator() } : [];
+        return new ContextMenu { ItemsSource = (Control[])[
+            .. transform,
             Item($"Add {added} above", () => InsertRows(above, rowsToAdd), addable && rows.Length > 0),
             Item($"Add {added} below", () => InsertRows(below, rowsToAdd), addable),
             Item(rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
@@ -368,7 +419,7 @@ public sealed partial class EditorPane : Grid
             new Separator(),
             Item($"{(frozenColumns.Contains(Array.IndexOf(Document.Table!.Columns, SelectedColumn)) ? "Unfreeze" : "Freeze")} column: {SelectedColumn}", () => ToggleFrozenColumn(SelectedColumn)),
             Item($"{(Document.LockedColumns.Contains(SelectedColumn) ? "Unlock" : "Lock")} column: {SelectedColumn} against edits", ToggleColumnLock)
-        } };
+        ] };
     }
     private void BeginInput(DataGrid grid)
     {
@@ -393,7 +444,7 @@ public sealed partial class EditorPane : Grid
     private string Header(int column, bool sortMark = true)
     {
         var name = Document.Table!.Columns[column];
-        return (frozenColumns.Contains(column) ? "▣ " : "") + name + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
+        return (frozenColumns.Contains(column) ? "▣ " : "") + ColumnLabel(column, name) + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
     }
     private double FitColumn(int index)
     {
@@ -577,9 +628,13 @@ public sealed partial class EditorPane : Grid
     private void UpdateNote()
     {
         if (MarkdownPreview != null) { note.Text = Document.IsDirty ? "Unsaved Markdown · Preview includes current edits" : "Markdown · Source and rendered preview"; return; }
-        if (Document.Table == null) { note.Text = (Source.SyntaxHighlighting?.Name ?? "Plain text") + (Document.IsDirty ? " · Unsaved edits" : "") + " · Save writes to disk"; return; }
+        var sourceError = Source.IsVisible && sourceErrors.Errors.Count > 0 ? $"⚠ Line {sourceErrors.Errors[0].Line}: {sourceErrors.Errors[0].Message} · " : "";
+        if (Document.Table == null) { note.Text = sourceError + (Source.SyntaxHighlighting?.Name ?? "Plain text") + (Document.IsDirty ? " · Unsaved edits" : "") + " · Save writes to disk"; return; }
         Source.IsReadOnly = Document.HasEditLocks;
-        note.Text = Document.PendingSource ? "Raw source pending validation. Table editing is paused." :
+        // While a cell is being typed the status line follows the editor: formula authors count characters and match parentheses here instead of in another editor.
+        if (editingCell is { } editing && liveEditor != null && editing.Col < Document.Table!.Columns.Length)
+        { note.Text = $"Editing {Document.Table.Columns[editing.Col]} · {EditorTextInfo.Describe(liveEditor.Text)}"; return; }
+        note.Text = Document.PendingSource ? sourceError + "Raw source pending validation. Table editing is paused." :
             $"{Document.Table?.Records.Count ?? 0:N0} records · {frozenRows.Count} frozen rows · {Document.LockedRows.Count} locked rows / {Document.LockedColumns.Count} columns" +
             (sortColumn == null ? " · source order" : $" · {sortColumn} {(descending ? "▼ descending" : "▲ ascending")}") +
             (Source.IsVisible && Document.HasEditLocks ? " · Unlock edits to change Source" : "");

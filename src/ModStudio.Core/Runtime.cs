@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
@@ -7,6 +8,15 @@ namespace ModStudio.Core;
 public record RunSettings(string DeploymentDirectory = "", string Executable = "", string Runner = "", string[]? RunnerArguments = null, string[]? Arguments = null, bool SaveBeforePlay = true, string GameDirectory = "", string LaunchTarget = "D2R.exe", bool OverwriteDestination = true)
 {
     public string InstallationDirectory => string.IsNullOrWhiteSpace(GameDirectory) ? Path.GetDirectoryName(Executable) ?? "" : GameDirectory;
+    /// <summary>The name the mod is built and launched under: the deployment folder's name, so a project can be deployed to a second folder such as mods/MyMod-test; the project name until a folder is chosen.</summary>
+    public string ModName(ModProject project)
+    {
+        if (string.IsNullOrWhiteSpace(DeploymentDirectory)) return project.Name;
+        // An unusable deployment path is reported by PathIssues and by Deploy itself; Build alone should still run.
+        try { var name = DeploymentService.ModName(DeploymentDirectory); return name.Length == 0 ? project.Name : name; }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return project.Name; }
+    }
+    private static bool SamePath(string a, string b) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)).Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     public static string[] DetectExecutables(string directory)
     {
         if (!Directory.Exists(directory)) return [];
@@ -39,8 +49,12 @@ public record RunSettings(string DeploymentDirectory = "", string Executable = "
                 var target = Path.GetFullPath(DeploymentDirectory);
                 if (File.Exists(target)) issues.Add("Deployment must be a folder, not a file.");
                 if (Contains(project.Root, target) || Contains(target, project.Root)) issues.Add("Deployment must be outside the source project, without overlapping it.");
-                if (!Path.GetFileName(Path.TrimEndingDirectorySeparator(target)).Equals(project.Name, StringComparison.Ordinal)) issues.Add($"Select the final mod folder named {project.Name}, not the game, mods, .mpq or data folder.");
-                if (!string.IsNullOrWhiteSpace(ResolvedExecutable) && !string.Equals(Path.TrimEndingDirectorySeparator(target), Path.GetFullPath(Path.Combine(InstallationDirectory, "mods", project.Name)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) issues.Add($"For Play, deployment must be beside the selected executable under mods/{project.Name}.");
+                // The folder name becomes the deployed mod's name (its .mpq folder, the -mod argument); it need not match the project.
+                var folder = DeploymentService.ModName(target);
+                if (folder.Length == 0 || folder is "mods" or "data" or "global" or "hd" or "local" || folder.EndsWith(".mpq", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(InstallationDirectory) && Directory.Exists(InstallationDirectory) && SamePath(target, InstallationDirectory))
+                    issues.Add($"Select the final mod folder, for example mods/{project.Name}, not the game, mods, .mpq or data folder.");
+                else if (!Regex.IsMatch(folder, "^[A-Za-z0-9_-]{1,80}$")) issues.Add("The deployment folder name becomes the mod name: use 1–80 letters, digits, underscores or hyphens.");
+                if (!string.IsNullOrWhiteSpace(ResolvedExecutable) && !SamePath(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(target)) ?? "", Path.Combine(InstallationDirectory, "mods"))) issues.Add("For Play, deployment must be beside the selected executable under mods/<mod-name>.");
             }
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException) { issues.Add("Invalid path: " + ex.Message); }
@@ -85,15 +99,17 @@ public static class DeploymentService
 {
     private const string Owner = ".studio-owner.json";
     private const string Transaction = ".studio-transaction";
+    /// <summary>The mod name a deployment folder stands for: its own name. The game loads mods/&lt;name&gt;/&lt;name&gt;.mpq, so the build must be laid out for the same name.</summary>
+    public static string ModName(string target) => Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(target)));
     public static void Deploy(ModProject project, BuildResult build, string target, CancellationToken token = default, Action<string>? progress = null, bool overwriteDestination = false, string? reviewedOwnerHash = null)
     {
         using var buildLock = BuildCache.Lock(project); using var pathChecks = PathChecks(); BuildCache.LoadFingerprints(project);
         var buildManifest = Inside(project.Cache, "builds/current/build.json");
         Require(File.Exists(buildManifest) && JsonSerializer.Deserialize<BuildResult>(File.ReadAllText(buildManifest), Pretty)?.Id == build.Id, "Build was replaced or did not finish. Rebuild before deploying.");
-        Require(build.ProjectId == project.Id && build.ModName == project.Name, "Build belongs to a different project.");
+        Require(build.ProjectId == project.Id, "Build belongs to a different project.");
         Require(!string.IsNullOrWhiteSpace(target), "Choose a deployment mod folder in Run settings."); target = Path.GetFullPath(target); NoLinks(target);
         Require(!Contains(project.Root, target) && !Contains(target, project.Root), "Source and deployment folders must not overlap.");
-        Require(Path.GetFileName(target).Equals(project.Name, StringComparison.Ordinal), $"Deployment must be the mod folder named {project.Name}, for example game/mods/{project.Name}.");
+        Require(ModName(target).Equals(build.ModName, StringComparison.Ordinal), $"This build is laid out for a mod folder named {build.ModName}; rebuild for {ModName(target)} before deploying there.");
         ExternalEditorSync.RequireClean(project, build.Profile, target);
         Directory.CreateDirectory(target);
         using var fileLock = new FileStream(Inside(target, ".studio-deploy.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -210,12 +226,13 @@ public sealed class RunController : IDisposable
     {
         var executable = settings.ResolvedExecutable;
         Require(File.Exists(executable), "Choose the game installation folder and an available launch target in Run settings.");
-        Require(string.Equals(Path.GetFullPath(settings.DeploymentDirectory), Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "mods", project.Name)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal), "Play requires deployment to the selected game's mods/<mod-name> folder.");
+        var modName = settings.ModName(project); ModProject.ValidateName(modName);
+        Require(string.Equals(Path.GetFullPath(settings.DeploymentDirectory), Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "mods", modName)), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal), "Play requires deployment to the selected game's mods/<mod-name> folder.");
         if (!OperatingSystem.IsWindows() && executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) Require(File.Exists(settings.Runner), "Configure Wine/Proton or another supported runner for a Windows executable on this platform.");
         if (!string.IsNullOrEmpty(settings.Runner)) Require(File.Exists(settings.Runner), "Runner executable does not exist.");
         var start = new ProcessStartInfo { FileName = string.IsNullOrEmpty(settings.Runner) ? executable : settings.Runner, WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         if (!string.IsNullOrEmpty(settings.Runner)) { foreach (var arg in settings.RunnerArguments ?? []) start.ArgumentList.Add(arg); start.ArgumentList.Add(executable); }
-        foreach (var arg in new[] { "-mod", project.Name, "-txt" }.Concat(settings.Arguments ?? [])) start.ArgumentList.Add(arg);
+        foreach (var arg in new[] { "-mod", modName, "-txt" }.Concat(settings.Arguments ?? [])) start.ArgumentList.Add(arg);
         return start;
     }
     public async Task<BuildResult> ExecuteAsync(ModProject project, string profile, RunSettings settings, bool deploy, bool play, CancellationToken token, Action<string>? progress = null, Func<DeploymentOwnershipConflict, Task<bool>>? reviewOwnership = null)
@@ -225,7 +242,8 @@ public sealed class RunController : IDisposable
         {
             Require(!Running || !deploy, "Stop this editor's running game before deploying again.");
             var start = play ? CreateStartInfo(project, settings) : null;
-            var build = await Task.Run(() => BuildService.Build(project, profile, token, progress), token);
+            // Build for the folder the mod will be deployed to, so a second deployment folder such as mods/MyMod-test gets its own .mpq name.
+            var build = await Task.Run(() => BuildService.Build(project, profile, token, progress, settings.ModName(project)), token);
             if (deploy)
             {
                 try { await Task.Run(() => DeploymentService.Deploy(project, build, settings.DeploymentDirectory, token, progress, settings.OverwriteDestination), token); }

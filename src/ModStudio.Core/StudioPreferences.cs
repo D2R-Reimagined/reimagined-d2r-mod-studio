@@ -9,6 +9,16 @@ public sealed class StudioPreferences
     public string RowEditorSearch { get; set; } = "";
     /// <summary>Whether hovering a unique/set item row shows its rendered tooltip; the Item Preview tab is unaffected.</summary>
     public bool ItemHoverCards { get; set; } = true;
+    /// <summary>Whether table headers lead with the spreadsheet letter of the column (A … Z, AA …); off by default.</summary>
+    public bool ColumnLetters { get; set; }
+    /// <summary>Font of the source (JSON/text) editor; empty means the built-in monospace stack.</summary>
+    /// <summary>The pal.pl2 the colour-transform picker reads; empty until the user points at their extracted game data.</summary>
+    public string PalettePl2 { get; set; } = "";
+    public string SourceFontFamily { get; set; } = "";
+    public double SourceFontSize { get; set; } = 13;
+    /// <summary>Font of the table grid; empty means the app font.</summary>
+    public string TableFontFamily { get; set; } = "";
+    public double TableFontSize { get; set; } = 15;
     public List<string> SettingsIntroduced { get; set; } = [];
     /// <summary>Tool panels the user minimized to their strip: "explorer", "inspector", "bottom".</summary>
     public List<string> HiddenPanels { get; set; } = [];

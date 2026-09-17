@@ -47,7 +47,8 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); InitializeViewPreferences(); InitializeTabDragging(); Problems.ItemsSource = diagnostics;
+        EditorTextInfo.Attach(CellValue, () => CellValueInfo.Text = string.IsNullOrEmpty(CellValue.Text) ? "" : EditorTextInfo.Describe(CellValue.Text));
         catalogWarningTimer.Tick += async (_, _) => { catalogWarningTimer.Stop(); if (project is { } current) await RefreshCatalogIdWarningsAsync(current); };
         // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
         ToolbarActions.PropertyChanged += (_, e) =>
@@ -550,7 +551,7 @@ public partial class MainWindow : Window
             panel.Children.Add(new TextBlock { Text = $"Source project: {project!.Root}\nThis is the folder you edit. Studio discovers native data within a selected project during migration. Deployment is a separate game-ready output folder.", TextWrapping = TextWrapping.Wrap });
             TextBox Field(string label, string value) { panel.Children.Add(new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap }); var box = new TextBox { Text = value }; panel.Children.Add(box); return box; }
             var deployment = Field($"Deployment mod folder (…/mods/{project!.Name})", current.DeploymentDirectory);
-            panel.Children.Add(new TextBlock { Text = $"Example: C:/Games/Diablo II Resurrected/mods/{project.Name}\nSelect the final {project.Name} folder. Studio creates its .mpq/data contents. The destination may be new; do not select your source data folder.", TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = $"Example: C:/Games/Diablo II Resurrected/mods/{project.Name}\nSelect the final mod folder. Studio creates its .mpq/data contents. The destination may be new; do not select your source data folder.\nThe folder's name is the name the mod is built and launched under, so a second folder such as mods/{project.Name}-test deploys the same project as a separate mod.", TextWrapping = TextWrapping.Wrap });
             var pickDeploy = new Button { Content = "Browse deployment folder" }; pickDeploy.Click += async (_, _) => { var value = await PickFolderAsync("Deployment mod folder"); if (value != null) deployment.Text = value; }; panel.Children.Add(pickDeploy);
             var overwriteDestination = new CheckBox { Content = "Overwrite destination", IsChecked = current.OverwriteDestination }; panel.Children.Add(overwriteDestination);
             panel.Children.Add(new TextBlock { Text = "Replace existing files included in the build during Deploy / Play, including files edited outside Studio. Unrelated files are kept. Enabled by default; saved per profile.", TextWrapping = TextWrapping.Wrap });
@@ -599,7 +600,9 @@ public partial class MainWindow : Window
             void CheckPaths()
             {
                 var issues = new RunSettings(deployment.Text ?? "", Runner: runner.Text ?? "", GameDirectory: gameDirectory.Text ?? "", LaunchTarget: launchTarget.SelectedItem as string ?? "D2R.exe").PathIssues(project);
-                message.Text = issues.Count > 0 ? string.Join("\n", issues) : string.IsNullOrWhiteSpace(deployment.Text) || string.IsNullOrWhiteSpace(gameDirectory.Text) ? "Setup incomplete: Build works without game paths. Configure deployment and the game folder before Play." : "Paths look consistent. Deploy also checks folder ownership and existing files before copying.";
+                var modName = string.IsNullOrWhiteSpace(deployment.Text) ? project.Name : DeploymentService.ModName(deployment.Text);
+                var renamed = issues.Count == 0 && modName != project.Name ? $"\nDeploys and plays as mod ‘{modName}’ ({modName}.mpq, -mod {modName}) rather than ‘{project.Name}’." : "";
+                message.Text = (issues.Count > 0 ? string.Join("\n", issues) : string.IsNullOrWhiteSpace(deployment.Text) || string.IsNullOrWhiteSpace(gameDirectory.Text) ? "Setup incomplete: Build works without game paths. Configure deployment and the game folder before Play." : "Paths look consistent. Deploy also checks folder ownership and existing files before copying.") + renamed;
             }
             deployment.TextChanged += (_, _) => CheckPaths(); gameDirectory.TextChanged += (_, _) => { DetectLaunchers(); CheckPaths(); }; launchTarget.SelectionChanged += (_, _) => CheckPaths(); runner.TextChanged += (_, _) => CheckPaths(); CheckPaths();
             var save = new Button { Content = "Save local settings" }; save.Click += (_, _) => { try { new RunSettings(deployment.Text ?? "", "", runner.Text ?? "", JsonSerializer.Deserialize<string[]>(runnerArgs.Text ?? "[]"), JsonSerializer.Deserialize<string[]>(args.Text ?? "[]"), saveBefore.IsChecked == true, gameDirectory.Text ?? "", launchTarget.SelectedItem as string ?? current.LaunchTarget, overwriteDestination.IsChecked == true).Save(project, Profile); RefreshLaunchTargets(); dialog.Close(); } catch (Exception ex) { message.Text = ex.Message; } }; panel.Children.Add(save);
@@ -798,6 +801,7 @@ public partial class MainWindow : Window
             await SmokeLayoutAsync(output);
             await SmokeReorderAsync(root);
             await SmokeCatalogRowsAsync();
+            await SmokeEditingAidsAsync(root, output);
             await SmokeGitAsync(root, output);
             var detectedGame = System.IO.Path.GetFullPath(System.IO.Path.Combine(output, "game-installation")); Directory.CreateDirectory(detectedGame);
             File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2R.exe"), "fixture"); File.WriteAllText(System.IO.Path.Combine(detectedGame, "D2RLoader.exe"), "fixture");
@@ -1057,6 +1061,22 @@ public partial class MainWindow : Window
                 Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "abc", "Typing several characters into one cell did not commit the whole value.");
                 pane.Document.Undo(); pane.RefreshRowValues(clickedRow); await Task.Delay(50);
                 Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == singleBefore, $"Undo removed a single character instead of the whole typed value (now '{pane.Document.Table.Cell(clickedRow, cols[startIndex])}').");
+                }
+                // Arrow keys never leave a cell while it is being edited: Left/Right move the caret, Up/Down go to the start/end of the text; the status line counts the characters.
+                {
+                pane.SelectCell(clickedRow, startIndex); pane.TableGrid.Focus(); var arrowBefore = pane.Document.Table.Cell(clickedRow, cols[startIndex]);
+                this.KeyTextInput("("); await Task.Delay(120); this.KeyTextInput("b"); await Task.Delay(30);
+                var arrowEditor = pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Single(t => t.IsVisible && t.Text == "(b");
+                Require(pane.StatusText.StartsWith($"Editing {cols[startIndex]} · 2 / 255 chars") && pane.StatusText.Contains("never closed"), $"The status line did not follow the edited cell: '{pane.StatusText}'.");
+                this.KeyPress(Key.Left, RawInputModifiers.None, PhysicalKey.ArrowLeft, null); await Task.Delay(30);
+                Require(arrowEditor.CaretIndex == 1 && pane.SelectedCells.SequenceEqual([(clickedRow, startIndex)]), "Left arrow left the cell being edited.");
+                this.KeyPress(Key.Down, RawInputModifiers.None, PhysicalKey.ArrowDown, null); await Task.Delay(60);
+                Require(arrowEditor.IsVisible && arrowEditor.CaretIndex == 2 && pane.SelectedRow == clickedRow && pane.SelectedCells.SequenceEqual([(clickedRow, startIndex)]),
+                    $"Down arrow moved to another row instead of staying in the cell: editor visible {arrowEditor.IsVisible}, caret {arrowEditor.CaretIndex}, row {pane.SelectedRow} (expected {clickedRow}).");
+                this.KeyPress(Key.Up, RawInputModifiers.None, PhysicalKey.ArrowUp, null); await Task.Delay(60);
+                Require(arrowEditor.CaretIndex == 0 && pane.SelectedRow == clickedRow, "Up arrow left the cell being edited.");
+                this.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null); await Task.Delay(100);
+                Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == arrowBefore && !pane.StatusText.StartsWith("Editing"), $"Escape did not restore the cell, or the status line kept the edit: cell '{pane.Document.Table.Cell(clickedRow, cols[startIndex])}' (expected '{arrowBefore}'), status '{pane.StatusText}'.");
                 }
                 pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, shift: true);
                 pane.TableGrid.Focus(); this.KeyTextInput("7"); await Task.Delay(120);

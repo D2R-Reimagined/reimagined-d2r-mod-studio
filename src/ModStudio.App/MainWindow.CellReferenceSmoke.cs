@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Input.Raw;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
@@ -49,6 +50,17 @@ public partial class MainWindow
             await OpenDocumentAsync(file); source.Jump(row, "code"); await Wait(() => Arrow(row) is { Bounds.Width: > 0 });
         }
         await ShowSource(0);
+        var layoutRow = source.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
+            .First(r => r.IsVisible && r.DataContext is RowView { Row: 0 });
+        TextBlock CellText(int column) => source.GridColumnOf(source.TableGrid, column)!.GetCellContent(layoutRow)!
+            .GetVisualDescendants().OfType<TextBlock>().Single(t => t.Name == "CellTextBlock");
+        var plainText = CellText(0);
+        var referenceText = CellText(1);
+        Require(plainText.Margin.Left > 0 && referenceText.Margin.Left == plainText.Margin.Left &&
+            referenceText.Margin.Top == plainText.Margin.Top && referenceText.Margin.Bottom == plainText.Margin.Bottom,
+            $"Reference cell lost themed text spacing: plain={plainText.Margin}, reference={referenceText.Margin}.");
+        Require(referenceText.Margin == plainText.Margin && referenceText.Padding == new Thickness(0, 0, 16, 0),
+            "Reference arrow space replaced the themed margin or shifted the text's left edge.");
         Require(Arrow(4) is { IsVisible: false }, "Empty Gamble cell shows a reference arrow.");
         foreach (var (row, name) in new[] { (0, "armor"), (1, "weapons"), (2, "misc") })
         {
@@ -139,12 +151,156 @@ public partial class MainWindow
         await ShowSource(0);
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
         { bitmap.Render(this); bitmap.Save(Path.Combine(output, "gamble-cell-references.png"), PngBitmapEncoderOptions.Default); }
+        await SmokeEmptyCellSelectionAsync(source);
+        await SmokeTabCellSelectionAsync(source);
+        await SmokeCloneRowsAsync(source);
         await SmokeExpandedCellReferencesAsync(output);
         Require(!(Output.Text ?? "")[Math.Min(previousOutput, Output.Text?.Length ?? 0)..].Contains("There is no current row"),
             "Reference navigation reported a grid initialization error.");
         foreach (var tab in tabs.Where(t => t.Content is EditorPane p && p.Document.Table?.Name is "gamble" or "armor" or "misc" or "weapons").ToArray())
             await CloseTabAsync(tab);
         foreach (var name in new[] { "gamble", "armor", "misc", "weapons" }) File.Delete(Semantics.TableFile(project!, name));
+    }
+
+    private async Task SmokeCloneRowsAsync(EditorPane pane)
+    {
+        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Enter)");
+        foreach (bool append in new[] { true, false })
+        {
+            filter.Text = "Cap"; await pane.FilterAsync(); pane.SelectCell(0, 1);
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), Avalonia.Threading.DispatcherPriority.Background);
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+            var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
+                .Single(r => r.IsVisible && r.DataContext is RowView { Row: 0 });
+            var content = pane.GridColumnOf(pane.TableGrid, 1)!.GetCellContent(row)!;
+            var point = content.TranslatePoint(new Point(content.Bounds.Width / 2, content.Bounds.Height / 2), this)!.Value;
+            this.MouseDown(point, MouseButton.Right); this.MouseUp(point, MouseButton.Right);
+            var menu = pane.TableGrid.ContextMenu!;
+            var item = menu.Items.OfType<MenuItem>().Single(i => Equals(i.Header, append ? "Clone and Append" : "Clone and Insert"));
+            Require(item.IsEnabled, "Row cloning menu command is disabled for a selected row.");
+            int count = pane.Document.Table!.Records.Count, target = append ? count : 1;
+            menu.Close(); item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), Avalonia.Threading.DispatcherPriority.Background);
+            Require(pane.Document.Table.Records.Count == count + 1 && pane.Document.Table.Cell(target, "name") == "Cap" &&
+                pane.Document.Table.Cell(target, "code") == "cap" && !pane.Document.Table.IsOriginalRow(target),
+                "Clone menu command did not copy the complete row to the requested position.");
+            Require(filter.Text == "" && pane.SelectedCells.SequenceEqual([(target, 1)]),
+                "Clone menu command did not reveal and select the new row.");
+            pane.Document.Undo(); pane.Refresh();
+            Require(!pane.Document.IsDirty && pane.Document.Table.Records.Count == count, "Clone menu operation did not undo in one step.");
+        }
+    }
+
+    private async Task SmokeTabCellSelectionAsync(EditorPane pane)
+    {
+        async Task Settle()
+        {
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), Avalonia.Threading.DispatcherPriority.Background);
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+        }
+        async Task Type(string text)
+        {
+            this.KeyTextInput(text);
+            await Settle();
+        }
+        async Task Tab(bool reverse = false)
+        {
+            this.KeyPress(Key.Tab, reverse ? RawInputModifiers.Shift : RawInputModifiers.None, PhysicalKey.Tab, null);
+            await Settle();
+        }
+        void Selected(int row, int column)
+        {
+            Require(pane.SelectedCells.SequenceEqual([(row, column)]) &&
+                !pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Any(t => t.IsVisible),
+                $"Tab did not select {row}/{column} without editing: selection={string.Join(",", pane.SelectedCells)}, status={pane.StatusText}.");
+        }
+        pane.SelectCell(0, 0); await Settle();
+        await Type("tab edit"); await Tab();
+        Require(pane.Document.Table!.Cell(0, "name") == "tab edit", "Tab did not commit the source edit.");
+        Selected(0, 1);
+        this.KeyPress(Key.Delete, RawInputModifiers.None, PhysicalKey.Delete, null); await Settle();
+        Require(pane.Document.Table.Cell(0, "code") == "", "Delete after Tab did not clear the selected cell.");
+        await Type("typed after tab"); await Tab(true);
+        Require(pane.Document.Table.Cell(0, "code") == "typed after tab", "Typing after Tab did not enter edit mode.");
+        Selected(0, 0);
+        pane.SelectCell(0, 1); await Settle();
+        await Type("wrap"); await Tab(); Selected(1, 0);
+        await Type("reverse wrap"); await Tab(true); Selected(0, 1);
+        await Tab(); Selected(1, 0);
+        await Tab(true); Selected(0, 1);
+        // Restore each committed edit and the Delete operation before the navigation fixtures continue.
+        for (int i = 0; i < 5; i++) pane.Document.Undo();
+        pane.Refresh(); await Settle();
+        pane.SelectCell(0, 0); pane.SelectCell(0, 1, shift: true); await Settle();
+        await Type("bulk tab"); await Tab(); Selected(1, 0);
+        Require(pane.Document.Table.Cell(0, "name") == "bulk tab" && pane.Document.Table.Cell(0, "code") == "bulk tab",
+            "Tab did not commit the complete bulk edit before moving to a single cell.");
+        pane.Document.Undo(); pane.Refresh(); await Settle();
+        int addedRow = pane.Document.Table.Records.Count;
+        pane.SelectCell(-1, 0); await Settle();
+        await Type("new row tab"); await Tab(); Selected(addedRow, 1);
+        Require(pane.Document.Table.Records.Count == addedRow + 1 && pane.Document.Table.Cell(addedRow, "name") == "new row tab",
+            "Tab from the add-row editor lost the new row or its value.");
+        pane.Document.Undo(); pane.Document.Undo(); pane.Refresh(); await Settle();
+        Require(!pane.Document.IsDirty, "Tab smoke did not restore its fixture after adding a row.");
+    }
+
+    private async Task SmokeEmptyCellSelectionAsync(EditorPane pane)
+    {
+        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Enter)");
+        filter.Text = "Cap"; await pane.FilterAsync();
+        async Task Settle()
+        {
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), Avalonia.Threading.DispatcherPriority.Background);
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+        }
+        async Task Click(Control control, Point position)
+        {
+            await Settle();
+            var point = control.TranslatePoint(position, this)!.Value;
+            this.MouseDown(point, MouseButton.Left); this.MouseUp(point, MouseButton.Left);
+            await Settle();
+        }
+        try
+        {
+            await Settle();
+            foreach (bool besideRow in new[] { false, true })
+            {
+                var row = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
+                    .Single(r => r.IsVisible && r.DataContext is RowView { Row: 0 });
+                var header = row.GetVisualDescendants().OfType<Avalonia.Controls.Primitives.DataGridRowHeader>().Single();
+                await Click(header, new Point(header.Bounds.Width / 2, header.Bounds.Height / 2));
+                Require(pane.RowSelectionMode && pane.SelectedCells.Count == pane.Document.Table!.Columns.Length,
+                    "Filtered row header did not select the whole row.");
+                var rowY = row.TranslatePoint(new Point(0, row.Bounds.Height / 2), pane.TableGrid)!.Value.Y;
+                var emptyPoint = besideRow ? new Point(pane.TableGrid.Bounds.Width - 60, rowY)
+                    : new Point(100, pane.TableGrid.Bounds.Height - 60);
+                var hit = pane.TableGrid.InputHitTest(emptyPoint) as Visual;
+                Require(hit != null && !hit.GetSelfAndVisualAncestors().OfType<DataGridCell>()
+                    .Any(c => pane.TableGrid.Columns.Any(column => column.GetCellContent(row)?.GetVisualAncestors().Contains(c) == true)),
+                    "Deselection test did not target empty grid space.");
+                var revision = pane.Document.Revision;
+                await Click(pane.TableGrid, emptyPoint);
+                Require(pane.SelectedCells.Count == 0 && pane.SelectedRow == -1 &&
+                    !pane.RowSelectionMode && pane.TableGrid.SelectedItems.Count == 0 && pane.TableGrid.SelectedItem == null,
+                    $"Clicking empty space {(besideRow ? "beside" : "below")} the filtered row retained its selection: cells={pane.SelectedCells.Count}, row={pane.SelectedRow}, column='{pane.SelectedColumn}', rowMode={pane.RowSelectionMode}, items={pane.TableGrid.SelectedItems.Count}, item={pane.TableGrid.SelectedItem}.");
+                Require(row.GetVisualDescendants().OfType<DataGridCell>()
+                    .All(c => c.Background is not Avalonia.Media.SolidColorBrush { Color: var color } || color != Avalonia.Media.Color.Parse("#4A4123")),
+                    "Deselected cells retained their painted highlight.");
+                this.KeyTextInput("accidental"); this.KeyPress(Key.Delete, RawInputModifiers.None, PhysicalKey.Delete, null);
+                await Clipboard!.SetTextAsync("accidental"); await pane.PasteAsync();
+                await Settle();
+                Require(pane.Document.Revision == revision && pane.SelectedCells.Count == 0,
+                    "Typing, Delete, or paste after deselection modified the table or restored the selection.");
+            }
+            // A new cell click must start a fresh selection, without the old row-wide target set.
+            var visibleRow = pane.TableGrid.GetVisualDescendants().OfType<DataGridRow>()
+                .Single(r => r.IsVisible && r.DataContext is RowView { Row: 0 });
+            var content = pane.GridColumnOf(pane.TableGrid, 0)!.GetCellContent(visibleRow)!;
+            await Click(content, new Point(content.Bounds.Width / 2, content.Bounds.Height / 2));
+            Require(pane.SelectedCells.SequenceEqual([(0, 0)]), "Clicking a cell after deselection restored the old bulk selection.");
+        }
+        finally { filter.Text = ""; await pane.FilterAsync(); }
     }
 
     private async Task SmokeExpandedCellReferencesAsync(string output)

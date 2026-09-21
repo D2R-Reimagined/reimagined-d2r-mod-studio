@@ -13,6 +13,24 @@ internal static class RowEditingTests
         bool Clean() => doc.Diagnostics.All(d => d.Severity != "Error");
         int[] Orders() => doc.Table!.Records.Select(r => r!["order"]!.GetValue<int>()).ToArray();
 
+        var clone = new Document(doc.FilePath);
+        var originalRows = Json(clone.Table!.Records);
+        check(clone.CloneRows([2, 0, 2], append: true) == 3 && clone.Table.Records.Count == 5 &&
+            clone.Table.Cell(3, "name") == "A" && clone.Table.Cell(4, "value") == "3",
+            "Clone and Append copies distinct selected rows in table order to the end");
+        check(clone.Table.Records.Select(r => r.S("sourceId")).Distinct().Count() == 5 && !clone.Table.IsOriginalRow(3),
+            "Clones receive fresh editable Studio identities");
+        clone.Undo(); check(Json(clone.Table.Records) == originalRows, "One undo removes the entire row clone operation");
+        clone.Redo(); check(clone.Table.Cell(4, "name") == "C", "Redo restores cloned rows and their values"); clone.Undo();
+        check(clone.CloneRows([0], append: false) == 1 && clone.Table.Cell(1, "value") == "1" && clone.Table.Cell(2, "name") == "B",
+            "Clone and Insert puts copies immediately after the last selected row");
+        clone.SetCells([(1, "value", "independent")]); check(clone.Table.Cell(0, "value") == "1", "Editing a clone leaves its source unchanged");
+        clone.Undo(); clone.Undo();
+        throws(() => clone.CloneRows([], true), "Cloning requires a source selection");
+        throws(() => clone.CloneRows([-1], true), "The add-row placeholder cannot be cloned");
+        clone.LockedRows.Add(1); throws(() => clone.CloneRows([0], false), "Clone insertion respects a locked destination row");
+        check(Json(clone.Table.Records) == originalRows, "Rejected clones leave the table unchanged");
+
         doc.InsertRows(1);
         check(doc.Table!.Records.Count == 4 && Orders().SequenceEqual([0, 1, 2, 3]) && doc.Table.Records[2].S("sourceId") == "row-00001", "Inserting a row keeps later identities and renumbers slots");
         check(!doc.Table.IsOriginalRow(1) && doc.Table.IsOriginalRow(2) && doc.Table.Cell(1, "name") == "" && Clean(), "New rows are blank, non-original and valid");
@@ -66,6 +84,11 @@ internal static class RowEditingTests
         strings.Undo(); check(strings.Table.Records.Count == 2 && strings.Table.Cell(1, "Key") == "Added", "Undo restores a deleted string entry");
         var encoded = System.Text.Json.Nodes.JsonNode.Parse(Utf8.GetString(strings.Table.EncodeCatalog(false)).TrimStart('\uFEFF'))!.AsArray();
         check(encoded.Count == 2 && encoded[1]!["id"]!.GetValue<int>() == 40 && encoded[1]!["Key"]!.GetValue<string>() == "Added" && encoded[1]!["sourceId"] == null, "Added entries build into the game catalog without Studio metadata");
+        strings.CloneRows([0, 1], true);
+        check(strings.Table.Cell(2, "id") == "41" && strings.Table.Cell(3, "id") == "42" &&
+            strings.Table.Cell(2, "Key") == "k" && strings.Table.Cell(3, "enUS") == "Added text",
+            "Cloned string rows retain keys and translations with distinct new numeric IDs");
+        strings.Undo();
 
         // Views refresh in place when a change only replaced cell values, and rebuild after anything structural.
         var original = File.ReadAllText(doc.FilePath); var tracked = new Document(doc.FilePath);

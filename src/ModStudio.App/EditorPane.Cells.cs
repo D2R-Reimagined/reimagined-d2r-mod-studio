@@ -76,6 +76,18 @@ public sealed partial class EditorPane
         // moved the selection the next. Enter and Tab commit; Escape cancels.
         grid.AddHandler(KeyDownEvent, (_, e) =>
         {
+            if (e.Key == Key.Tab && (e.KeyModifiers & ~KeyModifiers.Shift) == 0 &&
+                grid.SelectedItem is RowView tabRow && grid.CurrentColumn is { } tabColumn && columnMap.TryGetValue(tabColumn, out int tabIndex))
+            {
+                bool createdRow = editingCell is { Row: < 0 };
+                e.Handled = true;
+                if (!grid.CommitEdit(DataGridEditingUnit.Cell, true)) return;
+                bool reverse = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+                // A newly typed row is refreshed after commit; navigate after that refresh.
+                if (createdRow) Dispatcher.UIThread.Post(() => MoveTabSelection(grid, tabRow.Row, tabIndex, reverse), DispatcherPriority.Background);
+                else MoveTabSelection(grid, tabRow.Row, tabIndex, reverse);
+                return;
+            }
             if (editingCell == null || liveEditor is not { } editor || (e.KeyModifiers & ~KeyModifiers.Shift) != 0) return;
             int length = editor.Text?.Length ?? 0;
             switch (e.Key)
@@ -102,7 +114,19 @@ public sealed partial class EditorPane
             var point = e.GetCurrentPoint(grid);
             rowHeaderPress = visual.GetSelfAndVisualAncestors().OfType<DataGridRowHeader>().Any();
             if (rowHeaderPress || !point.Properties.IsLeftButtonPressed && !point.Properties.IsRightButtonPressed) return;
-            if (LocateCell(grid, visual) is not { } hit) return;
+            if (LocateCell(grid, visual) is not { } hit)
+            {
+                // Empty viewport space (including the filler to the right of a row) is a way
+                // out of a bulk selection. Headers and scrollbars keep their normal behavior.
+                if (point.Properties.IsLeftButtonPressed && !visual.GetSelfAndVisualAncestors()
+                    .Any(v => v is DataGridColumnHeader or DataGridColumnHeadersPresenter or ScrollBar or Button or TextBox))
+                {
+                    ClearCellSelection();
+                    grid.Focus();
+                    e.Handled = true;
+                }
+                return;
+            }
             activeGrid = grid;
             if (point.Properties.IsRightButtonPressed) { if (!selectedCells.Contains(hit.Cell)) { selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; PaintCells(); } return; }
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
@@ -253,6 +277,35 @@ public sealed partial class EditorPane
         finally { settingCurrent = false; }
         selection(this);
     }
+    private void MoveTabSelection(DataGrid grid, int row, int column, bool reverse)
+    {
+        var rows = (grid.ItemsSource as IEnumerable<RowView> ?? []).ToList();
+        var columns = VisibleColumns().ToList();
+        int r = rows.FindIndex(item => item.Row == row), c = columns.IndexOf(column);
+        if (r < 0 || c < 0) return;
+        int next = r * columns.Count + c + (reverse ? -1 : 1);
+        next = Math.Clamp(next, 0, rows.Count * columns.Count - 1);
+        var target = rows[next / columns.Count]; int targetColumn = columns[next % columns.Count];
+        activeGrid = grid;
+        SelectCell(target.Row, targetColumn);
+        if (GridColumnOf(grid, targetColumn) is { } displayedColumn) grid.ScrollIntoView(target, displayedColumn);
+    }
+    private void ClearCellSelection()
+    {
+        settingCurrent = true;
+        try
+        {
+            draggingCells = rowHeaderPress = false;
+            selectedCells.Clear(); cellAnchor = null;
+            foreach (var grid in new[] { TableGrid, FrozenGrid })
+            {
+                grid.SelectedItems.Clear();
+            }
+            selectedRow = -1; selectedColumn = "";
+        }
+        finally { settingCurrent = false; }
+        PaintCells(); selection(this);
+    }
     private void SelectRows(DataGrid grid)
     {
         selectedCells.Clear();
@@ -351,8 +404,18 @@ public sealed partial class EditorPane
     public void InsertRows(int index, int count = 1)
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before adding rows.");
+        Document.InsertRows(index, count); SelectInsertedRows(index, count);
+    }
+    public void CloneSelectedRows(bool append)
+    {
+        var rows = SelectedRowsForCommands();
+        int index = Document.CloneRows(rows, append);
+        SelectInsertedRows(index, rows.Length);
+    }
+    private void SelectInsertedRows(int index, int count)
+    {
         var column = SelectedColumn; int col = Math.Max(0, Array.IndexOf(Document.Table!.Columns, column));
-        Document.InsertRows(index, count); ShiftSelection(index, count);
+        ShiftSelection(index, count);
         // Blank rows never match a filter term, so the filter is cleared to keep the new rows on screen.
         if (!string.IsNullOrEmpty(filter.Text)) filter.Text = "";
         selectedRow = index; selectedColumn = column;

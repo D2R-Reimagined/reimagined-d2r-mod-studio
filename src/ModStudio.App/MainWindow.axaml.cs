@@ -1173,7 +1173,10 @@ public partial class MainWindow : Window
                 Require(rowMenu.IsOpen, "Right-click did not open row actions.");
                 var rowToFreeze = pane.SelectedRow;
                 var menuHeaders = rowMenu.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? "").ToArray();
-                Require(menuHeaders[0] == "Add row above" && menuHeaders[1] == "Add row below" && menuHeaders[2].StartsWith("Delete row") && !rowMenu.Items.OfType<MenuItem>().ElementAt(2).IsEnabled, "Row menu lacks add/delete row actions, or lets an original row be deleted.");
+                Require(menuHeaders.Contains("Add row above") && menuHeaders.Contains("Add row below") &&
+                    menuHeaders.Contains("Clone and Append") && menuHeaders.Contains("Clone and Insert") &&
+                    rowMenu.Items.OfType<MenuItem>().SingleOrDefault(m => m.Header?.ToString()?.StartsWith("Delete row") == true) is { IsEnabled: false },
+                    "Row menu lacks add/clone/delete row actions, or lets an original row be deleted.");
                 var freezeAction = rowMenu.Items.OfType<MenuItem>().First(m => m.Header?.ToString() == "Freeze row");
                 rowMenu.Close(); freezeAction.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 Require(pane.FrozenRows.Contains(rowToFreeze), "Row context action froze the wrong row.");

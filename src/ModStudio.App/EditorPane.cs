@@ -411,6 +411,9 @@ public sealed partial class EditorPane : Grid
             .. transform,
             Item($"Add {added} above", () => InsertRows(above, rowsToAdd), addable && rows.Length > 0),
             Item($"Add {added} below", () => InsertRows(below, rowsToAdd), addable),
+            Item("Clone and Append", () => CloneSelectedRows(append: true), addable && rows.Length > 0),
+            Item("Clone and Insert", () => CloneSelectedRows(append: false), addable && rows.Length > 0 &&
+                (below == table.Records.Count || !Document.LockedRows.Contains(below))),
             Item(rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
             new Separator(),
             Item($"{(frozen ? "Unfreeze" : "Freeze")} {noun}", ToggleFrozenRows, frozen || frozenRows.Union(rows).Count() <= 5),
@@ -738,6 +741,7 @@ public sealed partial class EditorPane : Grid
     public async Task PasteAsync()
     {
         if (Document.Table == null || Document.PendingSource) return;
+        if (selectedCells.Count == 0 && activeGrid.SelectedItem is not RowView) return;
         var clipboard = TopLevel.GetTopLevel(this)?.Clipboard; if (clipboard == null) return;
         var text = await clipboard.TryGetTextAsync(); if (text == null) return;
         var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList(); if (lines.Count > 1 && lines[^1] == "") lines.RemoveAt(lines.Count - 1);

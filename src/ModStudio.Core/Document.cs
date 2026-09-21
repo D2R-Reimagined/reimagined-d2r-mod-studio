@@ -155,7 +155,25 @@ public sealed class Document
         Require(index >= 0 && index <= Table!.Records.Count && count > 0, "Invalid row position.");
         Require(!LockedRows.Contains(index) || index == Table!.Records.Count, "The row below the insertion point is locked against edits.");
         var rows = Enumerable.Range(0, count).Select(i => (JsonNode)Table!.NewRecord(fields != null && i < fields.Count ? fields[i] : null)).ToArray();
+        if (Table!.IsCatalog)
+            for (int i = 1; i < rows.Length; i++) rows[i]["id"] = checked(rows[0]["id"]!.GetValue<int>() + i);
         Splice(index, 0, rows);
+    }
+    /// <summary>Copies complete rows with fresh Studio identities, appending or inserting after the last source row.</summary>
+    public int CloneRows(IEnumerable<int> rows, bool append)
+    {
+        Require(Table != null && !PendingSource, "Apply valid source before cloning rows.");
+        var sources = rows.Distinct().Order().ToArray();
+        Require(sources.Length > 0 && sources.All(r => r >= 0 && r < Table!.Records.Count), "Select rows to clone.");
+        var fields = sources.Select(row =>
+        {
+            var values = new JsonObject();
+            foreach (var column in Table!.Columns) values[column] = Table.Cell(row, column);
+            return values;
+        }).ToArray();
+        int index = append ? Table!.Records.Count : sources[^1] + 1;
+        InsertRows(index, fields.Length, fields);
+        return index;
     }
     /// <summary>Deletes rows added in Studio. Imported rows are protected: the game data contract keeps their slots.</summary>
     public void DeleteRows(IEnumerable<int> rows)

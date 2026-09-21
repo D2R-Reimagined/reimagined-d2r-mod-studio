@@ -139,7 +139,7 @@ public sealed partial class EditorPane
         }
         /// <summary>The column control now shows another table column; everything displayed is recomputed when the cell is next visible.</summary>
         public void Invalidate() { stale = true; if (cell.IsVisible) Update(); }
-        /// <summary>The reference arrow exists only in cells that have shown a reference column; the margin that makes room for it follows the current column.</summary>
+        /// <summary>The reference arrow exists only in cells that have shown a reference column; its reserved space follows the current column.</summary>
         private void EnsureReference(bool wanted)
         {
             if (wanted && reference == null)
@@ -162,7 +162,10 @@ public sealed partial class EditorPane
             if (wanted != referenceMargin)
             {
                 referenceMargin = wanted;
-                display.Margin = new Thickness(display.Margin.Left, display.Margin.Top, display.Margin.Right + (wanted ? 16 : -16), display.Margin.Bottom);
+                // The theme may not have applied yet. Reading and replacing Margin here pins its
+                // default zero value on newly realized cells, losing the theme's 12px inset.
+                // Keep that margin theme-owned and reserve arrow space independently.
+                display.Padding = new Thickness(0, 0, wanted ? 16 : 0, 0);
             }
         }
         public void Update()
@@ -195,7 +198,8 @@ public sealed partial class EditorPane
             Control visible = display.IsVisible || mirror == null ? display : mirror;
             fullText = visible switch { TextBlock text => text.Text ?? "", TextBox box => box.Text ?? "", _ => "" };
             if (fullText.Length == 0 || visible.Bounds.Width <= 0) return false;
-            var available = visible.Bounds.Width - (visible is TextBox editor ? editor.Padding.Left + editor.Padding.Right : 0);
+            var padding = visible is TextBox editor ? editor.Padding : display.Padding;
+            var available = visible.Bounds.Width - padding.Left - padding.Right;
             if (fullText != measuredText || Math.Abs(available - measuredWidth) > 0.5)
             {
                 measuredText = fullText; measuredWidth = available;

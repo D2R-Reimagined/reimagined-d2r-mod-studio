@@ -23,18 +23,45 @@ public partial class MainWindow
         Require(pane != null, "Editing-aids smoke could not open its table.");
         var editor = pane!; var table = editor.Document.Table!;
         string Header(int column) => editor.TableGrid.Columns.First(c => editor.ColumnIndexOf(c) == column).Header as string ?? "";
+        bool LabelsMatch(bool letters, string term = "")
+        {
+            var expected = table.Columns.Select((column, index) => (Column: column,
+                Label: letters ? TableData.ColumnLetter(index) + " · " + column : column))
+                .Where(f => term.Length == 0 || f.Column.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    letters && f.Label.StartsWith(term + " · ", StringComparison.OrdinalIgnoreCase)).Select(f => f.Label);
+            return !rowEditorRefreshQueued && rowEditorPane == editor && rowEditorRow == editor.SelectedRow &&
+                rowEditorRevision == editor.Document.Revision && ReferenceEquals(rowEditorTable, table) &&
+                RowEditorFields.ItemsSource is IEnumerable<RowEditorField> fields && fields.Select(f => f.Label).SequenceEqual(expected);
+        }
+        async Task WaitForLabels(Func<bool> ready, string expectation)
+        {
+            var timeout = System.Diagnostics.Stopwatch.StartNew();
+            int settled = 0;
+            while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+            {
+                // Timer continuations can overtake the Background-priority label refresh on CI.
+                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() => UpdateLayout(), Avalonia.Threading.DispatcherPriority.Background);
+                AvaloniaHeadlessPlatform.ForceRenderTimerTick(2);
+                if (ready()) { if (++settled == 2) return; } else settled = 0;
+                await Task.Delay(10);
+            }
+            throw new TimeoutException($"{expectation} Headers: '{Header(0)}', '{Header(1)}'; labels: [{string.Join(", ", (RowEditorFields.ItemsSource as IEnumerable<RowEditorField> ?? []).Take(3).Select(f => f.Label))}]; " +
+                $"letters={EditorPane.ColumnLetters}, search='{RowEditorSearch.Text}', selected/editor row={editor.SelectedRow}/{rowEditorRow}, revision={editor.Document.Revision}/{rowEditorRevision}, queued={rowEditorRefreshQueued}.");
+        }
         Require(Header(1) == table.Columns[1] && Header(0) == "▣ " + table.Columns[0], $"Headers did not start as plain names: '{Header(0)}', '{Header(1)}'.");
-        EditorPane.ColumnLetters = true; EditorPane.RaiseColumnLettersChanged(); await Task.Delay(80);
-        Require(Header(1) == "B · " + table.Columns[1] && Header(0) == "▣ A · " + table.Columns[0], $"Column letters did not appear in the headers: '{Header(0)}', '{Header(1)}'.");
-        InspectorTabs.SelectedIndex = 1; editor.Jump(3, table.Columns[0]); await Task.Delay(250);
-        var fields = RowEditorFields.ItemsSource as RowEditorField[];
-        Require(fields is { Length: > 2 } && fields[0].Label.StartsWith("A · ") && fields[2].Label.StartsWith("C · "), "Row Editor labels did not lead with column letters.");
+        EditorPane.ColumnLetters = true; EditorPane.RaiseColumnLettersChanged();
+        InspectorTabs.SelectedIndex = 1; editor.Jump(3, table.Columns[0]);
+        await WaitForLabels(() => Header(1) == "B · " + table.Columns[1] && Header(0) == "▣ A · " + table.Columns[0] && LabelsMatch(true),
+            "Headers and Row Editor labels did not show column letters.");
         Screenshot("column-letters.png");
-        RowEditorSearch.Text = "C"; await Task.Delay(50);
+        RowEditorSearch.Text = "C";
+        await WaitForLabels(() => LabelsMatch(true, "C"), "Row Editor search did not settle.");
         Require(((IEnumerable<RowEditorField>)RowEditorFields.ItemsSource!).Any(f => f.Label.StartsWith("C · ")), "Searching the Row Editor by column letter found nothing.");
-        RowEditorSearch.Text = ""; await Task.Delay(50);
-        EditorPane.ColumnLetters = false; EditorPane.RaiseColumnLettersChanged(); await Task.Delay(80);
-        Require(Header(1) == table.Columns[1] && ((RowEditorField[])RowEditorFields.ItemsSource!)[0].Label == table.Columns[0], "Headers and Row Editor labels did not go back to plain names.");
+        RowEditorSearch.Text = "";
+        await WaitForLabels(() => LabelsMatch(true), "Clearing Row Editor search did not restore all fields.");
+        EditorPane.ColumnLetters = false; EditorPane.RaiseColumnLettersChanged();
+        await WaitForLabels(() => Header(1) == table.Columns[1] && Header(0) == "▣ " + table.Columns[0] && LabelsMatch(false),
+            "Headers and Row Editor labels did not go back to plain names.");
         InspectorTabs.SelectedIndex = 0;
 
         // Breaking the JSON of a raw document marks the line while typing, before Apply; fixing it clears the mark.

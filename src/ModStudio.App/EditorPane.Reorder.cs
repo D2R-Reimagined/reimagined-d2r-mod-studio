@@ -124,6 +124,7 @@ public partial class EditorPane
         var cells = selectedCells.Where(c => c.Row >= 0 && c.Row < to.Length).Select(c => (Row: to[c.Row], c.Col)).ToArray(); selectedCells.Clear(); selectedCells.UnionWith(cells);
         if (cellAnchor is { } anchor && anchor.Row >= 0 && anchor.Row < to.Length) cellAnchor = (to[anchor.Row], anchor.Col);
         for (int i = 0; i < frozenRows.Count; i++) frozenRows[i] = to[frozenRows[i]];
+        var highlighted = highlightedRows.Where(r => r >= 0 && r < to.Length).Select(r => to[r]).ToArray(); highlightedRows.Clear(); highlightedRows.UnionWith(highlighted);
         int first = rows.Where(r => r >= 0 && r < to.Length).Select(r => to[r]).DefaultIfEmpty(-1).Min();
         var column = SelectedColumn; Refresh(); if (first >= 0) Jump(first, column);
     }
@@ -159,6 +160,7 @@ public partial class EditorPane
         var movedWidths = widths.ToDictionary(p => Map(p.Key), p => p.Value); widths.Clear(); foreach (var p in movedWidths) widths[p.Key] = p.Value;
         var movedFits = fittedWidths.ToDictionary(p => Map(p.Key), p => p.Value); fittedWidths.Clear(); foreach (var p in movedFits) fittedWidths[p.Key] = p.Value;
         for (int i = 0; i < frozenColumns.Count; i++) frozenColumns[i] = Map(frozenColumns[i]);
+        var highlightedCols = highlightedColumns.Select(Map).ToArray(); highlightedColumns.Clear(); highlightedColumns.UnionWith(highlightedCols);
         var cells = selectedCells.Select(c => (c.Row, Col: Map(c.Col))).ToArray(); selectedCells.Clear(); selectedCells.UnionWith(cells);
         if (cellAnchor is { } anchor) cellAnchor = (anchor.Row, Map(anchor.Col));
         Refresh();

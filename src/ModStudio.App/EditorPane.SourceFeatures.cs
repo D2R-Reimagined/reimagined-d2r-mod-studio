@@ -101,11 +101,15 @@ public sealed partial class EditorPane
         }
         var guide = Item("Column guide… (F1)", () => ShowColumnGuide(name, null));
         guide.IsEnabled = !Document.Table.IsCatalog && ColumnGuide.Find(Document.Table.Name, name) != null;
+        var clearHighlights = Item("Clear all highlights", ClearHighlights);
+        clearHighlights.IsEnabled = HasHighlights;
         return new ContextMenu { ItemsSource = new Control[] {
             guide, new Separator(),
             Item((frozenColumns.Contains(index) ? "Unfreeze " : "Freeze ") + name, () => ToggleFrozenColumn(name)),
             Item((Document.LockedColumns.Contains(name) ? "Unlock " : "Lock ") + name + " against edits", () => { if (!Document.LockedColumns.Remove(name)) Document.LockedColumns.Add(name); Refresh(); }),
             new Separator(),
+            Item((highlightedColumns.Contains(index) ? "Remove highlight from " : "Highlight ") + name, () => ToggleColumnHighlight(index)),
+            clearHighlights, new Separator(),
             Item("Fit this column to contents", () => { widths.Remove(index); fittedWidths.Remove(index); ApplyColumnWidths(); }),
             Item("Set column width…", async () => {
                 if (TopLevel.GetTopLevel(this) is not Window owner) return;

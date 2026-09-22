@@ -178,6 +178,11 @@ public sealed partial class EditorPane : Grid
         Button("Undo", Undo); Button("Redo", Redo);
         Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); ApplyColumnWidths(); });
         Button("Column guide", () => ShowColumnGuide(SelectedColumn, null));
+        // Only worth a place on the toolbar while there is something to clear.
+        clearHighlightsButton = EditorToolbarIcons.Create("Clear highlights");
+        clearHighlightsButton.IsVisible = false;
+        clearHighlightsButton.Click += (_, _) => { try { ClearHighlights(); } catch (Exception e) { error(e); } };
+        toolbar.Children.Add(clearHighlightsButton);
         var view = EditorToolbarIcons.Create("Freeze / Lock"); var menu = new ContextMenu();
         MenuItem Item(string title, Action action) { var item = new MenuItem { Header = title }; item.Click += (_, _) => { try { action(); } catch (Exception e) { error(e); } }; return item; }
         menu.ItemsSource = new Control[] {
@@ -390,6 +395,9 @@ public sealed partial class EditorPane : Grid
         bool deletable = addable && rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r) && !Document.LockedRows.Contains(r));
         bool frozen = rows.All(frozenRows.Contains);
         bool locked = rows.All(Document.LockedRows.Contains);
+        bool rowsHighlighted = rows.Length > 0 && rows.All(highlightedRows.Contains);
+        int selectedColumnIndex = Array.IndexOf(Document.Table!.Columns, SelectedColumn);
+        bool columnHighlighted = highlightedColumns.Contains(selectedColumnIndex);
         MenuItem Item(string label, Action action, bool enabled = true)
         {
             var item = new MenuItem { Header = label, IsEnabled = enabled };
@@ -418,6 +426,10 @@ public sealed partial class EditorPane : Grid
             new Separator(),
             Item($"{(frozen ? "Unfreeze" : "Freeze")} {noun}", ToggleFrozenRows, frozen || frozenRows.Union(rows).Count() <= 5),
             Item($"{(locked ? "Unlock" : "Lock")} {noun} against edits", ToggleRowLocks),
+            new Separator(),
+            Item($"{(rowsHighlighted ? "Remove highlight from" : "Highlight")} {noun}", ToggleRowHighlight, rows.Length > 0),
+            Item($"{(columnHighlighted ? "Remove highlight from column" : "Highlight column")}: {SelectedColumn}", () => ToggleColumnHighlight(selectedColumnIndex), selectedColumnIndex >= 0),
+            Item("Clear all highlights", ClearHighlights, HasHighlights),
             new Separator(), copyCell, copy, paste, clear,
             new Separator(),
             Item($"{(frozenColumns.Contains(Array.IndexOf(Document.Table!.Columns, SelectedColumn)) ? "Unfreeze" : "Freeze")} column: {SelectedColumn}", () => ToggleFrozenColumn(SelectedColumn)),
@@ -447,7 +459,7 @@ public sealed partial class EditorPane : Grid
     private string Header(int column, bool sortMark = true)
     {
         var name = Document.Table!.Columns[column];
-        return (frozenColumns.Contains(column) ? "▣ " : "") + ColumnLabel(column, name) + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
+        return (frozenColumns.Contains(column) ? "▣ " : "") + (highlightedColumns.Contains(column) ? "◆ " : "") + ColumnLabel(column, name) + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
     }
     private double FitColumn(int index)
     {
@@ -500,6 +512,7 @@ public sealed partial class EditorPane : Grid
             {
                 frozenRows.RemoveAll(i => i >= Document.Table.Records.Count); frozenColumns.RemoveAll(i => i >= Document.Table.Columns.Length);
                 Document.LockedRows.RemoveWhere(i => i < 0 || i >= Document.Table.Records.Count); Document.LockedColumns.RemoveWhere(c => !Document.Table.Columns.Contains(c));
+                PruneHighlights(); UpdateHighlightButton();
                 if (ColumnSignature() != columnSignature) RefreshColumns(); else UpdateColumnHeaders();
                 ApplyView(selected, column, scrollToSelection, keepScroll);
                 if (selectedCells.Count == 0 && selectedRow >= 0 && Array.IndexOf(Document.Table.Columns, SelectedColumn) is var ci and >= 0) { selectedCells.Add((selectedRow, ci)); cellAnchor = (selectedRow, ci); }
@@ -681,7 +694,7 @@ public sealed partial class EditorPane : Grid
         var grid = frozenRows.Contains(row) ? FrozenGrid : TableGrid;
         var item = (grid.ItemsSource as IEnumerable<RowView>)?.FirstOrDefault(r => r.Row == row); if (item == null) return;
         var target = grid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var i) && i == index); if (target == null) return;
-        selectedCells.Clear(); selectedCells.Add((row, index)); cellAnchor = (row, index); selectedRow = row; selectedColumn = column; activeGrid = grid;
+        selectedCells.Clear(); selectedCells.Add((row, index)); cellAnchor = (row, index); rowBlockSelection = false; selectedRow = row; selectedColumn = column; activeGrid = grid;
         refreshing = true;
         // Selecting a row in a tab that just became visible may precede the grid's current-row initialization.
         // Scroll first, then let RestoreAfterLayout finish the current column when the reference is revealed.
@@ -723,7 +736,7 @@ public sealed partial class EditorPane : Grid
         if (item != null)
         {
             selectedRow = row; selectedColumn = i >= 0 ? column : Document.Table.Columns.FirstOrDefault() ?? "";
-            selectedCells.Clear(); selectedCells.Add((row, Math.Max(i, 0))); cellAnchor = (row, Math.Max(i, 0)); QueuePaint();
+            selectedCells.Clear(); selectedCells.Add((row, Math.Max(i, 0))); cellAnchor = (row, Math.Max(i, 0)); rowBlockSelection = false; QueuePaint();
             activeGrid.SelectedItem = item;
             var col = activeGrid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var ci) && Document.Table.Columns[ci] == column) ?? activeGrid.Columns.FirstOrDefault(c => columnMap.ContainsKey(c));
             if (col != null) { activeGrid.CurrentColumn = col; RestoreAfterLayout(activeGrid, item, col, true); }
@@ -774,6 +787,7 @@ public sealed partial class EditorPane : Grid
         for (int r = 0; r < block.Length; r++) for (int c = 0; c < block[r].Length; c++) edits.Add((displayed[start + r], Document.Table.Columns[columns[firstColumn + c]], block[r][c]));
         Document.SetCells(edits);
         selectedCells.Clear(); foreach (var (row, column, _) in edits) selectedCells.Add((row, Array.IndexOf(Document.Table.Columns, column)));
+        rowBlockSelection = false;
         cellAnchor = (displayed[start], columns[firstColumn]);
         Refresh(); QueuePaint();
     }
@@ -806,6 +820,8 @@ public sealed partial class EditorPane : Grid
         Document.SetCells(edits);
         selectedCells.Clear();
         foreach (var row in targets) for (int col = 0; col < table.Columns.Length; col++) selectedCells.Add((row, col));
+        // Whole rows again, so a following edit inside them means that one cell.
+        rowBlockSelection = true;
         cellAnchor = (targets[0], 0); selectedRow = targets[0]; selectedColumn = table.Columns[0];
         Refresh(); QueuePaint();
     }

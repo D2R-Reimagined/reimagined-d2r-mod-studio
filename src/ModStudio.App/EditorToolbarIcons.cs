@@ -22,6 +22,7 @@ internal static class EditorToolbarIcons
             "Redo" => ("Redo", "M16,4 L21,9 L16,14 M21,9 H10 C1,9 1,21 10,21"),
             "Fit columns" => ("Fit column widths to contents", "M2,3 V21 M22,3 V21 M9,8 L5,12 L9,16 M15,8 L19,12 L15,16 M5,12 H19"),
             "Column guide" => ("Column guide: what the selected column means and its documented values (F1)", "M12,3 A9,9 0 1 0 12,21 A9,9 0 1 0 12,3 Z M9,9.5 C9,7 15,7 15,9.5 C15,11.5 12,11.5 12,14 M12,17.5 V17.6"),
+            "Clear highlights" => ("Clear the highlighted rows and columns", "M3,21 H21 M6,17 L4,17 L4,13 L13,4 L17,8 L9,17 M11,6 L15,10"),
             "Freeze / Lock" => ("Freeze, lock, and sorting options", "M5,3 H15 M7,3 V8 L4,12 V14 H16 V12 L13,8 V3 M10,14 V22 M18,17 L21,20 L24,17"),
             "View" => ("View options: column letters, hover cards", "M3,5 H21 V19 H3 Z M3,10 H21 M9,5 V19 M15,5 V19"),
             "Schema…" => ("Edit table schema", "M8,3 H4 V21 H8 M16,3 H20 V21 H16 M9,8 H15 M9,12 H15 M9,16 H15"),

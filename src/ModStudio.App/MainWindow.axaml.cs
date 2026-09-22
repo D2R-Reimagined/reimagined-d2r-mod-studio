@@ -1105,6 +1105,22 @@ public partial class MainWindow : Window
                 this.KeyTextInput("5"); await Task.Delay(60); this.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null); await Task.Delay(150);
                 Require(pane.Document.Table.Cell(clickedRow, cols[startIndex]) == "5" && pane.Document.Table.Cell(clickedRow, cols[nextIndex]) == "5" && pane.Document.Table.Cell(secondRowIndex, cols[startIndex]) == "5", "Editing via double-click did not fill the other selected cells.");
                 pane.Document.Undo(); pane.Refresh(); await Task.Delay(50);
+                // Opening a cell inside a block and clicking away without typing is how a value gets read.
+                // It must leave the rest of the block alone rather than copying the opened value across it.
+                pane.SelectCell(clickedRow, startIndex); pane.SelectCell(secondRowIndex, nextIndex, shift: true); await Task.Delay(60);
+                var untouched = pane.SelectedCells.ToDictionary(c => c, c => pane.Document.Table.Cell(c.Row, cols[c.Col]));
+                Require(untouched.Count == 4 && untouched.Values.Distinct().Count() > 1, "The accidental-edit test needs a four-cell block whose values differ.");
+                int quietRevision = pane.Document.Revision;
+                await Task.Delay(600); // outside the double-click window of the previous clicks
+                var reopen = Centre(LiveCell(secondRowIndex, nextColumn));
+                this.MouseDown(reopen, MouseButton.Left, RawInputModifiers.None); this.MouseUp(reopen, MouseButton.Left, RawInputModifiers.None);
+                this.MouseDown(reopen, MouseButton.Left, RawInputModifiers.None); this.MouseUp(reopen, MouseButton.Left, RawInputModifiers.None); await Task.Delay(120);
+                Require(pane.TableGrid.GetVisualDescendants().OfType<TextBox>().Any(t => t.IsVisible && !t.IsReadOnly), "Double-click did not reopen an editor for the accidental-edit test.");
+                await Task.Delay(600);
+                var corner = Centre(LiveCell(clickedRow, startColumn));
+                this.MouseDown(corner, MouseButton.Left, RawInputModifiers.None); this.MouseUp(corner, MouseButton.Left, RawInputModifiers.None); await Task.Delay(150);
+                Require(pane.Document.Revision == quietRevision && untouched.All(p => pane.Document.Table.Cell(p.Key.Row, cols[p.Key.Col]) == p.Value),
+                    $"Opening a cell in a block and clicking away rewrote the selection: [{string.Join(" ", untouched.Select(p => $"{p.Key}={pane.Document.Table.Cell(p.Key.Row, cols[p.Key.Col])}/was {p.Value}"))}].");
                 // Ctrl+click two scattered cells, type, then commit by clicking elsewhere: both cells must take the value.
                 pane.Jump(secondRowIndex, cols[startIndex]); await Task.Delay(600); // the second row is the lower neighbour; jumping to it keeps both on screen
                 // Refresh rebuilt the column objects and scrolled; pick two columns that are on screen now.

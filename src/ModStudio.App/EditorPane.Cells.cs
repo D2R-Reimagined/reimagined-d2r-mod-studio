@@ -19,6 +19,8 @@ public sealed partial class EditorPane
     private readonly HashSet<(int Row, int Col)> selectedCells = [];
     private (int Row, int Col)? cellAnchor;
     private bool draggingCells, rowHeaderPress, settingCurrent, paintQueued;
+    /// <summary>The selected cells are a whole row picked from its header, not a block the user built cell by cell.</summary>
+    private bool rowBlockSelection;
     private (int Row, int Col)? editingCell;
     private (int Row, int Col)[] editTargets = [];
     private string? editedValue, typedText;
@@ -30,7 +32,7 @@ public sealed partial class EditorPane
     private void CommitEditBeforePointerSelection(object? sender, PointerPressedEventArgs e)
     {
         if (liveEditor == null || e.Source is not Visual visual || visual.GetSelfAndVisualAncestors().Contains(liveEditor)) return;
-        if (editTargets.Length > 1 && liveValue is { } value)
+        if (editTargets.Length > 1 && liveValue is { } value && GroupEditChanged(value, editingOriginal))
         {
             // Persist the owned edit buffer before any focus/selection handler can cancel the grid editor.
             // RowView defers the grid's writeback for these cells, so it cannot overwrite this value.
@@ -39,6 +41,12 @@ public sealed partial class EditorPane
         }
         if (!activeGrid.CommitEdit(DataGridEditingUnit.Cell, true)) e.Handled = true;
     }
+    /// <summary>
+    /// Whether an edit that covers several selected cells has anything to write. Opening a cell's editor and clicking
+    /// away again is how a value gets read, not a request to copy it over the rest of the selection, so a group edit
+    /// only writes once the text differs from what the cell held when the edit began.
+    /// </summary>
+    private static bool GroupEditChanged(string? value, string? original) => value != null && original != null && value != original;
     private bool IsEditableCell((int Row, int Col) cell) => Document.Table is { } table && cell.Row >= 0 && cell.Row < table.Records.Count &&
         cell.Col >= 0 && cell.Col < table.Columns.Length && !Document.LockedRows.Contains(cell.Row) &&
         !Document.LockedColumns.Contains(table.Columns[cell.Col]) && !(table.IsCatalog && cell.Col < 2 && table.IsOriginalRow(cell.Row));
@@ -128,23 +136,25 @@ public sealed partial class EditorPane
                 return;
             }
             activeGrid = grid;
-            if (point.Properties.IsRightButtonPressed) { if (!selectedCells.Contains(hit.Cell)) { selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; PaintCells(); } return; }
+            if (point.Properties.IsRightButtonPressed) { if (!selectedCells.Contains(hit.Cell)) { selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; rowBlockSelection = false; PaintCells(); } return; }
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
             {
                 if (!selectedCells.Remove(hit.Cell)) selectedCells.Add(hit.Cell);
-                cellAnchor = hit.Cell; e.Handled = true; SetCurrent(grid, hit.Item, hit.Column); PaintCells();
+                cellAnchor = hit.Cell; rowBlockSelection = false; e.Handled = true; SetCurrent(grid, hit.Item, hit.Column); PaintCells();
             }
             else if (e.KeyModifiers.HasFlag(KeyModifiers.Shift) && cellAnchor != null)
             {
-                SelectRectangle(grid, cellAnchor.Value, hit.Cell); e.Handled = true; SetCurrent(grid, hit.Item, hit.Column); PaintCells();
+                SelectRectangle(grid, cellAnchor.Value, hit.Cell); rowBlockSelection = false; e.Handled = true; SetCurrent(grid, hit.Item, hit.Column); PaintCells();
             }
             else
             {
                 // Plain click: let the grid move focus/current cell; we own the selection. Clicking (or double-clicking
                 // to edit) a cell that is already part of a multi-cell selection keeps that selection, so the edit
                 // applies to all of it; clicking anywhere else collapses to the clicked cell.
-                if (selectedCells.Count > 1 && selectedCells.Contains(hit.Cell)) { cellAnchor = hit.Cell; draggingCells = false; return; }
-                selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; draggingCells = e.ClickCount == 1; PaintCells();
+                // A row picked from its header is the exception: it is a way to mark a row, so a click inside it
+                // means that one cell, not "write this into all 40 columns".
+                if (!rowBlockSelection && selectedCells.Count > 1 && selectedCells.Contains(hit.Cell)) { cellAnchor = hit.Cell; draggingCells = false; return; }
+                selectedCells.Clear(); selectedCells.Add(hit.Cell); cellAnchor = hit.Cell; rowBlockSelection = false; draggingCells = e.ClickCount == 1; PaintCells();
             }
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         grid.AddHandler(PointerReleasedEvent, (_, _) =>
@@ -166,8 +176,8 @@ public sealed partial class EditorPane
         {
             if (refreshing || settingCurrent || rowHeaderPress || draggingCells) return;
             // Keyboard navigation and plain clicks collapse the selection to the current cell.
-            if (grid.SelectedItem is RowView row && grid.CurrentColumn != null && columnMap.TryGetValue(grid.CurrentColumn, out var col) && !(selectedCells.Count > 1 && selectedCells.Contains((row.Row, col))))
-            { selectedCells.Clear(); selectedCells.Add((row.Row, col)); cellAnchor = (row.Row, col); PaintCells(); }
+            if (grid.SelectedItem is RowView row && grid.CurrentColumn != null && columnMap.TryGetValue(grid.CurrentColumn, out var col) && !(!rowBlockSelection && selectedCells.Count > 1 && selectedCells.Contains((row.Row, col))))
+            { selectedCells.Clear(); selectedCells.Add((row.Row, col)); cellAnchor = (row.Row, col); rowBlockSelection = false; PaintCells(); }
         };
         grid.BeginningEdit += (_, e) =>
         {
@@ -176,6 +186,13 @@ public sealed partial class EditorPane
             draggingCells = false; Document.BeginEditGroup(); // one undo step per committed cell value, not per keystroke
             if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col))
             {
+                // Selecting a row from its header marks the row; it is not a request to edit every column of it.
+                // The first edit inside such a row collapses the selection to the cell being typed.
+                if (rowBlockSelection)
+                {
+                    rowBlockSelection = rowHeaderPress = false;
+                    selectedCells.Clear(); selectedCells.Add((row.Row, col)); cellAnchor = (row.Row, col); QueuePaint();
+                }
                 editingCell = (row.Row, col); editTargets = selectedCells.Contains((row.Row, col)) ? selectedCells.ToArray() : [(row.Row, col)];
                 editingOriginal = row.IsPlaceholder || row.Row >= Document.Table!.Records.Count ? null : Document.Table.Cell(row.Row, Document.Table.Columns[col]);
             }
@@ -204,9 +221,10 @@ public sealed partial class EditorPane
                 foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); return;
             }
             if (cell.Value.Row < 0 && e.Row.DataContext is RowView created && !created.IsPlaceholder) { Dispatcher.UIThread.Post(() => { Refresh(); Jump(created.Row, Document.Table!.Columns[cell.Value.Col]); }, DispatcherPriority.Background); return; }
-            // Editing one of several selected cells writes the value into all of them. The selection captured when
-            // editing began is used, because committing by clicking elsewhere changes the selection first.
-            if (targets.Length > 1) try { ApplyToCells(targets, value, null); } catch (Exception ex) { foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); error(ex); }
+            // Editing one of several selected cells writes the value into all of them, but only once the value really
+            // changed: an editor that was opened and left alone must not overwrite the rest of the selection. The
+            // selection captured when editing began is used, because committing by clicking elsewhere changes it first.
+            if (targets.Length > 1 && GroupEditChanged(value, original)) try { ApplyToCells(targets, value, null); } catch (Exception ex) { foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); error(ex); }
         }
         grid.LoadingRow += (_, _) => QueuePaint();
         // Typing into a selected cell starts editing with that text, like a spreadsheet; no second click needed.
@@ -256,7 +274,7 @@ public sealed partial class EditorPane
             // Copy/paste keeps the row-header selection. Navigation or editing returns to cell selection.
             if (!(e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) || e.Key is not (Key.C or Key.V)) rowHeaderPress = false;
             if (e.Key == Key.Escape && editingCell == null && selectedCells.Count > 1 && grid.SelectedItem is RowView current && grid.CurrentColumn != null && columnMap.TryGetValue(grid.CurrentColumn, out var currentCol))
-            { selectedCells.Clear(); selectedCells.Add((current.Row, currentCol)); cellAnchor = (current.Row, currentCol); PaintCells(); e.Handled = true; return; }
+            { selectedCells.Clear(); selectedCells.Add((current.Row, currentCol)); cellAnchor = (current.Row, currentCol); rowBlockSelection = false; PaintCells(); e.Handled = true; return; }
             if (editingCell != null || e.KeyModifiers != KeyModifiers.None || e.Key != Key.Delete || selectedCells.Count == 0 || Document.Table == null) return;
             try { ApplyToSelection("", null); e.Handled = true; } catch (Exception ex) { error(ex); }
         };
@@ -295,7 +313,7 @@ public sealed partial class EditorPane
         settingCurrent = true;
         try
         {
-            draggingCells = rowHeaderPress = false;
+            draggingCells = rowHeaderPress = rowBlockSelection = false;
             selectedCells.Clear(); cellAnchor = null;
             foreach (var grid in new[] { TableGrid, FrozenGrid })
             {
@@ -312,6 +330,7 @@ public sealed partial class EditorPane
         foreach (var row in grid.SelectedItems.OfType<RowView>().Where(r => !r.IsPlaceholder))
             for (int col = 0; col < Document.Table!.Columns.Length; col++) selectedCells.Add((row.Row, col));
         if (grid.SelectedItem is RowView first && !first.IsPlaceholder) cellAnchor = (first.Row, 0);
+        rowBlockSelection = selectedCells.Count > 0;
     }
     /// <summary>Selects the rectangle between two cells in displayed order (rows as sorted/filtered, columns as shown).</summary>
     private void SelectRectangle(DataGrid grid, (int Row, int Col) a, (int Row, int Col) b)
@@ -328,7 +347,7 @@ public sealed partial class EditorPane
     /// <summary>Programmatic selection used by tests and the inspector: same semantics as clicking with the given modifiers.</summary>
     public void SelectCell(int row, int col, bool control = false, bool shift = false)
     {
-        rowHeaderPress = false; EnsureColumnInWindow(col);
+        rowHeaderPress = rowBlockSelection = false; EnsureColumnInWindow(col);
         var cell = (row, col);
         if (control) { if (!selectedCells.Remove(cell)) selectedCells.Add(cell); cellAnchor = cell; }
         else if (shift && cellAnchor != null) SelectRectangle(activeGrid, cellAnchor.Value, cell);
@@ -363,12 +382,26 @@ public sealed partial class EditorPane
                 if (!rowControl.IsVisible || rowControl.DataContext is not RowView item) continue;
                 bool referenceRow = !item.IsPlaceholder && item.Row == HighlightedReferenceRow;
                 if (referenceRow) rowControl.Background = ReferenceRowBrush;
+                else if (!item.IsPlaceholder && highlightedRows.Contains(item.Row)) rowControl.Background = HighlightBrush;
                 else rowControl.ClearValue(DataGridRow.BackgroundProperty);
                 if (!item.IsPlaceholder) rows[item.Row] = rowControl;
             }
             if (rows.Count == 0) continue;
             var columns = new Dictionary<int, DataGridColumn>();
             foreach (var column in grid.Columns) if (columnMap.TryGetValue(column, out var col)) columns[col] = column;
+            // Highlights sit under everything else: a reference jump or a cell selection still reads on a highlighted row.
+            if (HasHighlights)
+                foreach (var (row, rowControl) in rows)
+                {
+                    bool wholeRow = highlightedRows.Contains(row);
+                    foreach (var (col, column) in columns)
+                    {
+                        bool wholeColumn = highlightedColumns.Contains(col);
+                        if (!wholeRow && !wholeColumn) continue;
+                        if (CellOf(column, rowControl) is not { } cell) continue;
+                        cell.Background = wholeRow && wholeColumn ? HighlightCrossBrush : HighlightBrush; paintedCells.Add(cell);
+                    }
+                }
             if (HighlightedReferenceRow >= 0 && rows.TryGetValue(HighlightedReferenceRow, out var highlighted))
                 foreach (var column in columns.Values)
                     if (CellOf(column, highlighted) is { } cell) { cell.Background = ReferenceRowBrush; paintedCells.Add(cell); }
@@ -395,6 +428,7 @@ public sealed partial class EditorPane
         selectedCells.UnionWith(moved.Select(c => (Row: c.Row + delta, c.Col)).Where(c => c.Row >= 0));
         if (cellAnchor is { } a && a.Row >= from) cellAnchor = (a.Row + delta, a.Col);
         frozenRows.RemoveAll(r => r >= from && r + delta < from); for (int i = 0; i < frozenRows.Count; i++) if (frozenRows[i] >= from) frozenRows[i] += delta;
+        ShiftHighlightedRows(from, delta);
     }
     /// <summary>
     /// Inserts blank rows and selects them in the column that was already selected. Rows are identified, not renumbered, so
@@ -419,7 +453,7 @@ public sealed partial class EditorPane
         // Blank rows never match a filter term, so the filter is cleared to keep the new rows on screen.
         if (!string.IsNullOrEmpty(filter.Text)) filter.Text = "";
         selectedRow = index; selectedColumn = column;
-        selectedCells.Clear(); for (int i = 0; i < count; i++) selectedCells.Add((index + i, col)); cellAnchor = (index, col);
+        selectedCells.Clear(); for (int i = 0; i < count; i++) selectedCells.Add((index + i, col)); cellAnchor = (index, col); rowBlockSelection = false;
         Refresh(scrollToSelection: true);
     }
     public void DeleteSelectedRows()

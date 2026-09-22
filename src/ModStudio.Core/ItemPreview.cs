@@ -10,87 +10,17 @@ public record ItemPreviewResult(string Name, bool IsSet, string[] Lines, string[
 /// <summary>Worker-owned resolver. Reads authored data only; never changes records or starts a build.</summary>
 public sealed class ItemPreviewResolver
 {
-    private sealed record Cached(long Length, DateTime Modified, JsonNode Data) { public Dictionary<string, Dictionary<string, string>> Locales { get; } = new(); }
-    private readonly Dictionary<string, Cached> cache = new();
-    private long retained;
-    private JsonNode ReadCached(string file, CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested(); NoLinks(file); var info = new FileInfo(file);
-        Require(info.Exists, "Missing data: " + file);
-        Require(info.Length <= 32 * 1024 * 1024, "Preview input exceeds 32 MiB: " + file);
-        if (cache.TryGetValue(file, out var old) && old.Length == info.Length && old.Modified == info.LastWriteTimeUtc) return old.Data;
-        if (old != null) { retained -= old.Length; cache.Remove(file); }
-        if (retained + info.Length > 64 * 1024 * 1024) { cache.Clear(); retained = 0; }
-        var data = Read(file); cache[file] = new(info.Length, info.LastWriteTimeUtc, data); retained += info.Length; return data;
-    }
-    public void Clear() { cache.Clear(); retained = 0; }
+    private readonly PreviewTables tables = new();
+    public void Clear() => tables.Clear();
     public ItemPreviewResult Resolve(ModProject project, string table, JsonObject record, string profile, int level, string locale, CancellationToken token)
     {
         Require(table is "uniqueitems" or "setitems", "Select a Unique or Set item.");
         Require(level is >= 1 and <= 99, "Character level must be 1–99.");
         var issues = new List<string>(); var lines = new List<string>();
-        var rules = new List<JsonNode>();
-        var profilePath = Inside(project.Root, $"compatibility/{profile}/profile.json");
-        bool standard = File.Exists(profilePath) ? ReadCached(profilePath, token).S("stringMode", "standard") == "standard" : profile == "standard";
-        if (File.Exists(profilePath))
-            foreach (var path in (JsonArray?)ReadCached(profilePath, token)["tableOverrides"] ?? [])
-                rules.Add(ReadCached(Inside(Path.GetDirectoryName(profilePath)!, path!.GetValue<string>()), token));
-        JsonObject Effective(string name, JsonObject row)
-        {
-            var fields = (JsonObject)row["fields"]!.DeepClone(); var occupied = new HashSet<string>();
-            foreach (var rule in rules.Where(r => r.S("table") == name && r.S("record") == row.S("sourceId")))
-            {
-                Require(rule["targets"] == null, $"{name}: bank-specific overrides need a bank selection; preview is unavailable.");
-                foreach (var change in rule["changes"]!.AsObject())
-                {
-                    Require(occupied.Add(change.Key), $"{name}/{change.Key}: competing overrides.");
-                    Require(fields.S(change.Key) == change.Value.S("expect"), $"{name}/{change.Key}: stale override. Save or reconcile the shared value.");
-                    fields[change.Key] = change.Value.S("value");
-                }
-            }
-            return fields;
-        }
-        var lookups = new Dictionary<(string Table, string Column), ILookup<string, JsonObject>>();
-        JsonObject? Find(string name, string column, string value, bool required = true)
-        {
-            token.ThrowIfCancellationRequested(); var file = TableData.FileFor(project, "tables", name);
-            if (!File.Exists(file)) { if (required) issues.Add($"Missing table: {name}."); return null; }
-            if (!lookups.TryGetValue((name, column), out var lookup))
-            {
-                var rows = new List<JsonObject>();
-                foreach (var row in ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
-                {
-                    token.ThrowIfCancellationRequested();
-                    rows.Add(rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject());
-                }
-                lookup = rows.ToLookup(r => r.S(column), StringComparer.Ordinal); lookups[(name, column)] = lookup;
-            }
-            var matches = lookup[value].Take(2).ToArray(); Require(matches.Length <= 1, $"Ambiguous {name}/{column}: {value}.");
-            var found = matches.FirstOrDefault();
-            if (found == null && required) issues.Add($"Unresolved {name}/{column}: {value}."); return found;
-        }
-        var catalogs = new List<Dictionary<string, string>>();
-        foreach (var file in Files(Inside(project.Root, "source/strings")).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal))
-        {
-            var data = ReadCached(file, token)["records"]!; var cached = cache[file];
-            if (!cached.Locales.TryGetValue(locale + standard, out var translations))
-            {
-                translations = new(StringComparer.Ordinal);
-                foreach (var row in data.AsArray())
-                {
-                    token.ThrowIfCancellationRequested(); var key = row.S("Key");
-                    var full = row?["translations"]?.S(locale) ?? "";
-                    var compact = standard ? row?["standardTranslations"]?[locale] : null;
-                    if (compact != null) Require(row?["standardReviewedAgainst"].S(locale) == Hash(full), "Compact localization needs review: " + key);
-                    var translation = compact?.GetValue<string>() ?? full;
-                    if (translation.Length > 0) translations.TryAdd(key, Regex.Replace(translation, "ÿc.", ""));
-                }
-                if (cached.Locales.Count >= 4) cached.Locales.Clear();
-                cached.Locales[locale + standard] = translations;
-            }
-            catalogs.Add(translations);
-        }
-        string Localize(string key) { foreach (var strings in catalogs) if (strings.TryGetValue(key, out var text)) return text; issues.Add($"Missing {locale} localization: {key}."); return key; }
+        var data = tables.Open(project, profile, locale, issues, token);
+        JsonObject Effective(string name, JsonObject row) => data.Effective(name, row);
+        JsonObject? Find(string name, string column, string value, bool required = true) => data.Find(name, column, value, required);
+        string Localize(string key) => data.Localize(key);
         string SkillName(string parameter, out string characterClass)
         {
             characterClass = "Class";

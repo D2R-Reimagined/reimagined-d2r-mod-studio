@@ -27,6 +27,11 @@ try
     PreviewTests.Run(root, Check, Throws);
     ItemPreviewTests.Run(root, Check, Throws);
     SkillPreviewTests.Run(root, Check, Throws);
+    MissilePreviewTests.Run(root, Check, Throws);
+    CalcTests.Run(root, Check, Throws);
+    StatPreviewTests.Run(root, Check, Throws);
+    DropTests.Run(root, Check, Throws);
+    AffixRecipeTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);
     RowEditingTests.Run(root, Check, Throws);

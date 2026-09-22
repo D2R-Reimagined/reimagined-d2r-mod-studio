@@ -47,7 +47,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeSkillPreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); InitializeViewPreferences(); InitializeTabDragging(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeSkillPreview(); InitializeMissilePreview(); InitializeStatPreview(); InitializeDropPreview(); InitializeMonsterPreview(); InitializeAffixPreview(); InitializeRecipePreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); InitializeViewPreferences(); InitializeTabDragging(); Problems.ItemsSource = diagnostics;
         EditorTextInfo.Attach(CellValue, () => CellValueInfo.Text = string.IsNullOrEmpty(CellValue.Text) ? "" : EditorTextInfo.Describe(CellValue.Text));
         catalogWarningTimer.Tick += async (_, _) => { catalogWarningTimer.Stop(); if (project is { } current) await RefreshCatalogIdWarningsAsync(current); };
         // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
@@ -60,7 +60,7 @@ public partial class MainWindow : Window
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
-        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshLaunchTargets(); };
+        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor();
         KeyDown += async (_, e) =>
@@ -83,8 +83,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                if (Program.Arguments.Contains("--smoke")) { await SmokeAsync(); return; }
-                _ = CheckStudioUpdateAsync(false);
+                if (Program.Arguments.Contains("--smoke")) { await SmokeAsync(); return; }                _ = CheckStudioUpdateAsync(false);
                 var arg = Program.Arguments.FirstOrDefault(a => !a.StartsWith('-'));
                 var previous = arg ?? StudioPreferences.Load(StudioPreferences.DefaultFile).LastProject;
                 if (previous != null)
@@ -251,7 +250,7 @@ public partial class MainWindow : Window
                 (Contains(Path.Combine(current.Root, "source/strings"), e.FullPath) && e.FullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
                  e is RenamedEventArgs renamedCatalog && Contains(Path.Combine(current.Root, "source/strings"), renamedCatalog.OldFullPath) && renamedCatalog.OldFullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
             { catalogWarningTimer.Stop(); catalogWarningTimer.Start(); }
-            RefreshItemPreview(); RefreshSkillPreview();
+            RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview();
             _ = RefreshSemanticInspectorAsync();
             if (runningBuild != null && controller.Running) RunState.Text = $"Game: {runningBuild} · source changed";
             foreach (var tab in tabs)
@@ -441,7 +440,7 @@ public partial class MainWindow : Window
         if (IsExternalTable(file)) menu.ItemsSource = new[] { CreateOpenLocationItem(file), CreateExternalEditorItem(file), reload, close };
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
-        document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); };
+        document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); };
         var recoveryFile = RecoveryFile(document);
         if (File.Exists(recoveryFile) && !Program.Arguments.Contains("--smoke"))
         {
@@ -507,16 +506,34 @@ public partial class MainWindow : Window
         if (project != current || revision != catalogWarningRevision) return;
         catalogIdWarnings.Clear(); catalogIdWarnings.AddRange(warnings); RefreshStatus();
     }
-    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); RefreshSkillPreview(); } }
+    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); } }
     private void UpdateInspector(EditorPane pane)
     {
         if (Active != pane) return; inspectorUpdating = true;
         var table = pane.Document.Table; SelectionLabel.Text = table == null ? pane.Document.FilePath : $"{table.Name} · row {pane.SelectedRow}\n{table.Records.Count:N0} records · {table.Columns.Length} columns";
         FieldPicker.ItemsSource = table?.Columns; FieldPicker.SelectedItem = table?.Columns.Contains(pane.SelectedColumn) == true ? pane.SelectedColumn : table?.Columns.FirstOrDefault(); inspectorUpdating = false; FieldSelected(null, null!);
-        InspectorInfo.Text = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; imported IDs and keys remain stable, entries added in Studio can set theirs. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
-        RefreshRowEditor(pane); RefreshItemPreview(); RefreshSkillPreview();
+        inspectorInfoText = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; imported IDs and keys remain stable, entries added in Studio can set theirs. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
+        UpdateFieldInsight();
+        RefreshRowEditor(pane); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview();
     }
-    private void FieldSelected(object? sender, SelectionChangedEventArgs e) { if (!inspectorUpdating) { CellValue.Text = Active?.Document.Table is { } table && Active.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string field ? table.Cell(Active.SelectedRow, field) : ""; _ = RefreshSemanticInspectorAsync(); } }
+    private void FieldSelected(object? sender, SelectionChangedEventArgs e) { if (!inspectorUpdating) { CellValue.Text = Active?.Document.Table is { } table && Active.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string field ? table.Cell(Active.SelectedRow, field) : ""; UpdateFieldInsight(); _ = RefreshSemanticInspectorAsync(); } }
+    private string inspectorInfoText = "";
+    /// <summary>
+    /// What the selected field means in this row: the function its value selects, the functions that read it, or the codes
+    /// of its formula. Falls back to the table's general note when there is nothing specific to say.
+    /// </summary>
+    private void UpdateFieldInsight()
+    {
+        IReadOnlyList<string> insight = [];
+        if (Active is { } pane && pane.Document.Table is { IsCatalog: false } table && !pane.Document.PendingSource && pane.SelectedRow >= 0 && pane.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string column)
+        {
+            int row = pane.SelectedRow;
+            try { insight = FieldInsight.Describe(table.Name, table.Columns, c => table.ColumnIndex(c) >= 0 ? table.Cell(row, c) : "", column); }
+            catch (Exception ex) when (ex is InvalidDataException or FormatException) { insight = [ex.Message]; }
+        }
+        InspectorInfo.Text = insight.Count > 0 ? string.Join("\n", insight) : inspectorInfoText;
+        InspectorInfo.Classes.Set("muted", insight.Count == 0);
+    }
     private void ApplyCellClicked(object? sender, RoutedEventArgs e) { try { if (Active is { } pane && FieldPicker.SelectedItem is string field) { pane.Document.SetCells([(pane.SelectedRow, field, CellValue.Text ?? "")]); pane.Refresh(); } } catch (Exception ex) { ShowError(ex); } }
     private async void ProblemDoubleTapped(object? sender, TappedEventArgs e) { try { if (Problems.SelectedItem is Diagnostic d && File.Exists(d.File)) { var pane = await OpenDocumentAsync(d.File); if (d.Row >= 0) pane?.Jump(d.Row, d.Field); } } catch (Exception ex) { ShowError(ex); } }
     private async void SaveAllClicked(object? sender, RoutedEventArgs e) => await SaveAllAsync();
@@ -797,6 +814,10 @@ public partial class MainWindow : Window
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeItemPreviewsAsync(output);
             await SmokeSkillPreviewAsync(output);
+            await SmokeMissilePreviewAsync(output);
+            await SmokeStatPreviewAsync(output);
+            await SmokeDropAndMonsterPreviewAsync(output);
+            await SmokeAffixAndRecipePreviewAsync(output);
             await SmokeCellReferencesAsync(output);
             await SmokeFindInFilesAsync(output);
             await SmokeLayoutAsync(output);

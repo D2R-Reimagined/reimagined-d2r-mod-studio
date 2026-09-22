@@ -85,7 +85,7 @@
     <TextBlock Text="INSPECTOR" Foreground="#D8BC86" /><TextBlock x:Name="SelectionLabel" Text="Select a document or row" TextWrapping="Wrap" />
     <TextBlock Text="Field" Classes="muted" /><ComboBox x:Name="FieldPicker" SelectionChanged="FieldSelected" />
     <TextBox x:Name="CellValue" AcceptsReturn="True" MinHeight="60" TextWrapping="Wrap" /><TextBlock x:Name="CellValueInfo" Classes="muted" FontSize="11" TextWrapping="Wrap" /><Button Content="Apply cell" Click="ApplyCellClicked" />
-    <TextBlock x:Name="InspectorInfo" Text="Calculations and specialized item previews are planned for the next milestone." TextWrapping="Wrap" Classes="muted" />
+    <TextBlock x:Name="InspectorInfo" Text="Select a cell to see what its field does in this row." TextWrapping="Wrap" Classes="muted" />
     <TextBlock Text="PROFILE / REFERENCES" Foreground="#D8BC86" Margin="0,10,0,0" />
     <TextBlock x:Name="ProfileValue" TextWrapping="Wrap" />
     <Button x:Name="EditProfileButton" Content="Edit profile override…" Click="EditProfileClicked" IsVisible="False" />

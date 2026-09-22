@@ -51,16 +51,28 @@ public partial class MainWindow
                 // The hover card is a short summary; a click opens the searchable guide with the field's current value highlighted.
                 label.PointerPressed += (_, e) => { e.Handled = true; if (Active?.Document.Table is { } table) ColumnGuideFlyout.Show(label, table, field.Column, field.Value, ShowError); };
             }
+            Control heading = label;
+            if (field.Hinted)
+            {
+                // What the value selects, or which of the row's functions read this field, beside the label: on its own line it
+                // would change the item's height inside the virtualized list whenever it appears.
+                var hint = new TextBlock { FontSize = 11, Foreground = new SolidColorBrush(Color.Parse("#9FB7C9")), TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap, Margin = new(10, 0, 0, 0), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+                hint.Bind(TextBlock.TextProperty, new Binding(nameof(RowEditorField.Hint)) { Source = field });
+                hint.Bind(ToolTip.TipProperty, new Binding(nameof(RowEditorField.Hint)) { Source = field });
+                var labelRow = new Grid { ColumnDefinitions = new("Auto,*") }; Grid.SetColumn(hint, 1);
+                labelRow.Children.Add(label); labelRow.Children.Add(hint);
+                heading = labelRow;
+            }
             if (PaletteShifts.IsTransformColumn(field.Table, field.Column))
             {
                 // Hue table numbers are picked by colour: the swatch flyout writes the choice into this row's cell.
                 var pickTransform = new Button { Content = "Pick colour…", Padding = new(8, 2), MinHeight = 0, Height = 24, FontSize = 12, Margin = new(0) };
                 ToolTip.SetTip(pickTransform, "Show every colour transform of the act palette as a swatch and pick one");
                 pickTransform.Click += (_, _) => { try { Active?.ShowColorTransformPicker(pickTransform, field.Column); } catch (Exception ex) { ShowError(ex); } };
-                var labelRow = new DockPanel(); DockPanel.SetDock(pickTransform, Dock.Right); labelRow.Children.Add(pickTransform); label.VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center; labelRow.Children.Add(label);
+                var labelRow = new DockPanel(); DockPanel.SetDock(pickTransform, Dock.Right); labelRow.Children.Add(pickTransform); heading.VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center; labelRow.Children.Add(heading);
                 panel.Children.Add(labelRow);
             }
-            else panel.Children.Add(label);
+            else panel.Children.Add(heading);
             var input = new TextBox { IsReadOnly = field.ReadOnly, AcceptsReturn = field.Multiline,
                 TextWrapping = TextWrapping.Wrap, MinHeight = 32, MaxHeight = 180 };
             Avalonia.Automation.AutomationProperties.SetName(input, field.Column);
@@ -130,6 +142,7 @@ public partial class MainWindow
             if (rowEditorRevision == document.Revision) return;
             rowEditorRevision = document.Revision;
             foreach (var field in rowEditorAllFields) { var value = table.Cell(row, field.Column); if (field.Value != value) field.Reset(value); }
+            UpdateRowEditorHints(table, row);
             return;
         }
         rowEditorPane = pane; rowEditorRow = row; rowEditorRevision = document.Revision;
@@ -137,11 +150,13 @@ public partial class MainWindow
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";
         RowEditorStatus.Text = "Edits apply immediately to the shared source. Save to write to disk.";
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
+        // Fields that can carry a hint: function columns, and any column a documented function of this table can read.
+        var hinted = table.IsCatalog ? new HashSet<string>() : FunctionGuide.PossibleHints(table.Name, table.Columns);
         rowEditorAllFields = table.Columns.Select((column, index) =>
         {
             bool identity = table.IsCatalog ? column is "id" or "Key" && table.IsOriginalRow(row) : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
-            return new RowEditorField(column, EditorPane.ColumnLabel(index, column) + (identity ? " · identity (read-only)" : locked ? " · locked" : ""),
+            return new RowEditorField(column, EditorPane.ColumnLabel(index, column) + (identity ? " · identity (read-only)" : locked ? " · locked" : ""), hinted.Contains(column),
                 table.Cell(row, column), identity || locked, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>
                 {
                     // Detached controls and queued binding updates must never edit a newly selected row/document.
@@ -152,6 +167,7 @@ public partial class MainWindow
                     {
                         document.SetCells([(row, column, field.Value)]);
                         rowEditorRevision = document.Revision;
+                        UpdateRowEditorHints(document.Table!, row);
                         pane.RefreshRowValues(row);
                         if (FieldPicker.SelectedItem as string == column) CellValue.Text = field.Value;
                         RowEditorStatus.Text = "Edits applied · Save to write to disk. Undo is available in the table toolbar.";
@@ -163,11 +179,24 @@ public partial class MainWindow
                     }
                 });
         }).ToArray();
+        UpdateRowEditorHints(table, row);
         FilterRowEditor();
     }
-
-    private sealed class RowEditorField(string column, string label, string value, bool readOnly, bool multiline, string table, ColumnGuideEntry? guide, Action<RowEditorField> edit) : INotifyPropertyChanged
+    /// <summary>Names the function each function field selects and marks the fields the row's functions read.</summary>
+    private void UpdateRowEditorHints(TableData table, int row)
     {
+        if (table.IsCatalog) return;
+        string Cell(string c) => table.ColumnIndex(c) >= 0 ? table.Cell(row, c) : "";
+        var readers = FunctionGuide.Readers(FunctionGuide.ForRow(table.Name, table.Columns, Cell));
+        foreach (var field in rowEditorAllFields) field.Hint = field.Hinted ? FieldInsight.Hint(table.Name, field.Column, field.Value, readers) : "";
+    }
+
+    private sealed class RowEditorField(string column, string label, bool hinted, string value, bool readOnly, bool multiline, string table, ColumnGuideEntry? guide, Action<RowEditorField> edit) : INotifyPropertyChanged
+    {
+        /// <summary>Whether the field has a hint line at all; fixed per table so the item height never changes.</summary>
+        public bool Hinted { get; } = hinted;
+        private string hint = "";
+        public string Hint { get => hint; set { if (hint == value) return; hint = value; PropertyChanged?.Invoke(this, new(nameof(Hint))); } }
         public string Column { get; } = column;
         public string Table { get; } = table;
         public ColumnGuideEntry? Guide { get; } = guide;

@@ -1,37 +1,47 @@
-using System.Globalization;
 using System.Text.Json.Nodes;
+using static ModStudio.Core.PreviewMath;
 using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
 
-/// <summary>One level of a skill as the game would present it. Empty strings mean the skill does not use that field.</summary>
-public record SkillLevelPreview(int Level, string Mana, string Physical, string Elemental, string Duration, string AttackRating);
+/// <summary>
+/// One level of a skill as the game would present it. Empty strings mean the skill does not use that field.
+/// <paramref name="Synergy"/> and <paramref name="WithSynergy"/> are filled only when synergies add something at the
+/// assumed skill levels.
+/// </summary>
+public record SkillLevelPreview(int Level, string Mana, string Physical, string Elemental, string Duration, string AttackRating, string Synergy = "", string WithSynergy = "");
 
-public record SkillPreviewResult(string Name, string CharacterClass, int MaxLevel, string[] Lines, SkillLevelPreview[] Levels, string[] Descriptions, string[] Issues);
+/// <param name="Level">The level the tooltip and calculations are shown at, clamped to the skill's range.</param>
+/// <param name="Inputs">The assumptions the calculations read (other skills' levels, stats, character level).</param>
+public record SkillPreviewResult(string Name, string CharacterClass, int MaxLevel, int Level, string[] Lines, PreviewSection[] Sections, SkillLevelPreview[] Levels, CalcInput[] Inputs, string[] Issues);
+
+/// <summary>The level to show the tooltip and calculations at, and the values a single row cannot know.</summary>
+public sealed record CalcPreviewOptions(int Level = 1, CalcAssumptions? Assumptions = null);
 
 /// <summary>
 /// Worker-owned resolver for a skills.txt row: the level curve the authored fields produce, level 1 through the row's
-/// own <c>maxlvl</c>. Reads authored data only; never changes records or starts a build.
+/// own <c>maxlvl</c>, the skilldesc tooltip with its calculations evaluated, and the numbered functions the row uses.
+/// Reads authored data only; never changes records or starts a build.
 /// </summary>
 /// <remarks>
-/// Mana, damage and elemental length are the fields the game derives arithmetically from the row, so they are computed:
-/// mana and damage are stored in 256ths and shifted (<c>manashift</c>, <c>HitShift</c>), and each grows by a different
-/// amount inside the level tiers 2–8, 9–16, 17–22, 23–28 and 29+ (durations use 2–8, 9–16 and 17+).
-/// The skilldesc tooltip lines are listed with their authored calculations rather than evaluated: those expressions read
-/// other skills' levels (synergies, masteries) and character state, which no preview of a single row can know.
+/// Mana and damage are stored in 256ths and shifted (<c>manashift</c>, <c>HitShift</c>), and each grows by a different
+/// amount inside the level tiers 2–8, 9–16, 17–22, 23–28 and 29+ (durations use 2–8, 9–16 and 17+). Calculations
+/// (<c>calc1</c>, <c>EDmgSymPerCalc</c>, the tooltip's <c>desccalca1</c>…) are evaluated by <see cref="Calc"/>; the
+/// values they read from outside the row — other skills' levels, stats, the character's level — come from
+/// <see cref="CalcAssumptions"/> and are reported back as <see cref="SkillPreviewResult.Inputs"/>.
 /// </remarks>
 public sealed class SkillPreviewResolver
 {
     private readonly PreviewTables tables = new();
     public void Clear() => tables.Clear();
-    /// <summary>Levels past which each per-level field switches to its next tier.</summary>
-    private static readonly int[] DamageTiers = [8, 16, 22, 28, int.MaxValue];
-    private static readonly int[] LengthTiers = [8, 16, int.MaxValue];
     public const int DefaultMaxLevel = 20;
+    /// <summary>skills.txt calc columns that count frames.</summary>
+    private static readonly HashSet<string> FrameColumns = new(StringComparer.OrdinalIgnoreCase) { "auralencalc", "localdelay", "globaldelay", "perdelay" };
 
-    public SkillPreviewResult Resolve(ModProject project, JsonObject record, string profile, string locale, CancellationToken token)
+    public SkillPreviewResult Resolve(ModProject project, JsonObject record, string profile, string locale, CancellationToken token, CalcPreviewOptions? options = null)
     {
-        var issues = new List<string>(); var lines = new List<string>(); var descriptions = new List<string>();
+        options ??= new();
+        var issues = new List<string>(); var lines = new List<string>(); var sections = new List<PreviewSection>();
         var data = tables.Open(project, profile, locale, issues, token);
         var skill = data.Effective("skills", record);
         var id = skill.S("skill");
@@ -44,12 +54,14 @@ public sealed class SkillPreviewResolver
             "ama" => "Amazon", "sor" => "Sorceress", "nec" => "Necromancer", "pal" => "Paladin",
             "bar" => "Barbarian", "dru" => "Druid", "ass" => "Assassin", "" => "Shared / monster", _ => skill.S("charclass")
         };
-        if (id.Length == 0) return new(name, characterClass, 0, ["Inactive/header row · no skill id"], [], [], []);
+        if (id.Length == 0) return new(name, characterClass, 0, 0, ["Inactive/header row · no skill id"], [], [], [], []);
 
         int maxLevel = (int)Number(skill, "maxlvl");
         bool authoredMax = maxLevel > 0;
         if (!authoredMax) maxLevel = DefaultMaxLevel;
         Require(maxLevel <= 99, $"maxlvl {maxLevel} is out of range; skill levels stop at 99.");
+        int level = Math.Clamp(options.Level, 1, maxLevel);
+        var calc = new CalcContext(data, options.Assumptions ?? new(), token);
 
         lines.Add($"{characterClass} · {id}" + (skill.S("skilldesc").Length > 0 ? $" · skilldesc {skill.S("skilldesc")}" : ""));
         lines.Add(authoredMax
@@ -69,9 +81,9 @@ public sealed class SkillPreviewResolver
         decimal manaShift = Pow2(Number(skill, "manashift")), hitShift = Pow2(Number(skill, "HitShift"));
         decimal baseMana = Number(skill, "mana"), perLevelMana = Number(skill, "lvlmana"), minimumMana = Number(skill, "minmana");
         bool hasMana = skill.S("mana").Length > 0 || skill.S("lvlmana").Length > 0;
-        var physical = (Min: Curve(skill, "MinDam", "MinLevDam", DamageTiers), Max: Curve(skill, "MaxDam", "MaxLevDam", DamageTiers));
-        var elemental = (Min: Curve(skill, "EMin", "EMinLev", DamageTiers), Max: Curve(skill, "EMax", "EMaxLev", DamageTiers));
-        var length = Curve(skill, "ELen", "ELevLen", LengthTiers);
+        var physical = (Min: Curve(skill, "MinDam", i => "MinLevDam" + i, DamageTiers), Max: Curve(skill, "MaxDam", i => "MaxLevDam" + i, DamageTiers));
+        var elemental = (Min: Curve(skill, "EMin", i => "EMinLev" + i, DamageTiers), Max: Curve(skill, "EMax", i => "EMaxLev" + i, DamageTiers));
+        var length = Curve(skill, "ELen", i => "ELevLen" + i, LengthTiers);
         var element = skill.S("EType");
         bool hasPhysical = physical.Min.Authored || physical.Max.Authored;
         bool hasElemental = element.Length > 0 && (elemental.Min.Authored || elemental.Max.Authored);
@@ -81,79 +93,61 @@ public sealed class SkillPreviewResolver
         if (element.Length > 0 && !hasElemental && !hasLength) issues.Add($"EType is {element} but no elemental damage or length is authored.");
         if (elemental.Min.Authored && element.Length == 0) issues.Add("Elemental damage is authored without an EType, so the game ignores it.");
 
+        // Synergies raise elemental damage when the skill deals it, physical damage otherwise.
+        var synergyColumn = hasElemental ? "EDmgSymPerCalc" : hasPhysical ? "DmgSymPerCalc" : "";
+        bool hasSynergy = synergyColumn.Length > 0 && skill.S(synergyColumn).Length > 0;
+        string synergyError = "";
         var levels = new List<SkillLevelPreview>();
-        for (int level = 1; level <= maxLevel; level++)
+        for (int at = 1; at <= maxLevel; at++)
         {
             token.ThrowIfCancellationRequested();
             // Mana and damage are stored in 256ths; their shift scales them back to the numbers the game shows.
-            var mana = Math.Max(minimumMana, (baseMana + perLevelMana * (level - 1)) * manaShift / 256);
-            levels.Add(new(level,
+            var mana = Math.Max(minimumMana, (baseMana + perLevelMana * (at - 1)) * manaShift / 256);
+            string synergy = "", withSynergy = "";
+            if (hasSynergy && synergyError.Length == 0)
+                try
+                {
+                    var scope = calc.Skill(skill, at);
+                    var percent = scope.Field(synergyColumn);
+                    if (percent != 0)
+                    {
+                        synergy = (percent > 0 ? "+" : "") + percent + "%";
+                        long low = scope.Code(hasElemental ? "edmn" : "pnma"), high = scope.Code(hasElemental ? "edmx" : "pxma");
+                        withSynergy = (low == high ? $"{low}" : $"{low}–{high}") + (hasElemental ? " " + element : "");
+                    }
+                }
+                catch (Exception e) when (e is InvalidDataException or FormatException) { synergyError = e.Message; issues.Add($"{synergyColumn}: {e.Message}"); }
+            levels.Add(new(at,
                 hasMana ? Text(Round(mana)) : "",
-                hasPhysical ? Damage(physical.Min.At(level), physical.Max.At(level), hitShift) : "",
-                hasElemental ? Damage(elemental.Min.At(level), elemental.Max.At(level), hitShift) + " " + element : "",
-                hasLength ? Text(Round(length.At(level) / 25)) + " sec" : "",
-                hasAttackRating ? "+" + Text(toHit + perLevelToHit * (level - 1)) + "%" : ""));
+                hasPhysical ? Damage(physical.Min.At(at), physical.Max.At(at), hitShift) : "",
+                hasElemental ? Damage(elemental.Min.At(at), elemental.Max.At(at), hitShift) + " " + element : "",
+                hasLength ? Seconds(length.At(at)) : "",
+                hasAttackRating ? "+" + Text(toHit + perLevelToHit * (at - 1)) + "%" : "",
+                synergy, withSynergy));
         }
+        if (hasSynergy)
+            lines.Add(levels.Any(l => l.Synergy.Length > 0)
+                ? $"Synergies: {synergyColumn} = {skill.S(synergyColumn)}; the level table adds them at the skill levels set above"
+                : $"Synergies: {synergyColumn} = {skill.S(synergyColumn)}; set the other skills' levels above to see them in the level table");
 
-        foreach (var (prefix, count, label) in new[] { ("desc", 6, "descline"), ("dsc2", 5, "dsc2line"), ("dsc3", 7, "dsc3line") })
+        if (description != null)
         {
-            if (description == null) break;
-            var group = new List<string>();
-            for (int i = 1; i <= count; i++)
-            {
-                var line = description.S($"{prefix}line{i}"); if (line.Length == 0) continue;
-                var texts = new[] { description.S($"{prefix}texta{i}"), description.S($"{prefix}textb{i}") }.Where(t => t.Length > 0).Select(t => $"{t} = \"{data.Localize(t)}\"");
-                var calcs = new[] { description.S($"{prefix}calca{i}"), description.S($"{prefix}calcb{i}") }.Where(c => c.Length > 0);
-                group.Add($"  {i}. function {line}" + (texts.Any() ? " · " + string.Join(" · ", texts) : "") + (calcs.Any() ? " · calc " + string.Join(" / ", calcs) : ""));
-            }
-            if (group.Count == 0) continue;
-            descriptions.Add(label); descriptions.AddRange(group);
+            var tooltip = SkillTooltips.Render(calc, skill, description, level, maxLevel, issues);
+            var tooltipLines = tooltip.Lines($"Current skill level: {level}", $"Next level: {level + 1}").ToArray();
+            if (tooltipLines.Length > 0) sections.Add(new($"Tooltip at level {level}", tooltipLines, BeforeLevels: true));
         }
-        if (descriptions.Count > 0) descriptions.Add("Tooltip calculations are listed as authored, not evaluated: they read other skills' levels and character state.");
 
-        var synergies = new[] { "EDmgSymPerCalc", "DmgSymPerCalc", "ELenSymPerCalc" }.Where(f => skill.S(f).Length > 0).ToArray();
-        if (synergies.Length > 0) lines.Add("Excludes synergy scaling: " + string.Join(", ", synergies.Select(f => $"{f} = {skill.S(f)}")));
-        lines.Add("Base skill values only; masteries, +skills, difficulty resistances and character bonuses are not applied.");
-        return new(name, characterClass, maxLevel, lines.ToArray(), levels.ToArray(), descriptions.ToArray(), issues.Distinct().ToArray());
-    }
+        var calculations = new List<string>();
+        foreach (var column in CalcColumns("skills", skill))
+            try { calculations.Add(DescribeCalc(column, skill.S(column), at => calc.Skill(skill, at).Field(column), level, maxLevel, FrameColumns.Contains(column))); }
+            catch (Exception e) when (e is InvalidDataException or FormatException) { calculations.Add($"{column} = ⚠ {e.Message} · {skill.S(column)}"); issues.Add($"{column}: {e.Message}"); }
+        if (calculations.Count > 0) sections.Add(new($"Calculations at level {level}", [.. calculations], BeforeLevels: true));
 
-    /// <summary>A base field plus its per-level fields, which each apply inside one tier of levels.</summary>
-    private readonly record struct LevelCurve(decimal Base, decimal[] PerLevel, int[] Tiers, bool Authored)
-    {
-        public decimal At(int level)
-        {
-            decimal total = Base;
-            for (int tier = 0, from = 2; tier < PerLevel.Length && from <= level; from = Tiers[tier] + 1, tier++)
-            {
-                int to = Math.Min(level, Tiers[tier]);
-                if (to >= from) total += PerLevel[tier] * (to - from + 1);
-            }
-            return total;
-        }
-    }
-    private static LevelCurve Curve(JsonObject skill, string baseField, string perLevelField, int[] tiers)
-    {
-        var perLevel = Enumerable.Range(1, tiers.Length).Select(i => Number(skill, perLevelField + i)).ToArray();
-        bool authored = skill.S(baseField).Length > 0 || Enumerable.Range(1, tiers.Length).Any(i => skill.S(perLevelField + i).Length > 0);
-        return new(Number(skill, baseField), perLevel, tiers, authored);
-    }
-    /// <summary>Damage as the game shows it: scaled out of 256ths and rounded down, the way the tooltip does.</summary>
-    private static string Damage(decimal min, decimal max, decimal shift)
-    {
-        decimal low = Math.Floor(min * shift / 256), high = Math.Floor(max * shift / 256);
-        return low == high ? Text(low) : $"{Text(low)}–{Text(high)}";
-    }
-    private static decimal Pow2(decimal exponent)
-    {
-        Require(exponent is >= 0 and <= 16, $"Shift {Text(exponent)} is out of range; skills shift by 0–16.");
-        return (decimal)Math.Pow(2, (double)exponent);
-    }
-    private static decimal Round(decimal value) => Math.Round(value, 2, MidpointRounding.ToZero);
-    private static string Text(decimal value) => value.ToString("0.##", CultureInfo.InvariantCulture);
-    private static decimal Number(JsonObject row, string field)
-    {
-        var text = row.S(field); if (text.Length == 0) return 0;
-        Require(decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var value), $"{field} is not a number: {text}.");
-        return value;
+        var functions = DescribeFunctions(FunctionGuide.ForRow("skills", [.. skill.Select(f => f.Key)], c => skill.S(c)), skill).ToArray();
+        if (functions.Length > 0) sections.Add(new("Functions", functions, BeforeLevels: true));
+
+        var notes = calc.Notes.Append("Base skill values plus the synergies set above; +skills, difficulty resistances and other character bonuses are not applied.").ToArray();
+        sections.Add(new("Assumptions", notes));
+        return new(name, characterClass, maxLevel, level, [.. lines], [.. sections], [.. levels], [.. calc.Inputs], [.. issues.Distinct()]);
     }
 }

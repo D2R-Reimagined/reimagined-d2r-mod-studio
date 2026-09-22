@@ -38,6 +38,7 @@ public sealed class PreviewTables
         private readonly CancellationToken token;
         private readonly List<JsonNode> rules = [];
         private readonly Dictionary<(string Table, string Column), ILookup<string, JsonObject>> lookups = [];
+        private readonly Dictionary<string, IReadOnlyList<JsonObject>> tableRows = [];
         private readonly List<Dictionary<string, string>> catalogs = [];
         internal Session(PreviewTables owner, ModProject project, string profile, string locale, List<string> issues, CancellationToken token)
         {
@@ -84,19 +85,28 @@ public sealed class PreviewTables
             }
             return fields;
         }
+        /// <summary>Every row of a table with overrides applied, in file order; empty (and an issue) when the table is not there.</summary>
+        public IReadOnlyList<JsonObject> Rows(string name, bool required = true)
+        {
+            token.ThrowIfCancellationRequested(); var file = TableData.FileFor(project, "tables", name);
+            if (!File.Exists(file)) { if (required) issues.Add($"Missing table: {name}."); return []; }
+            if (tableRows.TryGetValue(name, out var cached)) return cached;
+            var rows = new List<JsonObject>();
+            foreach (var row in owner.ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
+            {
+                token.ThrowIfCancellationRequested();
+                rows.Add(rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject());
+            }
+            return tableRows[name] = rows;
+        }
         /// <summary>The one row of a table whose column holds a value, with overrides applied; null (and an issue) when it is not there.</summary>
         public JsonObject? Find(string name, string column, string value, bool required = true)
         {
-            token.ThrowIfCancellationRequested(); var file = TableData.FileFor(project, "tables", name);
-            if (!File.Exists(file)) { if (required) issues.Add($"Missing table: {name}."); return null; }
+            token.ThrowIfCancellationRequested();
+            if (!File.Exists(TableData.FileFor(project, "tables", name))) { if (required) issues.Add($"Missing table: {name}."); return null; }
             if (!lookups.TryGetValue((name, column), out var lookup))
             {
-                var rows = new List<JsonObject>();
-                foreach (var row in owner.ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
-                {
-                    token.ThrowIfCancellationRequested();
-                    rows.Add(rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject());
-                }
+                var rows = Rows(name, required);
                 lookup = rows.ToLookup(r => r.S(column), StringComparer.Ordinal); lookups[(name, column)] = lookup;
             }
             var matches = lookup[value].Take(2).ToArray(); Require(matches.Length <= 1, $"Ambiguous {name}/{column}: {value}.");
@@ -104,10 +114,13 @@ public sealed class PreviewTables
             if (found == null && required) issues.Add($"Unresolved {name}/{column}: {value}."); return found;
         }
         /// <summary>The selected locale's string for a key; the key itself (and an issue) when it is not translated.</summary>
-        public string Localize(string key)
+        public string Localize(string key) => Localize(key, true);
+        /// <summary>As <see cref="Localize(string)"/>; <paramref name="report"/> false falls back to the key quietly, for names shown in long lists.</summary>
+        public string Localize(string key, bool report)
         {
             foreach (var strings in catalogs) if (strings.TryGetValue(key, out var text)) return text;
-            issues.Add($"Missing {locale} localization: {key}."); return key;
+            if (report) issues.Add($"Missing {locale} localization: {key}.");
+            return key;
         }
     }
 }

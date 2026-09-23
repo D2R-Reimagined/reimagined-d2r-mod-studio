@@ -74,7 +74,7 @@ internal static class AffixRecipeTests
         check(low.Prefixes[0].Effect == "Enhanced Defense +10–20%" && low.Prefixes[0].Levels == "1+" && low.Prefixes[1].Levels == "1–5", "Pool lines show each affix's effect and level range: " + low.Prefixes[0].Effect);
         check(Section(low.Sections, "Locked").Any(l => l.StartsWith("Prefixes: 1 more need a higher affix level; next at 10: Strong")) && Section(low.Sections, "Locked").Any(l => l.StartsWith("Suffixes: 1 more")),
             "The pool says which affixes unlock next");
-        check(low.Prefixes[0].Sources!["Effect"].Select(c => c.Column).SequenceEqual(["mod1code", "mod1min", "mod1max"]) && low.Prefixes[0].Sources["Chance"].Single() is { Table: "magicprefix", Column: "frequency" }
+        check(low.Prefixes[0].Sources!["Effect"].Select(c => c.Column).SequenceEqual(["mod1code", "mod1min", "mod1max"]) && low.Prefixes[0].Sources!["Chance"].Single() is { Table: "magicprefix", Column: "frequency" }
             && low.Text.Any(t => t.Links.Any(l => l.Targets.Any(c => c is { Table: "armor", Column: "level" }))),
             "Affix pool rows link their affix cells and the item's qlvl links its level cell");
         check(Pool("armor", "cap", 12).Prefixes.Select(p => p.Name).SequenceEqual(["Sturdy", "Strong"]), "Affixes past their maxlevel drop out of the pool");

@@ -31,6 +31,7 @@ try
     CalcTests.Run(root, Check, Throws);
     StatPreviewTests.Run(root, Check, Throws);
     DropTests.Run(root, Check, Throws);
+    MonsterAppearanceTests.Run(root, Check, Throws);
     AffixRecipeTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);

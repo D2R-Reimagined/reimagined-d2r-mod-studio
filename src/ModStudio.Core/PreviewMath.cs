@@ -6,9 +6,14 @@ namespace ModStudio.Core;
 
 /// <summary>
 /// A labelled block of a preview card; empty sections are never produced. <paramref name="BeforeLevels"/> marks the blocks
-/// that belong above a level table dozens of rows long.
+/// that belong above a level table dozens of rows long. Lines may carry <see cref="PreviewText"/> links: <see cref="Lines"/>
+/// is the plain text and <see cref="Text"/> the same lines with their linked runs.
 /// </summary>
-public record PreviewSection(string Title, string[] Lines, bool BeforeLevels = false);
+public record PreviewSection(string Title, string[] Lines, bool BeforeLevels = false)
+{
+    public PreviewText[] Text { get; } = PreviewText.Parse(Lines);
+    public string[] Lines { get; } = PreviewText.Plain(Lines);
+}
 
 /// <summary>
 /// The arithmetic skills and missiles share. Damage and mana are stored in 256ths and scaled by a shift field, and a
@@ -77,23 +82,27 @@ internal static class PreviewMath
     /// "calc1 = 28 (level 1: 10 → level 20: 48) · ln12*2": a calc column at the chosen level, how it moves across the level
     /// range, and the authored formula. Frame counts also read as seconds.
     /// </summary>
-    public static string DescribeCalc(string column, string expression, Func<int, long> at, int level, int maxLevel, bool frames)
+    public static string DescribeCalc(string column, string expression, Func<int, long> at, int level, int maxLevel, bool frames, CellLink? cell = null)
     {
         string Show(long value) => frames ? $"{value} ({Seconds(value)})" : value.ToString(CultureInfo.InvariantCulture);
         long first = at(1), last = at(maxLevel), current = at(level);
         var range = first == last ? "same at every level" : $"level 1: {Show(first)} → level {maxLevel}: {Show(last)}";
-        return $"{column} = {Show(current)}  ({range}) · {expression}";
+        return $"{PreviewText.Mark(column, [cell])} = {Show(current)}  ({range}) · {expression}";
     }
 
-    /// <summary>"srvdofunc 27 · Teleport — summary" and, indented under it, the authored fields the function reads.</summary>
-    public static IEnumerable<string> DescribeFunctions(IEnumerable<FunctionUse> uses, JsonObject row, int summaryLength = 180)
+    /// <summary>
+    /// "srvdofunc 27 · Teleport — summary" and, indented under it, the authored fields the function reads. With
+    /// <paramref name="data"/>, the title and each field link to their cells.
+    /// </summary>
+    public static IEnumerable<string> DescribeFunctions(IEnumerable<FunctionUse> uses, JsonObject row, int summaryLength = 180, PreviewTables.Session? data = null)
     {
+        string Link(string text, string column) => data?.Link(text, row, column) ?? text;
         foreach (var use in uses)
         {
             var summary = use.Function.Summary.Replace('\n', ' ');
             if (summary.Length > summaryLength) summary = summary[..summaryLength].TrimEnd() + "…";
-            yield return use.Function.Title + (summary.Length > 0 ? " — " + summary : "") + (use.Function.Supplemental ? " (Studio note)" : "");
-            var read = use.Fields.Where(f => row.S(f).Length > 0).Select(f => $"{f} = {row.S(f)}").ToArray();
+            yield return Link(use.Function.Title, use.Function.Column) + (summary.Length > 0 ? " — " + summary : "") + (use.Function.Supplemental ? " (Studio note)" : "");
+            var read = use.Fields.Where(f => row.S(f).Length > 0).Select(f => Link($"{f} = {row.S(f)}", f)).ToArray();
             if (read.Length > 0) yield return "    reads " + string.Join(" · ", read);
         }
     }

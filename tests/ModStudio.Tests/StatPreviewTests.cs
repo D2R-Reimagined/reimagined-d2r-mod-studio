@@ -54,6 +54,10 @@ internal static class StatPreviewTests
             "Property preview lists every authored use: " + string.Join(" | ", used));
         check(str.Issues.Any(i => i.Contains("Test Ring") && i.Contains("value 300 is outside the -32 to 223")) && !str.Issues.Any(i => i.Contains("Test Word")),
             "Values a stat cannot save are reported, and values it can are not: " + string.Join(" | ", str.Issues));
+        var strLinks = str.Sections.SelectMany(s => s.Text).SelectMany(t => t.Links).SelectMany(l => l.Targets).ToArray();
+        check(strLinks.Any(c => c is { Table: "properties", Column: "func1" }) && strLinks.Any(c => c is { Table: "itemstatcost", Column: "descstrpos" }) && strLinks.Any(c => c is { Table: "itemstatcost", Column: "Save Bits" })
+            && strLinks.Any(c => c is { Table: "uniqueitems", Column: "prop1" }),
+            "Stat previews link the property functions, the stat's tooltip and storage cells, and each use's slot");
 
         var perLevel = Preview("itemstatcost", "perlevel");
         check(perLevel.Name == "item_armor_perlevel" && perLevel.Sample.Contains("parameter of Test Ring") && perLevel.Lines.Any(l => l == "Set by properties: ac/lvl"),

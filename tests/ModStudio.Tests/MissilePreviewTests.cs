@@ -72,6 +72,10 @@ internal static class MissilePreviewTests
             $"Missile synergies read the firing skill's parameters: {synergized.Levels[0].Synergy} {synergized.Levels[0].WithSynergy}");
         check(result.Sections.Single(s => s.Title == "Assumptions").Lines[0].Contains("level of Fire Ball"), "The missile says which skill's level its calculations run at");
         check(result.Issues.Length == 0, "A complete missile row previews without incomplete warnings: " + string.Join(" ", result.Issues));
+        var spawnLinks = result.Sections.Single(s => s.Title == "Spawns").Text[0].Links;
+        check(spawnLinks.Select(l => (l.Targets.Single().SourceId, l.Targets.Single().Column)).SequenceEqual([("fireball", "ExplosionMissile"), ("fireballexp", "Missile")])
+            && result.ColumnSources!["Velocity"].Select(c => c.Column).SequenceEqual(["Vel", "VelLev", "MaxVel"]),
+            "Missile spawn chains link the naming cell and the spawned row; the level table links its columns' cells");
 
         var explosion = Preview("fireballexp");
         check(explosion.MaxLevel == MissilePreviewResolver.DefaultMaxLevel && explosion.Lines.Any(l => l.Contains("no skill fires this missile directly")),

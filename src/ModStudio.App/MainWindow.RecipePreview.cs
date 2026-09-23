@@ -98,8 +98,8 @@ public partial class MainWindow
     private static Control RecipeCard(RecipePreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
-        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section.Title, section.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
+        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section));
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Problems", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
     }

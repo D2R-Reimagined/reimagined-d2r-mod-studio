@@ -158,11 +158,11 @@ public partial class MainWindow
     private static Control DropCard(DropPreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
-        foreach (var section in result.Sections.Where(s => s.BeforeLevels || s.Title == "Entries")) parts.Add(PreviewCards.Section(section.Title, section.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
+        foreach (var section in result.Sections.Where(s => s.BeforeLevels || s.Title == "Entries")) parts.Add(PreviewCards.Section(section));
         if (result.Drops.Length > 0) parts.Add(PreviewCards.Table(result.Drops, [
-            ("Per kill", d => d.PerKill), ("Item", d => d.Item), ("Unique", d => d.Unique), ("Set", d => d.Set), ("Rare", d => d.Rare), ("Magic", d => d.Magic)]));
-        foreach (var section in result.Sections.Where(s => !s.BeforeLevels && s.Title != "Entries")) parts.Add(PreviewCards.Section(section.Title, section.Lines, muted: section.Title == "Assumptions"));
+            ("Per kill", d => d.PerKill), ("Item", d => d.Item), ("Unique", d => d.Unique), ("Set", d => d.Set), ("Rare", d => d.Rare), ("Magic", d => d.Magic)], (d, header) => header == "Item" && d.ItemCell is { } cell ? [cell] : null));
+        foreach (var section in result.Sections.Where(s => !s.BeforeLevels && s.Title != "Entries")) parts.Add(PreviewCards.Section(section, muted: section.Title == "Assumptions"));
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Problems", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
     }

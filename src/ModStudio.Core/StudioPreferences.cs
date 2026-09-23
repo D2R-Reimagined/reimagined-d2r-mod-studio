@@ -14,6 +14,8 @@ public sealed class StudioPreferences
     /// <summary>Font of the source (JSON/text) editor; empty means the built-in monospace stack.</summary>
     /// <summary>The pal.pl2 the colour-transform picker reads; empty until the user points at their extracted game data.</summary>
     public string PalettePl2 { get; set; } = "";
+    /// <summary>The user's extracted game data (the folder holding hd/ and global/), read for base-game HD files the project does not override.</summary>
+    public string GameDataFolder { get; set; } = "";
     public string SourceFontFamily { get; set; } = "";
     public double SourceFontSize { get; set; } = 13;
     /// <summary>Font of the table grid; empty means the app font.</summary>

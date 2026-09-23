@@ -13,7 +13,13 @@ public record SkillLevelPreview(int Level, string Mana, string Physical, string 
 
 /// <param name="Level">The level the tooltip and calculations are shown at, clamped to the skill's range.</param>
 /// <param name="Inputs">The assumptions the calculations read (other skills' levels, stats, character level).</param>
-public record SkillPreviewResult(string Name, string CharacterClass, int MaxLevel, int Level, string[] Lines, PreviewSection[] Sections, SkillLevelPreview[] Levels, CalcInput[] Inputs, string[] Issues);
+/// <param name="ColumnSources">The skills.txt cells each level-table column is computed from, by column header.</param>
+public record SkillPreviewResult(string Name, string CharacterClass, int MaxLevel, int Level, string[] Lines, PreviewSection[] Sections, SkillLevelPreview[] Levels, CalcInput[] Inputs, string[] Issues,
+    IReadOnlyDictionary<string, CellLink[]>? ColumnSources = null)
+{
+    public PreviewText[] Text { get; } = PreviewText.Parse(Lines);
+    public string[] Lines { get; } = PreviewText.Plain(Lines);
+}
 
 /// <summary>The level to show the tooltip and calculations at, and the values a single row cannot know.</summary>
 public sealed record CalcPreviewOptions(int Level = 1, CalcAssumptions? Assumptions = null);
@@ -63,18 +69,20 @@ public sealed class SkillPreviewResolver
         int level = Math.Clamp(options.Level, 1, maxLevel);
         var calc = new CalcContext(data, options.Assumptions ?? new(), token);
 
-        lines.Add($"{characterClass} · {id}" + (skill.S("skilldesc").Length > 0 ? $" · skilldesc {skill.S("skilldesc")}" : ""));
+        string Link(string text, params string[] columns) => data.Link(text, skill, columns);
+        lines.Add($"{Link(characterClass, "charclass")} · {Link(id, "skill")}" + (skill.S("skilldesc").Length > 0 ? $" · {Link("skilldesc " + skill.S("skilldesc"), "skilldesc")}" : ""));
         lines.Add(authoredMax
-            ? $"Levels 1–{maxLevel} from skill points (maxlvl {maxLevel}); items can raise it further"
-            : $"Levels 1–{maxLevel} (maxlvl is not set on this row, so the usual {DefaultMaxLevel} is shown)");
-        if (skill.S("reqlevel").Length > 0) lines.Add($"Required character level: {Text(Number(skill, "reqlevel"))}");
-        var prerequisites = new[] { "reqskill1", "reqskill2", "reqskill3" }.Select(f => skill.S(f)).Where(v => v.Length > 0).ToArray();
+            ? $"Levels 1–{maxLevel} from skill points ({Link($"maxlvl {maxLevel}", "maxlvl")}); items can raise it further"
+            : $"Levels 1–{maxLevel} ({Link("maxlvl is not set", "maxlvl")} on this row, so the usual {DefaultMaxLevel} is shown)");
+        if (skill.S("reqlevel").Length > 0) lines.Add($"Required character level: {Link(Text(Number(skill, "reqlevel")), "reqlevel")}");
+        var prerequisites = new[] { "reqskill1", "reqskill2", "reqskill3" }.Where(f => skill.S(f).Length > 0).Select(f => Link(skill.S(f), f)).ToArray();
         if (prerequisites.Length > 0) lines.Add("Requires: " + string.Join(", ", prerequisites));
         if (description != null)
         {
             var longKey = description.S("str long");
-            if (longKey.Length > 0) lines.Add(data.Localize(longKey));
-            if (description.S("SkillPage").Length > 0) lines.Add($"Skill tree page {description.S("SkillPage")}, row {description.S("SkillRow")}, column {description.S("SkillColumn")}");
+            if (longKey.Length > 0) lines.Add(data.Link(data.Localize(longKey), description, "str long"));
+            if (description.S("SkillPage").Length > 0)
+                lines.Add($"Skill tree {data.Link($"page {description.S("SkillPage")}", description, "SkillPage")}, {data.Link($"row {description.S("SkillRow")}", description, "SkillRow")}, {data.Link($"column {description.S("SkillColumn")}", description, "SkillColumn")}");
         }
         lines.Add($"{profile} · {locale}");
 
@@ -127,8 +135,21 @@ public sealed class SkillPreviewResolver
         }
         if (hasSynergy)
             lines.Add(levels.Any(l => l.Synergy.Length > 0)
-                ? $"Synergies: {synergyColumn} = {skill.S(synergyColumn)}; the level table adds them at the skill levels set above"
-                : $"Synergies: {synergyColumn} = {skill.S(synergyColumn)}; set the other skills' levels above to see them in the level table");
+                ? $"Synergies: {Link($"{synergyColumn} = {skill.S(synergyColumn)}", synergyColumn)}; the level table adds them at the skill levels set above"
+                : $"Synergies: {Link($"{synergyColumn} = {skill.S(synergyColumn)}", synergyColumn)}; set the other skills' levels above to see them in the level table");
+        // The authored cells behind each level-table column.
+        CellLink[] From(params string[] columns) => [.. columns.Where(c => skill.S(c).Length > 0).Select(c => data.Cell(skill, c)).OfType<CellLink>()];
+        string[] Tiers(string prefix, int count) => [.. Enumerable.Range(1, count).Select(i => prefix + i)];
+        var sources = new Dictionary<string, CellLink[]>
+        {
+            ["Mana"] = From("mana", "lvlmana", "minmana", "manashift"),
+            ["Damage"] = From(["MinDam", "MaxDam", .. Tiers("MinLevDam", 5), .. Tiers("MaxLevDam", 5), "HitShift"]),
+            ["Elemental"] = From(["EType", "EMin", "EMax", .. Tiers("EMinLev", 5), .. Tiers("EMaxLev", 5), "HitShift"]),
+            ["Length"] = From(["ELen", .. Tiers("ELevLen", 3)]),
+            ["Attack"] = From("ToHit", "LevToHit"),
+            ["Synergy"] = synergyColumn.Length > 0 ? From(synergyColumn) : [],
+            ["With synergies"] = synergyColumn.Length > 0 ? From(synergyColumn) : [],
+        };
 
         if (description != null)
         {
@@ -139,15 +160,15 @@ public sealed class SkillPreviewResolver
 
         var calculations = new List<string>();
         foreach (var column in CalcColumns("skills", skill))
-            try { calculations.Add(DescribeCalc(column, skill.S(column), at => calc.Skill(skill, at).Field(column), level, maxLevel, FrameColumns.Contains(column))); }
-            catch (Exception e) when (e is InvalidDataException or FormatException) { calculations.Add($"{column} = ⚠ {e.Message} · {skill.S(column)}"); issues.Add($"{column}: {e.Message}"); }
+            try { calculations.Add(DescribeCalc(column, skill.S(column), at => calc.Skill(skill, at).Field(column), level, maxLevel, FrameColumns.Contains(column), data.Cell(skill, column))); }
+            catch (Exception e) when (e is InvalidDataException or FormatException) { calculations.Add($"{Link(column, column)} = ⚠ {e.Message} · {skill.S(column)}"); issues.Add($"{column}: {e.Message}"); }
         if (calculations.Count > 0) sections.Add(new($"Calculations at level {level}", [.. calculations], BeforeLevels: true));
 
-        var functions = DescribeFunctions(FunctionGuide.ForRow("skills", [.. skill.Select(f => f.Key)], c => skill.S(c)), skill).ToArray();
+        var functions = DescribeFunctions(FunctionGuide.ForRow("skills", [.. skill.Select(f => f.Key)], c => skill.S(c)), skill, data: data).ToArray();
         if (functions.Length > 0) sections.Add(new("Functions", functions, BeforeLevels: true));
 
         var notes = calc.Notes.Append("Base skill values plus the synergies set above; +skills, difficulty resistances and other character bonuses are not applied.").ToArray();
         sections.Add(new("Assumptions", notes));
-        return new(name, characterClass, maxLevel, level, [.. lines], [.. sections], [.. levels], [.. calc.Inputs], [.. issues.Distinct()]);
+        return new(name, characterClass, maxLevel, level, [.. lines], [.. sections], [.. levels], [.. calc.Inputs], [.. issues.Distinct()], sources);
     }
 }

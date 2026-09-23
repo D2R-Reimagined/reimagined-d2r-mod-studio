@@ -66,6 +66,7 @@ public partial class MainWindow
         int revision = pane.Document.Revision, workspace = workspaceRevision;
         string locale = MonsterLocale;
         var options = new DropPreviewOptions(dropInputs.Players, dropInputs.Party, dropInputs.MagicFind);
+        var gameData = GameDataFolders();
         if (selectedProject == null || table == null || row < 0 || row >= table.Records.Count)
         {
             monsterPreviewContent.Content = new TextBlock { Text = NoMonster, TextWrapping = TextWrapping.Wrap };
@@ -82,7 +83,7 @@ public partial class MainWindow
             Storage.Require(dirty == null, "Save the edited dependency before previewing: " + dirty?.Document.FilePath);
             var result = await monsterWork.RunAsync(ct => {
                 if (resolvedMonsterProject != selectedProject.Root || resolvedMonsterWorkspace != workspace) { monsterResolver.Clear(); resolvedMonsterProject = selectedProject.Root; resolvedMonsterWorkspace = workspace; }
-                return monsterResolver.Resolve(selectedProject, name, record, profile, locale, ct, options);
+                return monsterResolver.Resolve(selectedProject, name, record, profile, locale, ct, options, gameData);
             }, token);
             if (token.IsCancellationRequested || selectedProject != project || revision != pane.Document.Revision || workspace != workspaceRevision || Active != pane || Profile != profile) return;
             LastMonsterPreview = result;
@@ -97,23 +98,28 @@ public partial class MainWindow
         }
         finally { if (ReferenceEquals(monsterPreviewCancellation, work)) monsterPreviewCancellation = null; work.Dispose(); }
     }
-    private static Control MonsterCard(MonsterPreviewResult result)
+    private Control MonsterCard(MonsterPreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
         if (result.Levels.Length > 0)
         {
             parts.Add(PreviewCards.Table(result.Levels, [
                 ("Difficulty", l => l.Difficulty), ("Lvl", l => l.Level), ("Life", l => l.Life), ("Defense", l => l.Defense),
-                ("Attack", l => l.AttackRating), ("Damage", l => l.Damage), ("Exp", l => l.Experience)]));
+                ("Attack", l => l.AttackRating), ("Damage", l => l.Damage), ("Exp", l => l.Experience)], Sources));
             // Resistances get their own table, left out when the monster authors none.
             if (result.Levels.Any(l => new[] { l.Physical, l.Magic, l.Fire, l.Lightning, l.Cold, l.Poison }.Any(v => v.Length > 0)))
                 parts.Add(PreviewCards.Table(result.Levels, [
                 ("Resist", l => l.Difficulty + " " + l.Level), ("Phys", l => l.Physical), ("Magic", l => l.Magic), ("Fire", l => l.Fire),
-                ("Light", l => l.Lightning), ("Cold", l => l.Cold), ("Poison", l => l.Poison)]));
+                ("Light", l => l.Lightning), ("Cold", l => l.Cold), ("Poison", l => l.Poison)], Sources));
         }
-        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section.Title, section.Lines, muted: section.Title == "Assumptions"));
+        foreach (var section in result.Sections)
+        {
+            if (section.Title == "Assumptions" && result.Appearance is { } appearance) parts.Add(AppearanceSection(appearance));
+            parts.Add(PreviewCards.Section(section, muted: section.Title == "Assumptions"));
+        }
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Problems", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
+        static CellLink[]? Sources(MonsterLevelPreview level, string header) => level.Sources?.GetValueOrDefault(header);
     }
 }

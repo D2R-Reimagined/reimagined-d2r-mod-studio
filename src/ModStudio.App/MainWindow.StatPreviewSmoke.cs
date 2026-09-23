@@ -41,7 +41,7 @@ public partial class MainWindow
         Require(stat.Contains("  300 → +300 to Strength") && stat.Any(l => l.Contains("-32 to 223")), "Stat section is missing its tooltip or save range: " + string.Join(" | ", stat));
         Require(str.Issues.Any(i => i.Contains("Test Ring") && i.Contains("300 is outside")), "The Save Bits overflow was not reported: " + string.Join(" | ", str.Issues));
         await Task.Delay(150); UpdateLayout();
-        var rendered = statPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        var rendered = statPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("str") && rendered.Contains("FUNCTIONS") && rendered.Contains("STAT STRENGTH") && rendered.Contains("USED BY") && rendered.Any(t => t.StartsWith("Problems")),
             $"Stat card was not laid out with its sections: [{string.Join(" | ", rendered.Take(12))}] ({rendered.Length} blocks).");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))

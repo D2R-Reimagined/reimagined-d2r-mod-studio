@@ -109,6 +109,13 @@ internal static class DropTests
         check(from.Any(l => l.Contains("Hell quest · Big Boss · level 90 · Negative")) && from.Any(l => l.Contains("Normal champion · Zombie · level 3 · G A")) && !from.Any(l => l.Contains("Normal regular")),
             "Reverse lookup lists the monsters that drop an item, skipping kills below its item level: " + string.Join(" | ", from));
         check(Section(source.Sections, "Listed in").Contains("Negative"), "Reverse lookup lists the TCs that name the item's base");
+        IEnumerable<CellLink> Links(PreviewSection section) => section.Text.SelectMany(t => t.Links).SelectMany(l => l.Targets);
+        var entryLinks = Links(tc.Sections.Single(s => s.Title == "Entries")).ToArray();
+        check(entryLinks.Any(c => c is { Table: "treasureclassex", SourceId: "chain", Column: "Item1" }) && entryLinks.Any(c => c is { Table: "treasureclassex", SourceId: "chain", Column: "Prob1" })
+            && entryLinks.Any(c => c is { Table: "uniqueitems", Column: "index" }) && tc.Drops.Single(d => d.Code == "hax").ItemCell is { Table: "weapons", SourceId: "hax", Column: "code" },
+            "Drop entries link their ItemN/ProbN cells and the rows they name: " + string.Join(", ", entryLinks.Select(c => $"{c.Table}/{c.SourceId}/{c.Column}")));
+        check(Links(source.Sections.Single(s => s.Title == "Drops from")).Any(c => c is { Table: "monstats", Column: "TreasureClassChamp" }),
+            "Reverse drop lookups link the monster's treasure class cell");
         check(drops.Resolve(project, "uniqueitems", Record("uniqueitems", "off"), "standard", "enUS", default).Issues.Any(i => i.Contains("disabled")), "Disabled uniques are reported");
 
         var monsters = new MonsterPreviewResolver();
@@ -128,6 +135,21 @@ internal static class DropTests
         var boss = monsters.Resolve(project, "monstats", Record("monstats", "boss"), "standard", "enUS", default);
         check(boss.Levels.Where(l => l.Difficulty == "Hell").Single().Level == "90" && Section(boss.Sections, "Group").Any(l => l.Contains("minion1: Zombie (zom) × 2–3")),
             "Bosses keep their own level and list their minions");
+
+        // Preview links: marks round-trip to plain text plus runs, and each part of the monster card points at its cells.
+        var marked = "a " + PreviewText.Mark("b", [new CellLink("t", "row-1", "c"), new CellLink("u", "row-2", "d")]) + " " + PreviewText.Mark("e", [null]);
+        var parsed = PreviewText.Parse(marked);
+        check(PreviewText.Plain(marked) == "a b e" && parsed.Text == "a b e" && parsed.Links.Single() is { Start: 2, Length: 1, Targets.Length: 2 } && parsed.Links[0].Targets[1] == new CellLink("u", "row-2", "d"),
+            "Preview marks parse to plain text and the linked run's cells");
+        check(PreviewText.Mark(marked, [new CellLink("t", "row-1", "c")]) == marked, "Marking text that already holds links leaves it unchanged");
+        var normalSources = zombie.Levels[0].Sources!;
+        check(normalSources["Life"].Select(c => (c.Table, c.Column)).SequenceEqual([("monstats", "minHP"), ("monstats", "maxHP"), ("monlvl", "L-HP")]) && normalSources["Life"][0].SourceId == "zom",
+            "Monster life links its monstats columns and the monlvl multiplier: " + string.Join(", ", normalSources["Life"].Select(c => c.ToString())));
+        check(nightmare[0].Sources!["Lvl"].Single() is { Table: "levels", Column: "MonLvlEx(N)" } && zombie.Text.Any(t => t.Links.Any(l => l.Targets.Any(c => c.Table == "levels"))),
+            "A monster's area levels link the levels.txt cell they come from");
+        check(!zombie.Lines.Concat(zombie.Sections.SelectMany(s => s.Lines)).Any(l => l.Any(c => c is >= '' and <= '')), "Plain preview lines carry no link marks");
+        check(Section(boss.Sections, "Group").Any(l => l.Contains("minion1: Zombie (zom)")) && boss.Sections.Single(s => s.Title == "Group").Text.Any(t => t.Links.Any(l => l.Targets.Any(c => c is { SourceId: "zom", Column: "Id" }))),
+            "A boss's minion links to the minion's monstats row");
         throws(() => monsters.Resolve(project, "skills", Record("monstats", "zom"), "standard", "enUS", default), "Monster preview refuses other tables");
         using var cancel = new CancellationTokenSource(); cancel.Cancel();
         throws(() => drops.Resolve(project, "treasureclassex", Record("treasureclassex", "chain"), "standard", "enUS", cancel.Token), "Canceled drop resolution stops before producing results");

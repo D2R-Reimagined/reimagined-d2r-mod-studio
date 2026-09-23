@@ -106,14 +106,14 @@ public partial class MainWindow
     private static Control SkillCard(SkillPreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
         // The tooltip, calculations and functions explain the row; the level curve can run to dozens of rows, so it comes after.
-        foreach (var section in result.Sections.Where(s => s.BeforeLevels)) parts.Add(PreviewCards.Section(section.Title, section.Lines));
+        foreach (var section in result.Sections.Where(s => s.BeforeLevels)) parts.Add(PreviewCards.Section(section));
         if (result.Levels.Length > 0) parts.Add(PreviewCards.Table(result.Levels, [
             ("Lvl", l => l.Level.ToString()), ("Mana", l => l.Mana), ("Damage", l => l.Physical),
             ("Elemental", l => l.Elemental), ("Length", l => l.Duration), ("Attack", l => l.AttackRating),
-            ("Synergy", l => l.Synergy), ("With synergies", l => l.WithSynergy)]));
-        foreach (var section in result.Sections.Where(s => !s.BeforeLevels)) parts.Add(PreviewCards.Section(section.Title, section.Lines, muted: true));
+            ("Synergy", l => l.Synergy), ("With synergies", l => l.WithSynergy)], headerLinks: header => result.ColumnSources?.GetValueOrDefault(header)));
+        foreach (var section in result.Sections.Where(s => !s.BeforeLevels)) parts.Add(PreviewCards.Section(section, muted: true));
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Incomplete preview", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
     }

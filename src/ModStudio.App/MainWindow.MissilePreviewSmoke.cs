@@ -50,11 +50,11 @@ public partial class MainWindow
         Require(ball.Sections.Single(s => s.Title == "Spawns").Lines[0] == "ExplosionMissile → fireballexp", "Spawn chain did not resolve the explosion missile.");
         Require(ball.Issues.Length == 0, "Complete missile row reported an incomplete preview: " + string.Join(" ", ball.Issues));
         await Task.Delay(150); UpdateLayout();
-        var rendered = missilePreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        var rendered = missilePreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("fireball") && rendered.Contains("USED BY") && rendered.Contains("SPAWNS") && rendered.Contains("MOTION") && rendered.Contains("6–14 fire") && rendered.Contains("Velocity"),
             $"Missile card was not laid out with its sections and level table: [{string.Join(" | ", rendered.Take(12))}] ({rendered.Length} blocks).");
         Require(rendered.Any(t => t.Contains("ExplosionMissile → fireballexp")) && rendered.Any(t => t.Contains("Knockback chance: 25%")), "Missile card is missing its chain or behavior lines.");
-        Require(missilePreviewContent.GetVisualDescendants().OfType<SelectableTextBlock>().Any(t => t.Text == "6–14 fire"), "Missile preview values cannot be selected and copied.");
+        Require(missilePreviewContent.GetVisualDescendants().OfType<SelectableTextBlock>().Any(t => PreviewCards.RenderedText(t) == "6–14 fire"), "Missile preview values cannot be selected and copied.");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
         { bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "missile-preview.png"), PngBitmapEncoderOptions.Default); }
         // The explosion is fired by no skill, so it falls back to the usual level range.

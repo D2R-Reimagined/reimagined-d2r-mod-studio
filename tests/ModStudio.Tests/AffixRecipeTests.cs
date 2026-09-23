@@ -74,6 +74,9 @@ internal static class AffixRecipeTests
         check(low.Prefixes[0].Effect == "Enhanced Defense +10–20%" && low.Prefixes[0].Levels == "1+" && low.Prefixes[1].Levels == "1–5", "Pool lines show each affix's effect and level range: " + low.Prefixes[0].Effect);
         check(Section(low.Sections, "Locked").Any(l => l.StartsWith("Prefixes: 1 more need a higher affix level; next at 10: Strong")) && Section(low.Sections, "Locked").Any(l => l.StartsWith("Suffixes: 1 more")),
             "The pool says which affixes unlock next");
+        check(low.Prefixes[0].Sources!["Effect"].Select(c => c.Column).SequenceEqual(["mod1code", "mod1min", "mod1max"]) && low.Prefixes[0].Sources["Chance"].Single() is { Table: "magicprefix", Column: "frequency" }
+            && low.Text.Any(t => t.Links.Any(l => l.Targets.Any(c => c is { Table: "armor", Column: "level" }))),
+            "Affix pool rows link their affix cells and the item's qlvl links its level cell");
         check(Pool("armor", "cap", 12).Prefixes.Select(p => p.Name).SequenceEqual(["Sturdy", "Strong"]), "Affixes past their maxlevel drop out of the pool");
         check(Pool("armor", "glv", 20).Prefixes.Select(p => p.Name).SequenceEqual(["Sturdy"]), "Excluded types (etype) keep an affix off an item");
         check(Pool("armor", "cap", 12, rare: true).Prefixes.Select(p => p.Name).SequenceEqual(["Sturdy"]), "Rare items only take affixes marked rare");
@@ -110,6 +113,8 @@ internal static class AffixRecipeTests
 
         var steel = Recipe("runes", "rw1");
         check(steel.Name == "Steel" && steel.Lines[0] == "Tir Rune + El Rune · 2 sockets · required level 13 from its runes", "A runeword card reads its runes, sockets and level: " + steel.Lines[0]);
+        check(steel.Text[0].Links.Select(l => l.Targets.Single().Column).SequenceEqual(["Rune1", "Rune2", "levelreq"]) && steel.Text[0].Links[2].Targets[0].Table == "misc",
+            "A runeword's runes link their Rune# cells and its level links the rune that sets it");
         var properties = Section(steel.Sections, "Properties");
         check(properties.Contains("+99 to Strength (Based on Character Level)  (at character level 99)") && properties.Contains("+10–20 to Life") && properties.Contains("Level 3 Might Aura When Equipped")
             && properties.Any(l => l.StartsWith("property group Fortune, rolled from: +5–10 to Life (75%) | Enhanced Defense +20% (25%)")),

@@ -74,8 +74,7 @@ public sealed class DropCalculator
             var name = row.S("Treasure Class");
             if (name.Length == 0) continue;
             // Spreadsheet exports quote entries with a comma ("gld,mul=2048"); the game reads the text inside.
-            var entries = Enumerable.Range(1, 10).Select(i => (Entry: Unquote(row.S("Item" + i)), Probability: Int(row, "Prob" + i)))
-                .Where(e => e.Entry.Length > 0 && e.Probability > 0).ToArray();
+            var entries = EntrySlots(row).Select(i => (Entry: Unquote(row.S("Item" + i)), Probability: Int(row, "Prob" + i))).ToArray();
             classes.TryAdd(name, new(name, Int(row, "group"), Int(row, "level"), Int(row, "Picks"), Int(row, "NoDrop"),
                 new(Int(row, "Unique"), Int(row, "Set"), Int(row, "Rare"), Int(row, "Magic")), entries, row));
         }
@@ -92,6 +91,8 @@ public sealed class DropCalculator
     }
 
     public TreasureClass? Find(string name) => classes.GetValueOrDefault(name);
+    /// <summary>The N of each ItemN/ProbN pair a TC row counts as an entry, in the order of <see cref="TreasureClass.Entries"/>.</summary>
+    public static IEnumerable<int> EntrySlots(JsonObject row) => Enumerable.Range(1, 10).Where(i => Unquote(row.S("Item" + i)).Length > 0 && Int(row, "Prob" + i) > 0);
     public IEnumerable<TreasureClass> Classes => classes.Values;
     public (string Table, JsonObject Row)? Item(string code) => items.TryGetValue(code, out var item) ? item : null;
     public JsonObject? Unique(string index) => uniquesByIndex.GetValueOrDefault(index);

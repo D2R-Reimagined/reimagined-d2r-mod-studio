@@ -108,15 +108,15 @@ public partial class MainWindow
     private static Control AffixCard(AffixPreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
         (string, Func<AffixLine, string>)[] columns = [("Chance", a => a.Chance), ("Name", a => a.Name), ("Effect", a => a.Effect), ("Affix lvl", a => a.Levels), ("Req", a => a.Required), ("Group", a => a.Group)];
         foreach (var (title, rows) in new[] { ("PREFIXES", result.Prefixes), ("SUFFIXES", result.Suffixes) })
             if (rows.Length > 0)
             {
                 parts.Add(new TextBlock { Text = title, Foreground = Brushes.Tan, FontSize = 11, Margin = new(0, 4, 0, 0) });
-                parts.Add(PreviewCards.Table(rows, columns));
+                parts.Add(PreviewCards.Table(rows, columns, (a, header) => a.Sources?.GetValueOrDefault(header)));
             }
-        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section.Title, section.Lines, muted: section.Title == "Assumptions"));
+        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section, muted: section.Title == "Assumptions"));
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Problems", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
     }

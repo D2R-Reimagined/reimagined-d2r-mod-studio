@@ -60,6 +60,16 @@ internal static class SkillPreviewTests
             $"The level table adds synergies next to the base damage: {synergized.Levels[0].Synergy} {synergized.Levels[0].WithSynergy}");
         check(Preview(options: new(80)).Level == 20, "The chosen level is clamped to the skill's range");
         check(result.Issues.Length == 0, "A complete skill row previews without incomplete warnings: " + string.Join(" ", result.Issues));
+        var tooltipText = result.Sections.Single(s => s.Title == "Tooltip at level 1").Text;
+        var damageLine = tooltipText.Single(t => t.Text == "  Fire Damage: 3 to 6").Links.Single();
+        check(damageLine.Start == 2 && damageLine.Targets.Select(c => c.Column).SequenceEqual(["descline1", "desctexta1", "desccalca1", "desccalcb1"]) && damageLine.Targets.All(c => c is { Table: "skilldesc", SourceId: "bolt" }),
+            "Tooltip lines link the skilldesc function, string and calculation cells they were built from");
+        check(result.ColumnSources!["Elemental"].Select(c => c.Column).SequenceEqual(["EType", "EMin", "EMax", "EMinLev1", "EMinLev2", "EMinLev3", "EMinLev4", "EMinLev5", "EMaxLev1", "EMaxLev2", "EMaxLev3", "EMaxLev4", "EMaxLev5", "HitShift"])
+            && result.ColumnSources["Mana"].All(c => c is { Table: "skills", SourceId: "firebolt" }),
+            "The level table's columns link the authored skills.txt cells behind them");
+        check(result.Sections.Single(s => s.Title == "Calculations at level 1").Text.Any(t => t.Links.Any(l => l.Start == 0 && l.Targets.Single().Column == "auralencalc"))
+            && result.Sections.Single(s => s.Title == "Functions").Text[0].Links.Single().Targets.Single().Column == "srvdofunc",
+            "Calculations and functions link their columns");
 
         var mana = Row("mana", "skill", "Mana", "skilldesc", "plain", "maxlvl", "5", "mana", "20", "lvlmana", "-4", "manashift", "8", "minmana", "6");
         check(Preview(mana).Levels.Select(l => l.Mana).SequenceEqual(["20", "16", "12", "8", "6"]), "Falling mana costs stop at minmana");

@@ -9,10 +9,14 @@ namespace ModStudio.Core;
 /// <param name="Filter">Only list drops whose name or code contains this.</param>
 public sealed record DropPreviewOptions(int Players = 1, int Party = 1, int MagicFind = 0, int? ItemLevel = null, string Filter = "");
 
-/// <summary>One base item a TC drops: how often per kill, and how often as each quality.</summary>
-public sealed record DropLine(string Item, string Code, string PerKill, string Unique, string Set, string Rare, string Magic);
+/// <summary>One base item a TC drops: how often per kill, and how often as each quality. <paramref name="ItemCell"/> is the item's row.</summary>
+public sealed record DropLine(string Item, string Code, string PerKill, string Unique, string Set, string Rare, string Magic, CellLink? ItemCell = null);
 
-public sealed record DropPreviewResult(string Name, string[] Lines, PreviewSection[] Sections, DropLine[] Drops, int ItemLevel, string[] Issues);
+public sealed record DropPreviewResult(string Name, string[] Lines, PreviewSection[] Sections, DropLine[] Drops, int ItemLevel, string[] Issues)
+{
+    public PreviewText[] Text { get; } = PreviewText.Parse(Lines);
+    public string[] Lines { get; } = PreviewText.Plain(Lines);
+}
 
 /// <summary>
 /// Worker-owned resolver for the Drop Preview: for a treasureclassex.txt row, what one roll of it drops and how often;
@@ -44,11 +48,13 @@ public sealed class DropPreviewResolver
         var name = row.S("Treasure Class");
         if (name.Length == 0) return new("Inactive row", ["Inactive/header row · no treasure class name"], [], [], 0, []);
         var tc = calc.Find(name)!;
+        var data = calc.Data;
+        string Link(string text, params string[] columns) => data.Link(text, tc.Row, columns);
         var monsters = new MonsterData(calc.Data);
         var users = monsters.AllSources(calc).Where(s => s.Authored == name || s.TreasureClass == name).ToArray();
         var (itemLevel, levelSource) = options.ItemLevel is { } set ? (set, "set above")
-            : tc.Level > 0 ? (tc.Level, "the TC's level column")
-            : users.FirstOrDefault() is { } user ? (user.Level, $"{user.Name} ({user.DifficultyName} {user.Kind})")
+            : tc.Level > 0 ? (tc.Level, Link("the TC's level column", "level"))
+            : users.FirstOrDefault() is { } user ? (user.Level, PreviewText.Mark($"{user.Name} ({user.DifficultyName} {user.Kind})", [user.Cell]))
             : (DefaultItemLevel, "a default; nothing names this TC with a level");
         var settings = new DropSettings(options.Players, options.Party, options.MagicFind, itemLevel);
 
@@ -56,33 +62,35 @@ public sealed class DropPreviewResolver
         int picks = tc.Picks == 0 ? 1 : tc.Picks;
         int noDrop = DropCalculator.AdjustedNoDrop(tc.NoDrop, tc.Total, settings.NoDropPlayers);
         lines.Add(picks > 0
-            ? $"Picks {picks}: {(picks == 1 ? "one roll" : picks + " rolls")} among the entries" + (tc.NoDrop > 0 ? $" and NoDrop {tc.NoDrop}" + (noDrop != tc.NoDrop ? $" (→ {noDrop} with {settings.NoDropPlayers} counted players)" : "") : ", never nothing")
-            : $"Picks {picks}: each entry drops Prob times, in order, until {-picks} items have dropped; NoDrop does not apply");
+            ? $"{Link($"Picks {picks}", "Picks")}: {(picks == 1 ? "one roll" : picks + " rolls")} among the entries" + (tc.NoDrop > 0 ? $" and {Link($"NoDrop {tc.NoDrop}", "NoDrop")}" + (noDrop != tc.NoDrop ? $" (→ {noDrop} with {settings.NoDropPlayers} counted players)" : "") : ", never nothing")
+            : $"{Link($"Picks {picks}", "Picks")}: each entry drops Prob times, in order, until {-picks} items have dropped; NoDrop does not apply");
         if (tc.Picks == 0) issues.Add("Picks is empty; the preview treats it as 1.");
-        if (tc.Group > 0 || tc.Level > 0) lines.Add($"Group {tc.Group} · level {tc.Level}: monsters above level {tc.Level} move up to a higher TC of group {tc.Group}");
-        if (tc.Factors != default) lines.Add($"Quality factors {tc.Factors}; TCs below it inherit the higher of theirs and these");
-        if (row.S("ConditionCalc") is { Length: > 0 } condition) lines.Add($"Drops only when: {DropCalculator.Unquote(condition)}");
-        if (row.S("firstLadderSeason").Length > 0) lines.Add($"Ladder seasons {row.S("firstLadderSeason")}–{row.S("lastLadderSeason", "…")} only");
+        if (tc.Group > 0 || tc.Level > 0) lines.Add($"{Link($"Group {tc.Group}", "group")} · {Link($"level {tc.Level}", "level")}: monsters above level {tc.Level} move up to a higher TC of group {tc.Group}");
+        if (tc.Factors != default)
+            lines.Add($"Quality factors {Link($"unique {tc.Factors.Unique}", "Unique")} · {Link($"set {tc.Factors.Set}", "Set")} · {Link($"rare {tc.Factors.Rare}", "Rare")} · {Link($"magic {tc.Factors.Magic}", "Magic")}; TCs below it inherit the higher of theirs and these");
+        if (row.S("ConditionCalc") is { Length: > 0 } condition) lines.Add($"Drops only when: {Link(DropCalculator.Unquote(condition), "ConditionCalc")}");
+        if (row.S("firstLadderSeason").Length > 0) lines.Add(Link($"Ladder seasons {row.S("firstLadderSeason")}–{row.S("lastLadderSeason", "…")} only", "firstLadderSeason", "lastLadderSeason"));
         lines.Add($"Item level {itemLevel} (from {levelSource}) · /players {options.Players}, party {options.Party} · {options.MagicFind}% magic find");
 
         var sections = new List<PreviewSection>();
         var entries = new List<string>();
         double weight = tc.Total + noDrop;
-        foreach (var (entry, probability) in tc.Entries)
+        foreach (var ((entry, probability), slot) in tc.Entries.Zip(DropCalculator.EntrySlots(tc.Row)))
         {
             var kind = calc.Kind(entry);
             var what = kind switch
             {
-                "tc" => "treasure class",
-                "item" => calc.ItemName(entry.Split(',')[0]),
+                "tc" => RowLink(calc.Find(entry.Split(',')[0].Trim())!.Row, "Treasure Class", "treasure class"),
+                "item" => RowLink(calc.Item(entry.Split(',')[0])?.Row, "code", calc.ItemName(entry.Split(',')[0])),
                 "auto" => $"automatic TC of {calc.Automatic(entry.Split(',')[0])!.Length} items",
-                "unique" => "unique item", "set" => "set item",
+                "unique" => RowLink(calc.Unique(entry.Split(',')[0].Trim()), "index", "unique item"),
+                "set" => RowLink(calc.SetItem(entry.Split(',')[0].Trim()), "index", "set item"),
                 _ => "⚠ not a TC, item code, unique or set"
             };
             var share = picks > 0 ? $"{Percent(probability / weight)} per pick" : $"drops up to {probability}×";
-            entries.Add($"{entry} · prob {probability} · {share} · {what}");
+            entries.Add($"{Link(entry, "Item" + slot)} · {Link($"prob {probability}", "Prob" + slot)} · {share} · {what}");
         }
-        if (picks > 0 && noDrop > 0) entries.Add($"NoDrop · {noDrop} · {Percent(noDrop / weight)} per pick");
+        if (picks > 0 && noDrop > 0) entries.Add($"{Link("NoDrop", "NoDrop")} · {noDrop} · {Percent(noDrop / weight)} per pick");
         sections.Add(new("Entries", [.. entries]));
 
         var leaves = calc.Expand(name, settings);
@@ -91,16 +99,17 @@ public sealed class DropPreviewResolver
         var named = calc.Named(leaves, settings).Select(n => (Key: n.Key, Chance: n.Value, Label: NamedLabel(calc, n.Key.Table, n.Key.Index)))
             .Where(n => Matches(options.Filter, n.Label)).OrderByDescending(n => n.Chance).ToArray();
         if (named.Length > 0)
-            sections.Add(new($"Uniques and sets ({named.Length})", [.. named.Take(Shown).Select(n => $"{DropCalculator.Odds(n.Chance),-14} {n.Label}"), .. named.Length > Shown ? [$"… {named.Length - Shown} more; type part of a name above to find one"] : Array.Empty<string>()]));
+            sections.Add(new($"Uniques and sets ({named.Length})", [.. named.Take(Shown).Select(n => $"{DropCalculator.Odds(n.Chance),-14} {RowLink(NamedRow(calc, n.Key.Table, n.Key.Index), "index", n.Label)}"), .. named.Length > Shown ? [$"… {named.Length - Shown} more; type part of a name above to find one"] : Array.Empty<string>()]));
 
-        var usedBy = users.Select(u => $"{u.Name} · {u.DifficultyName} {u.Kind}" + (u.Authored != name ? $" (upgraded from {u.Authored} at level {u.Level})" : ""))
-            .Concat(calc.Classes.Where(c => c.Entries.Any(e => e.Entry.Split(',')[0] == name)).Select(c => "treasure class " + c.Name)).Distinct().ToArray();
+        var usedBy = users.Select(u => $"{PreviewText.Mark(u.Name, [u.Cell])} · {u.DifficultyName} {u.Kind}" + (u.Authored != name ? $" (upgraded from {u.Authored} at level {u.Level})" : ""))
+            .Concat(calc.Classes.Where(c => c.Entries.Any(e => e.Entry.Split(',')[0] == name)).Select(c => "treasure class " + RowLink(c.Row, EntryColumn(c.Row, name), c.Name))).Distinct().ToArray();
         sections.Add(new("Used by", usedBy.Length == 0 ? ["Nothing names this TC: no monster, superunique or other TC."] : [.. usedBy.Take(25), .. usedBy.Length > 25 ? [$"… {usedBy.Length - 25} more"] : Array.Empty<string>()]));
         sections.Add(new("Assumptions", [
             "Odds are the expected number per kill, shown as 1 in N; the game also caps how many items one kill drops.",
             "Quality odds use itemratio.txt at the item level with the magic find above; an item with no unique or set it can become turns rare or magic instead.",
             .. tc.Entries.Where(e => calc.Find(e.Entry) is { } sub && sub.Row.S("ConditionCalc").Length > 0).Select(e => $"{e.Entry} only drops when {calc.Find(e.Entry)!.Row.S("ConditionCalc")}; it is counted as if it always does.")]));
         return new(name, [.. lines], [.. sections], drops, itemLevel, [.. issues]);
+        string RowLink(JsonObject? target, string column, string text) => data.Link(text, target, column);
     }
 
     private sealed record Totals(double Items, double Gold, double Unique, double Set);
@@ -130,14 +139,19 @@ public sealed class DropPreviewResolver
             {
                 var forced = x.Key.Split(':');
                 var label = forced.Length == 2 ? NamedLabel(calc, forced[0], forced[1]) : $"{calc.ItemName(x.Key)} ({x.Key})";
-                return (x.Value.Count, Line: new DropLine(label, x.Key, DropCalculator.Odds(x.Value.Count), Odds(x.Value.Unique, x.Value.Quality), Odds(x.Value.Set, x.Value.Quality), Odds(x.Value.Rare, x.Value.Quality), Odds(x.Value.Magic, x.Value.Quality)));
+                var cell = forced.Length == 2 ? calc.Data.Cell(NamedRow(calc, forced[0], forced[1]), "index") : calc.Data.Cell(calc.Item(x.Key)?.Row, "code");
+                return (x.Value.Count, Line: new DropLine(label, x.Key, DropCalculator.Odds(x.Value.Count), Odds(x.Value.Unique, x.Value.Quality), Odds(x.Value.Set, x.Value.Quality), Odds(x.Value.Rare, x.Value.Quality), Odds(x.Value.Magic, x.Value.Quality), cell));
             })
             .Where(x => Matches(filter, x.Line.Item)).OrderByDescending(x => x.Count).Take(Shown).Select(x => x.Line).ToArray();
     }
 
+    private static JsonObject? NamedRow(DropCalculator calc, string table, string index) => table == "setitems" ? calc.SetItem(index) : calc.Unique(index);
+    /// <summary>The ItemN column of a TC row that names an entry.</summary>
+    private static string EntryColumn(JsonObject tc, string entry) =>
+        "Item" + DropCalculator.EntrySlots(tc).FirstOrDefault(i => DropCalculator.Unquote(tc.S("Item" + i)).Split(',')[0] == entry, 1);
     private static string NamedLabel(DropCalculator calc, string table, string index)
     {
-        var row = table == "setitems" ? calc.SetItem(index) : calc.Unique(index);
+        var row = NamedRow(calc, table, index);
         var code = row?.S(table == "setitems" ? "item" : "code") ?? "";
         return $"{calc.Localize(index)} ({(table == "setitems" ? "set" : "unique")} {calc.ItemName(code)})";
     }
@@ -147,6 +161,8 @@ public sealed class DropPreviewResolver
     private static DropPreviewResult Sources(DropCalculator calc, string table, JsonObject row, DropPreviewOptions options, List<string> issues, CancellationToken token)
     {
         string code, index = "", name;
+        var data = calc.Data;
+        string Link(string text, params string[] columns) => data.Link(text, row, columns);
         var lines = new List<string>();
         switch (table)
         {
@@ -155,7 +171,7 @@ public sealed class DropPreviewResolver
                 if (index.Length == 0 || code.Length == 0) return new("Inactive row", ["Inactive/header row · no item"], [], [], 0, []);
                 name = calc.Localize(index);
                 int level = DropCalculator.Int(row, "lvl"), rarity = DropCalculator.Int(row, "rarity");
-                lines.Add($"{(table == "setitems" ? "Set" : "Unique")} {calc.ItemName(code)} ({code}) · needs item level {level} · rarity {rarity}");
+                lines.Add($"{(table == "setitems" ? "Set" : "Unique")} {Link($"{calc.ItemName(code)} ({code})", table == "setitems" ? "item" : "code")} · {Link($"needs item level {level}", "lvl")} · {Link($"rarity {rarity}", "rarity")}");
                 if (Flag(row, "disabled") || row.S("spawnable", "1") == "0") issues.Add("This item is disabled or not spawnable, so no monster drops it.");
                 if (rarity <= 0) issues.Add("rarity is 0, so a unique or set roll never picks this item.");
                 if (calc.Item(code) is null) issues.Add($"Unresolved base item: {code}.");
@@ -163,7 +179,7 @@ public sealed class DropPreviewResolver
             default:
                 code = row.S("code"); name = calc.ItemName(code);
                 if (code.Length == 0) return new("Inactive row", ["Inactive/header row · no item code"], [], [], 0, []);
-                lines.Add($"Base item {code} · level {row.S("level", "?")} · rarity {row.S("rarity", "0")}" + (row.S("spawnable") == "1" ? "" : " · not spawnable, so only TCs that name it directly drop it"));
+                lines.Add($"Base item {Link(code, "code")} · {Link($"level {row.S("level", "?")}", "level")} · {Link($"rarity {row.S("rarity", "0")}", "rarity")}" + (row.S("spawnable") == "1" ? "" : $" · {Link("not spawnable", "spawnable")}, so only TCs that name it directly drop it"));
                 break;
         }
         lines.Add($"/players {options.Players}, party {options.Party} · {options.MagicFind}% magic find · each kill at its own monster level");
@@ -188,10 +204,10 @@ public sealed class DropPreviewResolver
             if (chance > 0) found.Add((source, chance));
         }
         var groups = found.GroupBy(f => (f.Source.TreasureClass, f.Source.Level, f.Source.Difficulty, f.Source.Kind, Odds: DropCalculator.Odds(f.Chance)))
-            .Select(g => (g.Key, Chance: g.First().Chance, Names: g.Select(f => f.Source.Name).Distinct().ToArray()))
+            .Select(g => (g.Key, Chance: g.First().Chance, Names: g.GroupBy(f => f.Source.Name).Select(n => PreviewText.Mark(n.Key, [n.First().Source.Cell])).ToArray()))
             .OrderByDescending(g => g.Chance).ToArray();
         var sourceLines = groups.Take(30).Select(g =>
-            $"{g.Key.Odds,-14} {Difficulty(g.Key.Difficulty)} {g.Key.Kind} · {string.Join(", ", g.Names.Take(3))}{(g.Names.Length > 3 ? $" +{g.Names.Length - 3} more" : "")} · level {g.Key.Level} · {g.Key.TreasureClass}").ToList();
+            $"{g.Key.Odds,-14} {Difficulty(g.Key.Difficulty)} {g.Key.Kind} · {string.Join(", ", g.Names.Take(3))}{(g.Names.Length > 3 ? $" +{g.Names.Length - 3} more" : "")} · level {g.Key.Level} · {data.Link(g.Key.TreasureClass, calc.Find(g.Key.TreasureClass)?.Row, "Treasure Class")}").ToList();
         if (groups.Length > 30) sourceLines.Add($"… {groups.Length - 30} more groups of monsters");
         var sections = new List<PreviewSection>
         {
@@ -201,7 +217,7 @@ public sealed class DropPreviewResolver
         {
             var entry = e.Entry.Split(',')[0];
             return entry == code || entry == index || calc.Automatic(entry)?.Any(m => m.Code == code) == true;
-        })).Select(c => c.Name).ToArray();
+        })).Select(c => data.Link(c.Name, c.Row, "Treasure Class")).ToArray();
         sections.Add(new("Listed in", listing.Length == 0 ? ["No treasure class lists this item or an automatic TC that holds it."] : [.. listing.Take(20), .. listing.Length > 20 ? [$"… {listing.Length - 20} more"] : Array.Empty<string>()]));
         sections.Add(new("Assumptions", [
             "Monster levels: Normal uses monstats Level; Nightmare and Hell ordinary monsters use the highest level of the areas they spawn in; champions +2, uniques and superuniques +3.",

@@ -57,11 +57,11 @@ public partial class MainWindow
             $"Level curve is wrong: level 1 {bolt.Levels[0].Mana} mana / {bolt.Levels[0].Elemental}, level 20 {bolt.Levels[19].Elemental}.");
         Require(bolt.Issues.Length == 0, "Complete skill row reported an incomplete preview: " + string.Join(" ", bolt.Issues));
         await Task.Delay(150); UpdateLayout();
-        var rendered = skillPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        var rendered = skillPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("Fire Bolt") && rendered.Any(t => t.Contains("Hurls a bolt of fire.")) && rendered.Contains("45–60 fire") && rendered.Contains("Lvl") && rendered.Contains("Mana"),
             $"Skill card was not laid out in the inspector with its level table: [{string.Join(" | ", rendered.Take(12))}] ({rendered.Length} blocks).");
         Require(!rendered.Contains("Damage") && !rendered.Contains("Length"), "Level table shows columns the skill does not author.");
-        Require(skillPreviewContent.GetVisualDescendants().OfType<SelectableTextBlock>().Any(t => t.Text == "2.5"), "Skill preview values cannot be selected and copied.");
+        Require(skillPreviewContent.GetVisualDescendants().OfType<SelectableTextBlock>().Any(t => PreviewCards.RenderedText(t) == "2.5"), "Skill preview values cannot be selected and copied.");
         var tooltip = bolt.Sections.Single(s => s.Title == "Tooltip at level 1").Lines;
         Require(tooltip.Contains("Mana Cost: 2.5") && tooltip.Contains("  Fire Damage: 3 to 6") && rendered.Contains("TOOLTIP AT LEVEL 1") && rendered.Any(t => t.Contains("Fire Damage: 4 to 7")),
             "Skill tooltip was not rendered with its calculations: " + string.Join(" | ", tooltip));

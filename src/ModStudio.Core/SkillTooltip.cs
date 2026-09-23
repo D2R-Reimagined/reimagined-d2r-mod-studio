@@ -6,15 +6,18 @@ using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
 
-/// <summary>One rendered tooltip line. <paramref name="Approximate"/> marks a function the preview cannot fully evaluate.</summary>
-public sealed record TooltipLine(string Text, string Function, bool Approximate = false);
+/// <summary>
+/// One rendered tooltip line. <paramref name="Approximate"/> marks a function the preview cannot fully evaluate;
+/// <paramref name="Cells"/> are the skilldesc cells it was built from.
+/// </summary>
+public sealed record TooltipLine(string Text, string Function, bool Approximate = false, CellLink[]? Cells = null);
 
 /// <summary>A skill tooltip as the skill tree shows it: pinned lines, the current and next level, then synergies.</summary>
 public sealed record SkillTooltip(int Level, TooltipLine[] Pinned, TooltipLine[] Current, TooltipLine[] Next, TooltipLine[] Synergies)
 {
     public IEnumerable<string> Lines(string currentHeading, string nextHeading)
     {
-        static string Show(TooltipLine l) => l.Text + (l.Approximate ? "  (approximate)" : "");
+        static string Show(TooltipLine l) => PreviewText.Mark(l.Text, l.Cells ?? []) + (l.Approximate ? "  (approximate)" : "");
         foreach (var line in Pinned) yield return Show(line);
         if (Current.Length > 0) { yield return currentHeading; foreach (var line in Current) yield return "  " + Show(line); }
         if (Next.Length > 0) { yield return nextHeading; foreach (var line in Next) yield return "  " + Show(line); }
@@ -33,7 +36,7 @@ public static class SkillTooltips
     {
         var scope = calc.Skill(skill, level);
         TooltipLine[] Group(string prefix, int count, SkillCalcScope at) =>
-            Enumerable.Range(1, count).Select(i => Line(calc, description, prefix, i, at, issues)).OfType<TooltipLine>().ToArray();
+            Enumerable.Range(1, count).Select(i => Line(calc, description, prefix, i, at, issues) is { } line ? line with { Cells = Cells(calc, description, prefix, i) } : null).OfType<TooltipLine>().ToArray();
         return new(level,
             Group("dsc2", 5, scope),
             Group("desc", 6, scope),
@@ -80,6 +83,10 @@ public static class SkillTooltips
             return new($"⚠ {e.Message}", label, true);
         }
     }
+    /// <summary>The skilldesc cells a tooltip line is built from: its function, strings and calculations.</summary>
+    private static CellLink[] Cells(CalcContext calc, JsonObject description, string prefix, int index) =>
+        [.. new[] { "line", "texta", "textb", "calca", "calcb" }.Select(part => $"{prefix}{part}{index}")
+            .Where(c => description.S(c).Length > 0).Select(c => calc.Data.Cell(description, c)).OfType<CellLink>()];
 
     /// <summary>Function 31 divides by the difficulty's AiCurseDivisor; the preview shows Normal difficulty.</summary>
     private static decimal CurseDivisor(CalcContext calc)

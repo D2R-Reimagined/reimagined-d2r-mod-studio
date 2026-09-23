@@ -43,7 +43,7 @@ public partial class MainWindow
             $"Affix preview did not list the cap's pool: {cap?.Name} {string.Join(", ", cap?.Prefixes.Select(p => p.Name) ?? [])}.");
         Require(cap!.Prefixes[0].Chance == "75.0%" && cap.Prefixes[0].Effect == "Enhanced Defense +10–20%", $"Affix line is wrong: {cap.Prefixes[0].Chance} {cap.Prefixes[0].Effect}.");
         await Task.Delay(150); UpdateLayout();
-        var rendered = affixPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        var rendered = affixPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("PREFIXES") && rendered.Contains("SUFFIXES") && rendered.Contains("Chance") && rendered.Contains("Effect"), $"Affix card was not laid out: [{string.Join(" | ", rendered.Take(14))}].");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
         { bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "affix-preview.png"), PngBitmapEncoderOptions.Default); }

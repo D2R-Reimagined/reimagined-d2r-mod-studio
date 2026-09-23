@@ -11,10 +11,17 @@ namespace ModStudio.Core;
 public sealed record StatPreviewOptions(decimal? Min = null, decimal? Max = null, string Parameter = "", int CharacterLevel = CalcAssumptions.DefaultCharacterLevel);
 
 /// <param name="Sample">The min/max/parameter the tooltip lines were rendered with, and where they came from.</param>
-public sealed record StatPreviewResult(string Name, string[] Lines, PreviewSection[] Sections, string Sample, string[] Issues);
+public sealed record StatPreviewResult(string Name, string[] Lines, PreviewSection[] Sections, string Sample, string[] Issues)
+{
+    public PreviewText[] Text { get; } = PreviewText.Parse(Lines);
+    public string[] Lines { get; } = PreviewText.Plain(Lines);
+}
 
-/// <summary>One place a property code is authored: an item, affix, rune, set bonus, gem or cube output slot.</summary>
-public sealed record PropertyUse(string Table, string Owner, string Slot, string Code, string Parameter, string Min, string Max)
+/// <summary>
+/// One place a property code is authored: an item, affix, rune, set bonus, gem or cube output slot. <paramref name="Cells"/>
+/// are the slot's code, parameter, min and max cells.
+/// </summary>
+public sealed record PropertyUse(string Table, string Owner, string Slot, string Code, string Parameter, string Min, string Max, CellLink[]? Cells = null)
 {
     public string Values => Parameter.Length > 0 ? $"param {Parameter}" + (Min.Length > 0 || Max.Length > 0 ? $", {Range}" : "") : Range;
     private string Range => Min == Max || Max.Length == 0 ? Min : Min.Length == 0 ? Max : $"{Min}–{Max}";
@@ -76,7 +83,8 @@ public sealed class StatPreviewResolver
                 token.ThrowIfCancellationRequested();
                 foreach (var slot in Slots(table))
                     if (rows[i].S(slot.Code).Equals(code, StringComparison.OrdinalIgnoreCase))
-                        uses.Add(new(table, Owner(table, rows[i], i), slot.Slot, rows[i].S(slot.Code), rows[i].S(slot.Param), rows[i].S(slot.Min), rows[i].S(slot.Max)));
+                        uses.Add(new(table, Owner(table, rows[i], i), slot.Slot, rows[i].S(slot.Code), rows[i].S(slot.Param), rows[i].S(slot.Min), rows[i].S(slot.Max),
+                            [.. new[] { slot.Code, slot.Param, slot.Min, slot.Max }.Where(c => rows[i].S(c).Length > 0).Select(c => data.Cell(rows[i], c)).OfType<CellLink>()]));
             }
         }
         return uses;
@@ -97,8 +105,9 @@ public sealed class StatPreviewResolver
         var code = property.S("code");
         if (code.Length == 0) return new("Inactive row", ["Inactive/header row · no property code"], [], "", []);
         var lines = new List<string>(); var sections = new List<PreviewSection>();
+        string Link(string text, params string[] columns) => data.Link(text, property, columns);
         foreach (var comment in new[] { "*Tooltip", "*Desc", "*Parameter", "*Min", "*Max", "*Notes" })
-            if (property.S(comment).Length > 0) lines.Add($"{comment.TrimStart('*')}: {property.S(comment)}");
+            if (property.S(comment).Length > 0) lines.Add($"{comment.TrimStart('*')}: {Link(property.S(comment), comment)}");
         var uses = Uses(data, code, token);
         var sample = Sample(uses, options);
         lines.Add($"Shown with {sample.Label}");
@@ -109,8 +118,8 @@ public sealed class StatPreviewResolver
             var function = property.S("func" + slot).Trim();
             if (function is "" or "0") continue;
             var decoded = FunctionGuide.Describe("properties", "func" + slot, function);
-            functions.Add(decoded != null ? $"{decoded.Title} — {Short(decoded.Summary)}" : $"func{slot} {function} · not in the data guide");
-            var parts = new[] { "stat", "set", "val" }.Where(p => property.S(p + slot).Length > 0).Select(p => $"{p}{slot} = {property.S(p + slot)}").ToArray();
+            functions.Add(decoded != null ? $"{Link(decoded.Title, "func" + slot)} — {Short(decoded.Summary)}" : $"{Link($"func{slot} {function}", "func" + slot)} · not in the data guide");
+            var parts = new[] { "stat", "set", "val" }.Where(p => property.S(p + slot).Length > 0).Select(p => Link($"{p}{slot} = {property.S(p + slot)}", p + slot)).ToArray();
             if (parts.Length > 0) functions.Add("    " + string.Join(" · ", parts));
             if (property.S("stat" + slot) is { Length: > 0 } stat) stats.Add((stat, function));
         }
@@ -124,8 +133,8 @@ public sealed class StatPreviewResolver
             var statLines = new List<string>();
             decimal value = function == "17" && decimal.TryParse(sample.Parameter, NumberStyles.Number, CultureInfo.InvariantCulture, out var perLevel) ? perLevel : sample.High;
             statLines.AddRange(TooltipLines(data, cost, sample with { Low = function == "17" ? value : sample.Low, High = value }, options.CharacterLevel, issues));
-            statLines.AddRange(OpLines(cost, value, options.CharacterLevel));
-            statLines.Add(StorageSummary(cost));
+            statLines.AddRange(OpLines(data, cost, value, options.CharacterLevel));
+            statLines.Add(StorageSummary(data, cost));
             sections.Add(new($"Stat {stat}", [.. statLines]));
             foreach (var use in uses) Overflow(use, cost, function, issues);
         }
@@ -140,13 +149,13 @@ public sealed class StatPreviewResolver
         var lines = new List<string>(); var sections = new List<PreviewSection>();
         var rows = data.Rows("itemstatcost", false);
         int id = rows.Select((r, i) => (r, i)).FirstOrDefault(x => x.r.S("Stat") == stat, (null!, -1)).Item2;
-        lines.Add((id >= 0 ? $"Stat id {id} (row order)" : "Stat") + (cost.S("descpriority").Length > 0 ? $" · tooltip priority {cost.S("descpriority")} (higher shows first)" : ""));
+        lines.Add((id >= 0 ? $"Stat id {id} (row order)" : "Stat") + (cost.S("descpriority").Length > 0 ? $" · {data.Link($"tooltip priority {cost.S("descpriority")}", cost, "descpriority")} (higher shows first)" : ""));
 
         // Properties that write this stat, and where those properties are used.
         var setters = data.Rows("properties", false)
             .Select(p => (Property: p, Slot: Enumerable.Range(1, 7).FirstOrDefault(i => p.S("stat" + i).Equals(stat, StringComparison.OrdinalIgnoreCase))))
             .Where(x => x.Slot > 0).ToArray();
-        lines.Add(setters.Length > 0 ? "Set by properties: " + string.Join(", ", setters.Select(s => s.Property.S("code"))) : "No property writes this stat; only skills, states or the game itself can set it.");
+        lines.Add(setters.Length > 0 ? "Set by properties: " + string.Join(", ", setters.Select(s => data.Link(s.Property.S("code"), s.Property, "stat" + s.Slot))) : "No property writes this stat; only skills, states or the game itself can set it.");
         var uses = setters.SelectMany(s => Uses(data, s.Property.S("code"), token).Select(u => (Use: u, Function: s.Property.S("func" + s.Slot)))).ToList();
         var perLevel = uses.FirstOrDefault(u => u.Function == "17" && u.Use.Parameter.Length > 0);
         var sample = Sample(uses.Where(u => u.Function != "17").Select(u => u.Use).ToList(), options);
@@ -155,9 +164,9 @@ public sealed class StatPreviewResolver
         lines.Add($"Shown with {sample.Label}");
 
         sections.Add(new("Tooltip", [.. TooltipLines(data, cost, sample, options.CharacterLevel, issues)]));
-        var op = OpLines(cost, sample.High, options.CharacterLevel).ToArray();
+        var op = OpLines(data, cost, sample.High, options.CharacterLevel).ToArray();
         if (op.Length > 0) sections.Add(new("Value", op));
-        sections.Add(new("Storage", [.. StorageLines(cost)]));
+        sections.Add(new("Storage", [.. StorageLines(data, cost)]));
         foreach (var (use, function) in uses) Overflow(use, cost, function, issues);
         sections.Add(UsesSection(uses.Select(u => u.Use).ToList(), $"stat {stat}"));
         return new(stat, [.. lines], [.. sections], sample.Label, [.. issues.Distinct()]);
@@ -186,21 +195,24 @@ public sealed class StatPreviewResolver
     {
         // A per-level stat stores a rate; the tooltip shows what that rate gives at the character's level.
         bool perLevel = PerLevel(cost);
+        // The rendered text links to the columns that build it: the function, the number's position and the strings.
+        string Described(string prefix, decimal value) => PreviewText.Mark(Describe(data, cost, prefix, value, sample.Parameter, issues),
+            new[] { "func", "val", "strpos", "strneg", "str2" }.Where(c => cost.S(prefix + c).Length > 0).Select(c => data.Cell(cost, prefix + c)));
         string Show(decimal value, string prefix = "desc") => perLevel
-            ? $"{Text(value)} per level → {Describe(data, cost, prefix, AtLevel(cost, value, characterLevel), sample.Parameter, issues)}  (at character level {characterLevel})"
-            : $"{Text(value)} → {Describe(data, cost, prefix, value, sample.Parameter, issues)}";
+            ? $"{Text(value)} per level → {Described(prefix, AtLevel(cost, value, characterLevel))}  (at character level {characterLevel})"
+            : $"{Text(value)} → {Described(prefix, value)}";
         var function = cost.S("descfunc").Trim();
-        if (function is "" or "0") { yield return "Not shown in item tooltips (descfunc is empty)."; yield break; }
+        if (function is "" or "0") { yield return $"Not shown in item tooltips ({data.Link("descfunc is empty", cost, "descfunc")})."; yield break; }
         var decoded = FunctionGuide.Describe("itemstatcost", "descfunc", function);
-        yield return decoded != null ? decoded.Title : $"descfunc {function} · not in the data guide";
+        yield return data.Link(decoded != null ? decoded.Title : $"descfunc {function} · not in the data guide", cost, "descfunc");
         var values = sample.Low == sample.High ? new[] { sample.High } : [sample.Low, sample.High];
         foreach (var value in values) yield return "  " + Show(value);
         if (cost.S("descstrneg").Length > 0 && cost.S("descstrneg") != cost.S("descstrpos") && sample.High > 0)
             yield return "  " + Show(-sample.High);
         if (cost.S("dgrp") is { Length: > 0 } group && group != "0")
         {
-            var members = data.Rows("itemstatcost", false).Where(r => r.S("dgrp") == group).Select(r => r.S("Stat")).ToArray();
-            yield return $"Group {group} ({string.Join(", ", members)}): when all are equal the tooltip shows one line instead";
+            var members = data.Rows("itemstatcost", false).Where(r => r.S("dgrp") == group).Select(r => data.Link(r.S("Stat"), r, "dgrp")).ToArray();
+            yield return $"{data.Link($"Group {group}", cost, "dgrp")} ({string.Join(", ", members)}): when all are equal the tooltip shows one line instead";
             if (cost.S("dgrpfunc") is { Length: > 0 } && cost.S("dgrpfunc") != "0") yield return "  " + Show(sample.High, "dgrp");
         }
     }
@@ -253,13 +265,13 @@ public sealed class StatPreviewResolver
     }
 
     /// <summary>What the stat's op does to another stat, with the per-level numbers where the op scales with character level.</summary>
-    private static IEnumerable<string> OpLines(JsonObject cost, decimal value, int characterLevel)
+    private static IEnumerable<string> OpLines(PreviewTables.Session data, JsonObject cost, decimal value, int characterLevel)
     {
         var op = cost.S("op").Trim();
         if (op is "" or "0") yield break;
         var decoded = FunctionGuide.Describe("itemstatcost", "op", op);
-        var targets = Enumerable.Range(1, 3).Select(i => cost.S("op stat" + i)).Where(s => s.Length > 0).ToArray();
-        yield return (decoded != null ? decoded.Title : $"op {op}") + (targets.Length > 0 ? " → " + string.Join(", ", targets) : "");
+        var targets = Enumerable.Range(1, 3).Where(i => cost.S("op stat" + i).Length > 0).Select(i => data.Link(cost.S("op stat" + i), cost, "op stat" + i)).ToArray();
+        yield return data.Link(decoded != null ? decoded.Title : $"op {op}", cost, "op") + (targets.Length > 0 ? " → " + string.Join(", ", targets) : "");
         if (op is "2" or "3" or "4" or "5")
         {
             var baseStat = cost.S("op base");
@@ -267,7 +279,7 @@ public sealed class StatPreviewResolver
             Require(shift is >= 0 and <= 30, $"op param {shift} is out of range.");
             decimal At(int level) => AtLevel(cost, value, level);
             var unit = op is "3" or "5" ? "%" : "";
-            yield return $"  {Text(value)} × {(baseStat is "" or "level" ? "character level" : baseStat)} ÷ {1 << shift} (op param {shift})" + (baseStat is "" or "level" ? $" = {Text(At(characterLevel))}{unit} at level {characterLevel}" : "");
+            yield return $"  {Text(value)} × {data.Link(baseStat is "" or "level" ? "character level" : baseStat, cost, "op base")} ÷ {1 << shift} ({data.Link($"op param {shift}", cost, "op param")})" + (baseStat is "" or "level" ? $" = {Text(At(characterLevel))}{unit} at level {characterLevel}" : "");
             if (baseStat is "" or "level") yield return "  " + string.Join(" · ", SampleLevels.Select(l => $"{l}: {Text(At(l))}{unit}"));
         }
         else if (op is "1" or "11" or "13") yield return $"  Adds {Text(value)}% of {(targets.Length > 0 ? string.Join(", ", targets) : "its op stat")}";
@@ -281,17 +293,20 @@ public sealed class StatPreviewResolver
         Require(shift is >= 0 and <= 30, $"op param {shift} is out of range.");
         return Math.Floor(value * level / (decimal)Math.Pow(2, shift));
     }
-    private static string StorageSummary(JsonObject cost) =>
-        SaveRange(cost) is { } range ? $"Saved on items as {Text(range.Min)} to {Text(range.Max)} (Save Bits {cost.S("Save Bits")}, Save Add {cost.S("Save Add", "0")})" : "Not saved on items (Save Bits is empty)";
-    private static IEnumerable<string> StorageLines(JsonObject cost)
+    private static string StorageSummary(PreviewTables.Session data, JsonObject cost) =>
+        SaveRange(cost) is { } range ? $"Saved on items as {Text(range.Min)} to {Text(range.Max)} ({data.Link($"Save Bits {cost.S("Save Bits")}", cost, "Save Bits")}, {data.Link($"Save Add {cost.S("Save Add", "0")}", cost, "Save Add")})"
+            : $"Not saved on items ({data.Link("Save Bits is empty", cost, "Save Bits")})";
+    private static IEnumerable<string> StorageLines(PreviewTables.Session data, JsonObject cost)
     {
-        yield return StorageSummary(cost);
-        if (Number(cost, "Save Param Bits") > 0) yield return $"Parameter saved in {cost.S("Save Param Bits")} bits: 0 to {Text(Max(Number(cost, "Save Param Bits")))}";
-        if (Number(cost, "Send Bits") > 0) yield return $"Sent to the client in {cost.S("Send Bits")} bits" + (Flag(cost, "Signed") ? ", signed" : ", unsigned");
+        string Link(string text, params string[] columns) => data.Link(text, cost, columns);
+        yield return StorageSummary(data, cost);
+        if (Number(cost, "Save Param Bits") > 0) yield return $"Parameter saved in {Link($"{cost.S("Save Param Bits")} bits", "Save Param Bits")}: 0 to {Text(Max(Number(cost, "Save Param Bits")))}";
+        if (Number(cost, "Send Bits") > 0) yield return $"Sent to the client in {Link($"{cost.S("Send Bits")} bits", "Send Bits")}" + (Flag(cost, "Signed") ? $", {Link("signed", "Signed")}" : ", unsigned");
         if (Flag(cost, "Saved") || Number(cost, "CSvBits") > 0)
-            yield return $"Saved on the character in {cost.S("CSvBits", "?")} bits" + (Flag(cost, "CSvSigned") ? ", signed" : ", unsigned") + (Number(cost, "CSvParam") > 0 ? $", parameter {cost.S("CSvParam")} bits" : "");
-        if (Number(cost, "ValShift") > 0) yield return $"ValShift {cost.S("ValShift")}: the game keeps this stat × {1 << (int)Number(cost, "ValShift")} internally";
-        if (Flag(cost, "fMin")) yield return $"Never goes below {cost.S("MinAccr", "0")} (fMin)";
+            yield return $"{Link("Saved on the character", "Saved")} in {Link($"{cost.S("CSvBits", "?")} bits", "CSvBits")}" + (Flag(cost, "CSvSigned") ? $", {Link("signed", "CSvSigned")}" : ", unsigned")
+                + (Number(cost, "CSvParam") > 0 ? $", {Link($"parameter {cost.S("CSvParam")} bits", "CSvParam")}" : "");
+        if (Number(cost, "ValShift") > 0) yield return $"{Link($"ValShift {cost.S("ValShift")}", "ValShift")}: the game keeps this stat × {1 << (int)Number(cost, "ValShift")} internally";
+        if (Flag(cost, "fMin")) yield return $"Never goes below {Link(cost.S("MinAccr", "0"), "MinAccr")} ({Link("fMin", "fMin")})";
     }
     /// <summary>The values an item can save: the stored number is value + Save Add in Save Bits unsigned bits.</summary>
     public static (decimal Min, decimal Max)? SaveRange(JsonObject cost)
@@ -319,7 +334,7 @@ public sealed class StatPreviewResolver
         if (uses.Count == 0) return new("Used by", [$"Nothing in {string.Join(", ", UseTables)} uses this {what}."]);
         var counts = string.Join(" · ", uses.GroupBy(u => u.Table).Select(g => $"{g.Key} {g.Count()}"));
         var lines = new List<string> { $"{uses.Count} use{(uses.Count == 1 ? "" : "s")}: {counts}" };
-        lines.AddRange(uses.Take(Shown).Select(u => "  " + u));
+        lines.AddRange(uses.Take(Shown).Select(u => "  " + PreviewText.Mark(u.ToString(), u.Cells ?? [])));
         if (uses.Count > Shown) lines.Add($"  … {uses.Count - Shown} more");
         return new("Used by", [.. lines]);
     }

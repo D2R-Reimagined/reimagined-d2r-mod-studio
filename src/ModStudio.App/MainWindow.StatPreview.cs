@@ -120,8 +120,8 @@ public partial class MainWindow
     private static Control StatCard(StatPreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
-        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section.Title, section.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
+        foreach (var section in result.Sections) parts.Add(PreviewCards.Section(section));
         // Save Bits overflows are the reason to look here, so they read as problems rather than an incomplete preview.
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Problems", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);

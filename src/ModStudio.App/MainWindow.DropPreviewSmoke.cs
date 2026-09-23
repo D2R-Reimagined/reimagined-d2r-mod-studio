@@ -43,7 +43,7 @@ public partial class MainWindow
         Require(ga?.Name == "G A" && ga.ItemLevel == 5 && ga.Drops.Any(d => d.Code == "cap" && d.PerKill == "1 in 3"), $"Drop preview did not resolve G A: {ga?.Name} {string.Join(" | ", ga?.Drops.Select(d => d.Item + " " + d.PerKill) ?? [])}.");
         Require(ga!.Issues.Length == 0, "Complete TC reported problems: " + string.Join(" ", ga.Issues));
         await Task.Delay(150); UpdateLayout();
-        var rendered = dropPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        var rendered = dropPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("ENTRIES") && rendered.Contains("Per kill") && rendered.Contains("Unique") && rendered.Contains("USED BY"), $"Drop card was not laid out: [{string.Join(" | ", rendered.Take(14))}].");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
         { bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "drop-preview.png"), PngBitmapEncoderOptions.Default); }
@@ -76,7 +76,7 @@ public partial class MainWindow
             "Monster stats were not scaled by monlvl: " + string.Join(" | ", zombie?.Levels.Select(l => $"{l.Difficulty} {l.Level} {l.Life}") ?? []));
         Require(zombie!.Sections.Single(s => s.Title == "Drops").Lines.Any(l => l.StartsWith("Nightmare regular · level 12 · G B (from G A)")), "Monster drops did not upgrade their TC.");
         await Task.Delay(150); UpdateLayout();
-        rendered = monsterPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? "").ToArray();
+        rendered = monsterPreviewContent.GetVisualDescendants().OfType<TextBlock>().Select(PreviewCards.RenderedText).ToArray();
         Require(rendered.Contains("Life") && !rendered.Contains("Resist") && rendered.Contains("SPAWNS") && rendered.Contains("DROPS"), $"Monster card was not laid out: [{string.Join(" | ", rendered.Take(14))}].");
         Require(((Control)monsterPreviewTab.Content!).GetVisualDescendants().OfType<NumericUpDown>().Any(n => n.Value == 500), "The monster tab's magic find did not follow the drop tab's.");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
@@ -103,6 +103,7 @@ public partial class MainWindow
         InspectorTabs.SelectedItem = monsterPreviewTab;
         life = await NormalLife("28–14"); Require(life == "28–14","Monster preview did not follow a Row Editor edit: " + life + " cell " + monsterPane.Document.Table!.Cell(0, "minHP"));
         monsterPane.Document.Undo(); Require(!monsterPane.Document.IsDirty, "Row Editor edit was not undone.");
+        await SmokeMonsterPreviewLinksAsync(monsterPane);
 
         dropInputs.MagicFind = 0; dropInputs.RaiseChanged();
         // Each table opened as the temporary preview tab, which replaces the one before it.
@@ -110,5 +111,47 @@ public partial class MainWindow
             if (tabs.FirstOrDefault(t => t.Content == pane) is { } tab) await CloseTabAsync(tab);
         Require(!dropPreviewTab.IsVisible && !monsterPreviewTab.IsVisible && InspectorTabs.SelectedIndex == 0, "Leaving the tables did not hide the previews and select Details.");
         foreach (var name in names) File.Delete(TableData.FileFor(project!, "tables", name));
+    }
+
+    /// <summary>
+    /// Preview links: the level table and prose carry the cells they were read from, a click lands on the link under the
+    /// pointer (text positions line up across line breaks), and following one opens that table at the cell.
+    /// </summary>
+    private async Task SmokeMonsterPreviewLinksAsync(EditorPane monsterPane)
+    {
+        var until = DateTime.UtcNow.AddSeconds(8);
+        while (LastMonsterPreview?.Levels.FirstOrDefault()?.Life != "7–14" && DateTime.UtcNow < until) { await Task.Delay(60); await PendingMonsterPreview; }
+        var zombie = LastMonsterPreview!;
+        var life = zombie.Levels[0].Sources?.GetValueOrDefault("Life") ?? [];
+        Require(life.Any(l => l is { Table: "monstats", Column: "minHP" }) && life.Any(l => l is { Table: "monlvl", Column: "L-HP" }),
+            "Monster life did not link its monstats and monlvl cells: " + string.Join(", ", life.Select(l => l.ToString())));
+        var nightmare = zombie.Levels.Single(l => l.Difficulty == "Nightmare").Sources?.GetValueOrDefault("Life") ?? [];
+        Require(nightmare.Any(l => l is { Table: "monstats", Column: "MinHP(N)" }) && nightmare.Any(l => l is { Table: "monlvl", Column: "L-HP(N)" }),
+            "Nightmare life did not link its difficulty's cells: " + string.Join(", ", nightmare.Select(l => l.ToString())));
+        await Task.Delay(150); UpdateLayout();
+        var texts = monsterPreviewContent.GetVisualDescendants().OfType<PreviewLinkText>().ToArray();
+        Require(texts.Any(t => t.Links.Any(l => l.Targets.Any(c => c.Table == "monlvl"))), "The level table did not render linked cells.");
+        // A link on a later line of the Drops block: hit testing must count the line breaks the way the runs were built.
+        var drops = texts.First(t => t.Links.Any(l => l.Targets.Any(c => c.Column == "TreasureClass(N)")));
+        var from = drops.Links.First(l => l.Targets.Any(c => c.Column == "TreasureClass(N)"));
+        var box = drops.TextLayout.HitTestTextRange(from.Start, from.Length).First();
+        var center = box.Center + new Point(drops.Padding.Left, drops.Padding.Top);
+        Require(drops.LinkAt(center) == from, $"Hit testing did not find the link it drew at {center}: {drops.LinkAt(center)?.Targets.FirstOrDefault()}.");
+        Require(drops.LinkAt(new Point(drops.Bounds.Width - 1, center.Y)) == null, "A point past the end of a line hit the link before it.");
+        drops.RaiseEvent(new PreviewLinkEventArgs(PreviewLinkText.LinkClickedEvent, from.Targets, drops));
+        until = DateTime.UtcNow.AddSeconds(4);
+        while (monsterPane.HighlightedReferenceRow != 0 && DateTime.UtcNow < until) await Task.Delay(50);
+        Require(Active == monsterPane && monsterPane.HighlightedReferenceRow == 0 && monsterPane.SelectedColumn == "TreasureClass(N)",
+            $"A link into the previewed row did not move to its cell: {monsterPane.SelectedRow}/{monsterPane.SelectedColumn}.");
+        // A link into another table opens it at the cell.
+        var levels = zombie.Sections.Single(s => s.Title == "Spawns").Text.SelectMany(t => t.Links).SelectMany(l => l.Targets).First(c => c is { Table: "levels", Column: "MonLvlEx(N)" });
+        Require(await OpenCellLinkAsync(levels), "Following a link into levels failed: " + Status.Text);
+        var levelsPane = Active!;
+        Require(levelsPane.Document.Table?.Name == "levels" && levelsPane.HighlightedReferenceRow == 0 && levelsPane.SelectedColumn == "MonLvlEx(N)",
+            $"The levels link did not open its cell: {levelsPane.Document.Table?.Name} {levelsPane.SelectedRow}/{levelsPane.SelectedColumn}.");
+        if (tabs.FirstOrDefault(t => t.Content == levelsPane) is { } tab) await CloseTabAsync(tab);
+        Documents.SelectedItem = tabs.First(t => t.Content == monsterPane);
+        await Task.Delay(100);
+        Require(Active == monsterPane, "Closing the linked table did not return to monstats.");
     }
 }

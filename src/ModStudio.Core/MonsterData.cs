@@ -5,11 +5,14 @@ using static ModStudio.Core.Storage;
 namespace ModStudio.Core;
 
 /// <summary>An area a monster can spawn in on one difficulty, and the monster level that area sets.</summary>
-public sealed record SpawnArea(string Area, string Name, int Difficulty, int Level, string Pool);
+/// <param name="Slot">The levels.txt mon#/nmon#/umon# cell that lists the monster.</param>
+/// <param name="LevelCell">The levels.txt cell the area's monster level comes from.</param>
+public sealed record SpawnArea(string Area, string Name, int Difficulty, int Level, string Pool, CellLink? Slot = null, CellLink? LevelCell = null);
 
 /// <summary>One way a kill rolls a treasure class: which monster, difficulty and kind, at what monster level.</summary>
 /// <param name="Authored">The TC the row names; <paramref name="TreasureClass"/> is what the game uses after upgrading it to the monster level.</param>
-public sealed record DropSource(string Monster, string Name, int Difficulty, string Kind, int Level, string Authored, string TreasureClass, string LevelNote)
+/// <param name="Cell">The monstats or superuniques cell that names <paramref name="Authored"/>.</param>
+public sealed record DropSource(string Monster, string Name, int Difficulty, string Kind, int Level, string Authored, string TreasureClass, string LevelNote, CellLink? Cell = null)
 {
     public string DifficultyName => MonsterData.Difficulties[Difficulty].Name;
 }
@@ -38,13 +41,14 @@ public sealed class MonsterData
             {
                 var suffix = Difficulties[difficulty].Suffix;
                 int monsterLevel = DropCalculator.Int(level, "MonLvlEx" + suffix) is > 0 and var ex ? ex : DropCalculator.Int(level, "MonLvl" + suffix);
+                var levelCell = data.Cell(level, (DropCalculator.Int(level, "MonLvlEx" + suffix) > 0 ? "MonLvlEx" : "MonLvl") + suffix);
                 // Normal draws its pool from mon#, Nightmare and Hell from nmon#; unique and champion packs come from umon#.
                 foreach (var (prefix, pool) in new[] { (difficulty == 0 ? "mon" : "nmon", "regular"), ("umon", "unique") })
                     for (int i = 1; i <= 25; i++)
                         if (level.S(prefix + i) is { Length: > 0 } id)
                         {
                             if (!spawns.TryGetValue(id, out var list)) spawns[id] = list = [];
-                            list.Add(new(area, name, difficulty, monsterLevel, pool));
+                            list.Add(new(area, name, difficulty, monsterLevel, pool, data.Cell(level, prefix + i), levelCell));
                         }
             }
         }
@@ -55,15 +59,18 @@ public sealed class MonsterData
 
     /// <summary>
     /// The monster levels a monster has on a difficulty, lowest and highest, with where they come from: its own Level
-    /// column in Normal or for bosses, else the levels of the areas it spawns in.
+    /// column in Normal or for bosses, else the levels of the areas it spawns in. The cells are where the lowest and highest
+    /// levels are read.
     /// </summary>
-    public (int Low, int High, string Note) Levels(JsonObject monster, int difficulty)
+    public (int Low, int High, string Note, CellLink? LowCell, CellLink? HighCell) Levels(JsonObject monster, int difficulty)
     {
         int own = DropCalculator.Int(monster, "Level" + Difficulties[difficulty].Suffix);
-        if (difficulty == 0 || Flag(monster, "boss")) return (own, own, difficulty == 0 ? "monstats Level" : "boss: monstats Level");
+        var ownCell = data.Cell(monster, "Level" + Difficulties[difficulty].Suffix);
+        if (difficulty == 0 || Flag(monster, "boss")) return (own, own, difficulty == 0 ? "monstats Level" : "boss: monstats Level", ownCell, ownCell);
         var areas = Spawns(monster.S("Id")).Where(s => s.Difficulty == difficulty && s.Level > 0).ToArray();
-        if (areas.Length == 0) return (own, own, "monstats Level; spawns in no area");
-        return (areas.Min(a => a.Level), areas.Max(a => a.Level), areas.Length == 1 ? "area " + areas[0].Name : $"areas {areas.MinBy(a => a.Level)!.Name} … {areas.MaxBy(a => a.Level)!.Name}");
+        if (areas.Length == 0) return (own, own, "monstats Level; spawns in no area", ownCell, ownCell);
+        SpawnArea low = areas.MinBy(a => a.Level)!, high = areas.MaxBy(a => a.Level)!;
+        return (low.Level, high.Level, areas.Length == 1 ? "area " + areas[0].Name : $"areas {low.Name} … {high.Name}", low.LevelCell, high.LevelCell);
     }
 
     /// <summary>
@@ -75,12 +82,12 @@ public sealed class MonsterData
         var id = monster.S("Id"); var name = superunique != null && superunique.S("Name") is { Length: > 0 } key ? data.Localize(key, false) : Name(monster);
         for (int difficulty = 0; difficulty < 3; difficulty++)
         {
-            var (_, high, note) = Levels(monster, difficulty);
+            var (_, high, note, _, _) = Levels(monster, difficulty);
             var suffix = Difficulties[difficulty].Suffix;
             if (superunique != null)
             {
                 if (superunique.S("TC" + suffix) is { Length: > 0 } tc)
-                    yield return new(id, name, difficulty, "superunique", high + 3, tc, calc.Upgrade(tc, high + 3), note + " + 3");
+                    yield return new(id, name, difficulty, "superunique", high + 3, tc, calc.Upgrade(tc, high + 3), note + " + 3", data.Cell(superunique, "TC" + suffix));
                 continue;
             }
             foreach (var (column, kind, bonus) in Kinds)
@@ -89,7 +96,7 @@ public sealed class MonsterData
                     int level = high + bonus;
                     // Quest and boss drops keep the TC they name; ordinary kills move up their TC group with the monster level.
                     var used = kind == "quest" || Flag(monster, "boss") ? tc : calc.Upgrade(tc, level);
-                    yield return new(id, name, difficulty, kind, level, tc, used, note + (bonus > 0 ? $" + {bonus}" : ""));
+                    yield return new(id, name, difficulty, kind, level, tc, used, note + (bonus > 0 ? $" + {bonus}" : ""), data.Cell(monster, column + suffix));
                 }
         }
     }

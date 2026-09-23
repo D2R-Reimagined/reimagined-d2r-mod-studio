@@ -5,7 +5,11 @@ using static ModStudio.Core.Storage;
 
 namespace ModStudio.Core;
 
-public sealed record RecipePreviewResult(string Name, string[] Lines, PreviewSection[] Sections, string[] Issues);
+public sealed record RecipePreviewResult(string Name, string[] Lines, PreviewSection[] Sections, string[] Issues)
+{
+    public PreviewText[] Text { get; } = PreviewText.Parse(Lines);
+    public string[] Lines { get; } = PreviewText.Plain(Lines);
+}
 
 /// <summary>One cube input or output: the item, type or special name before the first comma, then its modifiers.</summary>
 public sealed record CubeItem(string Head, IReadOnlyDictionary<string, string> Modifiers, int Quantity)
@@ -68,16 +72,18 @@ public sealed class RecipePreviewResolver
     {
         var data = catalog.Data;
         var name = recipe.S("description") is { Length: > 0 } description ? description : "Cube recipe";
-        var inputs = Enumerable.Range(1, 7).Select(i => recipe.S("input " + i)).Where(t => t.Trim().Length > 0).Select(CubeItem.Parse).ToArray();
+        var inputColumns = Enumerable.Range(1, 7).Select(i => "input " + i).Where(c => recipe.S(c).Trim().Length > 0).ToArray();
+        var inputs = inputColumns.Select(c => CubeItem.Parse(recipe.S(c))).ToArray();
         if (inputs.Length == 0 && recipe.S("output").Length == 0) return new("Inactive row", ["Inactive/header row · no inputs or output"], [], []);
+        string Link(string text, params string[] columns) => data.Link(text, recipe, columns);
         var lines = new List<string>();
         lines.Add(string.Join(" · ", new[]
         {
-            recipe.S("enabled") == "1" ? "Enabled" : "Disabled",
-            recipe.S("version") is "100" ? "expansion" : "all versions",
-            recipe.S("min diff") switch { "1" => "Nightmare and Hell only", "2" => "Hell only", _ => "" },
-            recipe.S("class") is { Length: > 0 } cls ? cls + " only" : "",
-            recipe.S("firstLadderSeason").Length > 0 ? $"ladder seasons {recipe.S("firstLadderSeason")}–{recipe.S("lastLadderSeason", "…")}" : ""
+            Link(recipe.S("enabled") == "1" ? "Enabled" : "Disabled", "enabled"),
+            Link(recipe.S("version") is "100" ? "expansion" : "all versions", "version"),
+            Link(recipe.S("min diff") switch { "1" => "Nightmare and Hell only", "2" => "Hell only", _ => "" }, "min diff"),
+            recipe.S("class") is { Length: > 0 } cls ? Link(cls + " only", "class") : "",
+            recipe.S("firstLadderSeason").Length > 0 ? Link($"ladder seasons {recipe.S("firstLadderSeason")}–{recipe.S("lastLadderSeason", "…")}", "firstLadderSeason", "lastLadderSeason") : ""
         }.Where(s => s.Length > 0)));
         if (recipe.S("enabled") != "1") issues.Add("enabled is not 1, so the cube never uses this recipe.");
         if (recipe.S("op") is { Length: > 0 } op && op != "0")
@@ -87,21 +93,22 @@ public sealed class RecipePreviewResolver
             // Stat ops take the stat's row number in itemstatcost.txt as their param.
             var stats = data.Rows("itemstatcost", false);
             var stat = int.TryParse(parameter, out var index) && index >= 0 && index < stats.Count ? stats[index].S("Stat") : "";
-            lines.Add($"Only when (op {op}): " + (function != null ? function.Summary.Replace("\n", " ") : "not in the data guide") +
-                (parameter.Length > 0 ? $" · param {parameter}" + (stat.Length > 0 && int.Parse(op, CultureInfo.InvariantCulture) is >= 3 and <= 26 ? $" = {stat}" : "") : "") + (value.Length > 0 ? $" · value {value}" : ""));
+            lines.Add($"Only when ({Link($"op {op}", "op")}): " + (function != null ? function.Summary.Replace("\n", " ") : "not in the data guide") +
+                (parameter.Length > 0 ? $" · {Link($"param {parameter}", "param")}" + (stat.Length > 0 && int.Parse(op, CultureInfo.InvariantCulture) is >= 3 and <= 26 ? $" = {data.Link(stat, stats[index], "Stat")}" : "") : "")
+                + (value.Length > 0 ? $" · {Link($"value {value}", "value")}" : ""));
         }
 
         var sections = new List<PreviewSection>();
         var inputLines = new List<string>();
-        foreach (var input in inputs)
+        foreach (var (input, column) in inputs.Zip(inputColumns))
         {
             var what = Thing(catalog, input.Head);
             if (what == null) issues.Add($"Unresolved cube input: {input.Head}.");
-            inputLines.Add($"{input.Quantity} × {what ?? input.Head + " (unknown)"}" + Modifiers(input, InputWords, out var unknown));
+            inputLines.Add(Link($"{input.Quantity} × {what ?? input.Head + " (unknown)"}" + Modifiers(input, InputWords, out var unknown), column));
             foreach (var word in unknown) issues.Add($"Unknown input modifier '{word}' on {input.Head}.");
         }
         int total = inputs.Sum(i => i.Quantity), declared = DropCalculator.Int(recipe, "numinputs");
-        inputLines.Add($"{total} item{(total == 1 ? "" : "s")} in the cube" + (declared > 0 && declared != total ? $" · ⚠ numinputs says {declared}" : ""));
+        inputLines.Add($"{total} item{(total == 1 ? "" : "s")} in the cube" + (declared > 0 && declared != total ? $" · ⚠ {Link($"numinputs says {declared}", "numinputs")}" : ""));
         if (declared > 0 && declared != total) issues.Add($"numinputs is {declared} but the inputs add up to {total} items, so the recipe never matches.");
         sections.Add(new("Inputs", [.. inputLines]));
 
@@ -121,26 +128,28 @@ public sealed class RecipePreviewResolver
                 _ => Thing(catalog, output.Head)
             };
             if (what == null) issues.Add($"Unresolved cube output: {output.Head}.");
-            var outputLines = new List<string> { $"{output.Quantity} × {what ?? output.Head + " (unknown)"}" + Modifiers(output, OutputWords, out var unknown) };
+            var outputLines = new List<string> { Link($"{output.Quantity} × {what ?? output.Head + " (unknown)"}" + Modifiers(output, OutputWords, out var unknown), column) };
             foreach (var word in unknown) issues.Add($"Unknown output modifier '{word}' on {output.Head}.");
             foreach (var (key, table) in new[] { ("pre", "magicprefix"), ("suf", "magicsuffix") })
                 if (output.Modifiers.TryGetValue(key, out var number))
                 {
                     var rows = data.Rows(table, false);
                     if (int.TryParse(number, out var id) && id >= 0 && id < rows.Count)
-                        outputLines.Add($"  {(key == "pre" ? "prefix" : "suffix")} #{id}: {AffixPreviewResolver.AffixName(data, rows[id])} — " +
-                            string.Join(" · ", Enumerable.Range(1, 3).Where(i => rows[id].S($"mod{i}code").Length > 0).Select(i => PropertyText.Describe(data, rows[id].S($"mod{i}code"), rows[id].S($"mod{i}param"), rows[id].S($"mod{i}min"), rows[id].S($"mod{i}max"), issues))));
+                        outputLines.Add($"  {(key == "pre" ? "prefix" : "suffix")} #{id}: {data.Link(AffixPreviewResolver.AffixName(data, rows[id]), rows[id], "Name")} — " +
+                            string.Join(" · ", Enumerable.Range(1, 3).Where(i => rows[id].S($"mod{i}code").Length > 0).Select(i => data.Link(PropertyText.Describe(data, rows[id].S($"mod{i}code"), rows[id].S($"mod{i}param"), rows[id].S($"mod{i}min"), rows[id].S($"mod{i}max"), issues),
+                                rows[id], $"mod{i}code", $"mod{i}param", $"mod{i}min", $"mod{i}max"))));
                     else issues.Add($"{key}={number} is not a row of {table}.");
                 }
-            if (recipe.S(prefix + "lvl") is { Length: > 0 } fixedLevel) outputLines.Add($"  item level {fixedLevel} (fixed)");
+            if (recipe.S(prefix + "lvl") is { Length: > 0 } fixedLevel) outputLines.Add($"  {Link($"item level {fixedLevel}", prefix + "lvl")} (fixed)");
             else if (recipe.S(prefix + "plvl").Length > 0 || recipe.S(prefix + "ilvl").Length > 0)
-                outputLines.Add($"  item level = {recipe.S(prefix + "plvl", "0")}% of the player's level + {recipe.S(prefix + "ilvl", "0")}% of input 1's item level");
+                outputLines.Add($"  item level = {Link($"{recipe.S(prefix + "plvl", "0")}% of the player's level", prefix + "plvl")} + {Link($"{recipe.S(prefix + "ilvl", "0")}% of input 1's item level", prefix + "ilvl")}");
             for (int i = 1; i <= 5; i++)
                 if (recipe.S($"{prefix}mod {i}") is { Length: > 0 } mod)
                 {
                     var chance = recipe.S($"{prefix}mod {i} chance");
-                    outputLines.Add("  + " + PropertyText.Describe(data, mod, recipe.S($"{prefix}mod {i} param"), recipe.S($"{prefix}mod {i} min"), recipe.S($"{prefix}mod {i} max"), issues)
-                        + (chance is "" or "0" ? "" : $" ({chance}% chance)"));
+                    outputLines.Add("  + " + Link(PropertyText.Describe(data, mod, recipe.S($"{prefix}mod {i} param"), recipe.S($"{prefix}mod {i} min"), recipe.S($"{prefix}mod {i} max"), issues),
+                            [.. new[] { "", " param", " min", " max" }.Select(p => $"{prefix}mod {i}{p}").Where(c => recipe.S(c).Length > 0)])
+                        + (chance is "" or "0" ? "" : $" ({Link($"{chance}% chance", $"{prefix}mod {i} chance")})"));
                 }
             sections.Add(new(title, [.. outputLines]));
         }
@@ -154,10 +163,10 @@ public sealed class RecipePreviewResolver
         {
             token.ThrowIfCancellationRequested();
             if (i == self || all[i].S("enabled") != "1") continue;
-            if (i < self && Shadows(catalog, all[i], recipe)) shadows.Add($"row {i}: {all[i].S("description", "(no description)")}");
-            if (i > self && recipe.S("enabled") == "1" && Shadows(catalog, recipe, all[i])) hidden.Add($"row {i}: {all[i].S("description", "(no description)")}");
+            if (i < self && Shadows(catalog, all[i], recipe)) shadows.Add(data.Link($"row {i}: {all[i].S("description", "(no description)")}", all[i], "description"));
+            if (i > self && recipe.S("enabled") == "1" && Shadows(catalog, recipe, all[i])) hidden.Add(data.Link($"row {i}: {all[i].S("description", "(no description)")}", all[i], "description"));
         }
-        if (shadows.Count > 0) issues.Add($"An earlier recipe accepts the same items, so this one never runs: {shadows[0]}.");
+        if (shadows.Count > 0) issues.Add($"An earlier recipe accepts the same items, so this one never runs: {PreviewText.Plain(shadows[0])}.");
         if (shadows.Count > 0) sections.Add(new("Taken first by", [.. shadows.Take(10)]));
         if (hidden.Count > 0) sections.Add(new("Takes items first from", [.. hidden.Take(10), .. hidden.Count > 10 ? [$"… {hidden.Count - 10} more"] : Array.Empty<string>()]));
         return new(name, [.. lines], [.. sections], [.. issues.Distinct()]);
@@ -219,15 +228,19 @@ public sealed class RecipePreviewResolver
         var name = data.Localize(key, false) is var localized && localized != key ? localized : runeword.S("*Rune Name") is { Length: > 0 } comment ? comment : key;
         var runes = Enumerable.Range(1, 6).Select(i => runeword.S("Rune" + i)).Where(r => r.Length > 0).ToArray();
         if (runes.Length == 0 && runeword.S("complete") != "1") return new(name, ["Placeholder row · no runes and not complete"], [], []);
+        string Link(string text, params string[] columns) => data.Link(text, runeword, columns);
         var lines = new List<string>();
         foreach (var rune in runes) if (catalog.Item(rune) == null) issues.Add($"Unresolved rune: {rune}.");
-        int level = runes.Select(r => catalog.Item(r)?.Row is { } row ? DropCalculator.Int(row, "levelreq") : 0).DefaultIfEmpty(0).Max();
-        lines.Add($"{string.Join(" + ", runes.Select(r => catalog.Item(r) != null ? catalog.ItemName(r) : r))} · {runes.Length} socket{(runes.Length == 1 ? "" : "s")} · required level {level} from its runes");
+        var levelRune = runes.Select(r => catalog.Item(r)?.Row).OfType<JsonObject>().MaxBy(row => DropCalculator.Int(row, "levelreq"));
+        int level = levelRune != null ? DropCalculator.Int(levelRune, "levelreq") : 0;
+        lines.Add($"{string.Join(" + ", Enumerable.Range(1, 6).Where(i => runeword.S("Rune" + i).Length > 0).Select(i => Link(catalog.Item(runeword.S("Rune" + i)) != null ? catalog.ItemName(runeword.S("Rune" + i)) : runeword.S("Rune" + i), "Rune" + i)))}"
+            + $" · {runes.Length} socket{(runes.Length == 1 ? "" : "s")} · {data.Link($"required level {level}", levelRune, "levelreq")} from its runes");
         lines.Add(string.Join(" · ", new[]
         {
-            runeword.S("complete") == "1" ? "Can be made" : "",
-            runeword.S("firstLadderSeason").Length > 0 ? $"ladder seasons {runeword.S("firstLadderSeason")}–{runeword.S("lastLadderSeason", "…")}" : "",
-            Flag(runeword, "disallowCraftingInLadder") ? "not in ladder games" : "", Flag(runeword, "disallowCraftingInNonLadder") ? "not in non-ladder or offline games" : ""
+            runeword.S("complete") == "1" ? Link("Can be made", "complete") : "",
+            runeword.S("firstLadderSeason").Length > 0 ? Link($"ladder seasons {runeword.S("firstLadderSeason")}–{runeword.S("lastLadderSeason", "…")}", "firstLadderSeason", "lastLadderSeason") : "",
+            Flag(runeword, "disallowCraftingInLadder") ? Link("not in ladder games", "disallowCraftingInLadder") : "",
+            Flag(runeword, "disallowCraftingInNonLadder") ? Link("not in non-ladder or offline games", "disallowCraftingInNonLadder") : ""
         }.Where(s => s.Length > 0)));
         if (runeword.S("complete") != "1") issues.Add("complete is not 1, so this runeword cannot be made.");
         if (runes.Length == 0) issues.Add("No Rune# is set.");
@@ -242,11 +255,13 @@ public sealed class RecipePreviewResolver
             token.ThrowIfCancellationRequested();
             if (table == "misc" || !Allowed(item, itypes, etypes)) continue;
             var from = Enumerable.Range(1, 99).FirstOrDefault(l => catalog.MaxSockets(item, l) >= runes.Length);
-            var label = $"{catalog.ItemName(item.S("code"))} ({item.S("code")})";
-            if (from == 0) { tooFew.Add($"{label} (max {catalog.MaxSockets(item, 99)})"); continue; }
-            fits.Add((DropCalculator.Int(item, "level"), $"{label} · qlvl {item.S("level", "0")} · {runes.Length} sockets from item level {from}"));
+            var label = data.Link($"{catalog.ItemName(item.S("code"))} ({item.S("code")})", item, "code");
+            if (from == 0) { tooFew.Add($"{label} ({data.Link($"max {catalog.MaxSockets(item, 99)}", item, "gemsockets")})"); continue; }
+            fits.Add((DropCalculator.Int(item, "level"), $"{label} · {data.Link($"qlvl {item.S("level", "0")}", item, "level")} · {runes.Length} sockets from item level {from}"));
         }
-        var baseLines = new List<string> { "On " + string.Join(", ", itypes.Select(t => $"{catalog.TypeName(t)} ({t})")) + (etypes.Length > 0 ? "; not on " + string.Join(", ", etypes.Select(t => $"{catalog.TypeName(t)} ({t})")) : ""), $"{fits.Count} base items can hold it" };
+        string Types(string prefix, int count) => string.Join(", ", Enumerable.Range(1, count).Where(i => runeword.S(prefix + i).Length > 0)
+            .Select(i => Link($"{catalog.TypeName(runeword.S(prefix + i))} ({runeword.S(prefix + i)})", prefix + i)));
+        var baseLines = new List<string> { "On " + Types("itype", 6) + (etypes.Length > 0 ? "; not on " + Types("etype", 3) : ""), $"{fits.Count} base items can hold it" };
         baseLines.AddRange(fits.OrderBy(f => f.Qlvl).Take(40).Select(f => "  " + f.Line));
         if (fits.Count > 40) baseLines.Add($"  … {fits.Count - 40} more");
         if (tooFew.Count > 0) baseLines.Add($"Never enough sockets: {string.Join(", ", tooFew.Take(12))}{(tooFew.Count > 12 ? $" +{tooFew.Count - 12} more" : "")}");
@@ -254,7 +269,8 @@ public sealed class RecipePreviewResolver
         var sections = new List<PreviewSection>
         {
             new("Properties", [.. Enumerable.Range(1, 7).Where(i => runeword.S($"T1Code{i}").Length > 0)
-                .Select(i => PropertyText.Describe(data, runeword.S($"T1Code{i}"), runeword.S($"T1Param{i}"), runeword.S($"T1Min{i}"), runeword.S($"T1Max{i}"), issues))]),
+                .Select(i => Link(PropertyText.Describe(data, runeword.S($"T1Code{i}"), runeword.S($"T1Param{i}"), runeword.S($"T1Min{i}"), runeword.S($"T1Max{i}"), issues),
+                    [.. new[] { "Code", "Param", "Min", "Max" }.Select(p => $"T1{p}{i}").Where(c => runeword.S(c).Length > 0)]))]),
             new("Bases", [.. baseLines])
         };
         // The same runes in the same order on a shared base make only one of the runewords.

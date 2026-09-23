@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
+using ModStudio.Core;
 
 namespace ModStudio.App;
 
@@ -20,24 +21,33 @@ internal static class PreviewCards
         foreach (var part in parts) panel.Children.Add(part);
         return new Border { Background = new SolidColorBrush(Color.Parse("#151515")), Child = panel };
     }
+    /// <summary>What a card text block shows; a block built from linked runs keeps its text in <see cref="PreviewLinkText.PlainText"/>.</summary>
+    public static string RenderedText(TextBlock block) => block is PreviewLinkText linked ? linked.PlainText : block.Text ?? "";
     public static Control Prose(IEnumerable<string> lines, IBrush? brush = null, double size = 12) =>
         new SelectableTextBlock { Text = string.Join("\n", lines), Foreground = brush ?? Body, FontSize = size, TextWrapping = TextWrapping.Wrap };
+    /// <summary>Prose whose linked runs open the cells they were read from.</summary>
+    public static Control Prose(IReadOnlyList<PreviewText> lines) =>
+        new PreviewLinkText(lines) { Foreground = Body, FontSize = 12, TextWrapping = TextWrapping.Wrap };
     /// <summary>
     /// A labelled block: its heading, then its lines. Leading spaces in a line are kept, so indented trees stay readable.
     /// A muted section is background (assumptions, notes) rather than something the row does.
     /// </summary>
-    public static Control Section(string title, IEnumerable<string> lines, bool muted = false)
+    public static Control Section(string title, IEnumerable<string> lines, bool muted = false) => Section(title, [.. lines.Select(l => new PreviewText(l, []))], muted);
+    public static Control Section(PreviewSection section, bool muted = false) => Section(section.Title, section.Text, muted);
+    public static Control Section(string title, IReadOnlyList<PreviewText> lines, bool muted = false)
     {
         var panel = new StackPanel { Spacing = 2 };
         panel.Children.Add(new SelectableTextBlock { Text = title.ToUpperInvariant(), Foreground = Heading, FontSize = 11, Margin = new(0, 4, 0, 2) });
-        panel.Children.Add(new SelectableTextBlock { Text = string.Join("\n", lines), Foreground = muted ? Muted : Body, FontSize = muted ? 11 : 12, TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas, Menlo, monospace") });
+        panel.Children.Add(new PreviewLinkText(lines) { Foreground = muted ? Muted : Body, FontSize = muted ? 11 : 12, TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas, Menlo, monospace") });
         return panel;
     }
     /// <summary>
     /// The level curve as a compact table. Columns whose every value is empty are dropped, so a skill or missile only
-    /// shows the fields it actually authors; the first column always stays.
+    /// shows the fields it actually authors; the first column always stays. <paramref name="links"/> gives the cells a
+    /// row's value under a header was read from; a cell with any is a link. <paramref name="headerLinks"/> links a header
+    /// instead, for a column whose every row is computed from the same cells.
     /// </summary>
-    public static Control Table<T>(IReadOnlyList<T> rows, (string Header, Func<T, string> Value)[] candidates)
+    public static Control Table<T>(IReadOnlyList<T> rows, (string Header, Func<T, string> Value)[] candidates, Func<T, string, CellLink[]?>? links = null, Func<string, CellLink[]?>? headerLinks = null)
     {
         var columns = candidates.Where((c, i) => i == 0 || rows.Any(r => c.Value(r).Length > 0)).ToArray();
         var grid = new Grid
@@ -47,14 +57,19 @@ internal static class PreviewCards
         };
         for (int c = 0; c < columns.Length; c++)
         {
-            var header = new TextBlock { Text = columns[c].Header, Foreground = Heading, FontSize = 11, Margin = new(6, 3), FontWeight = FontWeight.SemiBold };
+            var text = columns[c].Header;
+            TextBlock header = headerLinks?.Invoke(text) is { Length: > 0 } targets ? new PreviewLinkText([new(text, [new(0, text.Length, targets)])]) : new TextBlock { Text = text, Foreground = Heading };
+            header.FontSize = 11; header.Margin = new(6, 3); header.FontWeight = FontWeight.SemiBold;
             Grid.SetColumn(header, c); grid.Children.Add(header);
         }
         for (int r = 0; r < rows.Count; r++)
             for (int c = 0; c < columns.Length; c++)
             {
                 // Banded rows keep a long level curve readable across a narrow inspector.
-                var cell = new SelectableTextBlock { Text = columns[c].Value(rows[r]), FontSize = 11, Margin = new(6, 2) };
+                var value = columns[c].Value(rows[r]);
+                var targets = value.Length > 0 ? links?.Invoke(rows[r], columns[c].Header) : null;
+                SelectableTextBlock cell = targets is { Length: > 0 } ? new PreviewLinkText([new(value, [new(0, value.Length, targets)])]) : new SelectableTextBlock { Text = value };
+                cell.FontSize = 11; cell.Margin = new(6, 2);
                 var holder = new Border { Child = cell, Background = r % 2 == 1 ? new SolidColorBrush(Color.Parse("#1D1E1F")) : null };
                 Grid.SetRow(holder, r + 1); Grid.SetColumn(holder, c); grid.Children.Add(holder);
             }

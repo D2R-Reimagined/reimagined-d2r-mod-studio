@@ -100,13 +100,14 @@ public partial class MainWindow
     private static Control MissileCard(MissilePreviewResult result)
     {
         var parts = new List<Control>();
-        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Lines));
+        if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));
         // What fires it and where it goes comes first; the level curve can run to dozens of rows.
-        foreach (var section in result.Sections.Where(s => s.BeforeLevels)) parts.Add(PreviewCards.Section(section.Title, section.Lines));
+        foreach (var section in result.Sections.Where(s => s.BeforeLevels)) parts.Add(PreviewCards.Section(section));
         if (result.Levels.Length > 0) parts.Add(PreviewCards.Table(result.Levels, [
             ("Lvl", l => l.Level.ToString()), ("Damage", l => l.Physical), ("Elemental", l => l.Elemental),
-            ("Length", l => l.Duration), ("Velocity", l => l.Velocity), ("Synergy", l => l.Synergy), ("With synergies", l => l.WithSynergy)]));
-        foreach (var section in result.Sections.Where(s => !s.BeforeLevels)) parts.Add(PreviewCards.Section(section.Title, section.Lines, muted: section.Title == "Assumptions"));
+            ("Length", l => l.Duration), ("Velocity", l => l.Velocity), ("Synergy", l => l.Synergy), ("With synergies", l => l.WithSynergy)],
+            headerLinks: header => result.ColumnSources?.GetValueOrDefault(header)));
+        foreach (var section in result.Sections.Where(s => !s.BeforeLevels)) parts.Add(PreviewCards.Section(section, muted: section.Title == "Assumptions"));
         if (result.Issues.Length > 0) parts.Add(PreviewCards.Prose(["Incomplete preview", .. result.Issues], Brushes.Salmon));
         return PreviewCards.Card(result.Name, parts);
     }

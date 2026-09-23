@@ -40,6 +40,8 @@ public sealed class PreviewTables
         private readonly Dictionary<(string Table, string Column), ILookup<string, JsonObject>> lookups = [];
         private readonly Dictionary<string, IReadOnlyList<JsonObject>> tableRows = [];
         private readonly List<Dictionary<string, string>> catalogs = [];
+        // Which table row each handed-out field object is, so a preview can link what it shows back to its cells.
+        private readonly Dictionary<JsonObject, (string Table, string SourceId)> origins = new(ReferenceEqualityComparer.Instance);
         internal Session(PreviewTables owner, ModProject project, string profile, string locale, List<string> issues, CancellationToken token)
         {
             this.owner = owner; this.project = project; this.locale = locale; this.issues = issues; this.token = token;
@@ -83,6 +85,7 @@ public sealed class PreviewTables
                     fields[change.Key] = change.Value.S("value");
                 }
             }
+            origins[fields] = (name, row.S("sourceId"));
             return fields;
         }
         /// <summary>Every row of a table with overrides applied, in file order; empty (and an issue) when the table is not there.</summary>
@@ -95,7 +98,8 @@ public sealed class PreviewTables
             foreach (var row in owner.ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
             {
                 token.ThrowIfCancellationRequested();
-                rows.Add(rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject());
+                var fields = rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject();
+                origins[fields] = (name, row.S("sourceId")); rows.Add(fields);
             }
             return tableRows[name] = rows;
         }
@@ -113,6 +117,18 @@ public sealed class PreviewTables
             var found = matches.FirstOrDefault();
             if (found == null && required) issues.Add($"Unresolved {name}/{column}: {value}."); return found;
         }
+        /// <summary>
+        /// A column of a row this session handed out, matched ignoring case (monstats spells minHP but MinHP(N)); null for a
+        /// row it did not hand out or a column the row does not have.
+        /// </summary>
+        public CellLink? Cell(JsonObject? row, string column)
+        {
+            if (row == null || !origins.TryGetValue(row, out var origin) || origin.SourceId.Length == 0) return null;
+            var key = row.ContainsKey(column) ? column : row.Select(f => f.Key).FirstOrDefault(k => k.Equals(column, StringComparison.OrdinalIgnoreCase));
+            return key == null ? null : new(origin.Table, origin.SourceId, key);
+        }
+        /// <summary>Text marked as read from the named columns of a row (see <see cref="PreviewText"/>).</summary>
+        public string Link(string text, JsonObject? row, params string[] columns) => PreviewText.Mark(text, columns.Select(c => Cell(row, c)));
         /// <summary>The selected locale's string for a key; the key itself (and an issue) when it is not translated.</summary>
         public string Localize(string key) => Localize(key, true);
         /// <summary>As <see cref="Localize(string)"/>; <paramref name="report"/> false falls back to the key quietly, for names shown in long lists.</summary>

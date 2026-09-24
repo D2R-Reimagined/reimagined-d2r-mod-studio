@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
         ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); RefreshVisualBuilders(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
-        runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor();
+        runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor(); InitializeCompanion();
         KeyDown += async (_, e) =>
         {
             bool command = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
@@ -84,6 +84,11 @@ public partial class MainWindow : Window
             try
             {
                 if (Program.Arguments.Contains("--smoke")) { await SmokeAsync(); return; }                _ = CheckStudioUpdateAsync(false);
+                if (Program.Integration?.Initial != null)
+                {
+                    await Program.Integration.StartAsync(async r => await Dispatcher.UIThread.InvokeAsync(() => ReceiveCompanionAsync(r)));
+                    return;
+                }
                 var arg = Program.Arguments.FirstOrDefault(a => !a.StartsWith('-'));
                 var previous = arg ?? StudioPreferences.Load(StudioPreferences.DefaultFile).LastProject;
                 if (previous != null)
@@ -91,8 +96,10 @@ public partial class MainWindow : Window
                     if (Directory.Exists(previous)) await LoadProjectAsync(previous);
                     else Status.Text = "Last project is unavailable. Use Open project to choose its new location.";
                 }
+                if (Program.Integration != null) await Program.Integration.StartAsync(async r => await Dispatcher.UIThread.InvokeAsync(() => ReceiveCompanionAsync(r)));
             }
             catch (Exception e) { ShowError(e); }
+            finally { if (!Program.Arguments.Contains("--smoke") && Program.Integration != null) await Program.Integration.StartAsync(async r => await Dispatcher.UIThread.InvokeAsync(() => ReceiveCompanionAsync(r))); }
         };
     }
     private void RefreshRunControls()
@@ -213,6 +220,7 @@ public partial class MainWindow : Window
         Require(!externalBusy, "External synchronization started. Wait for it to finish before switching projects.");
         if (!await UpgradeLayoutIfNeededAsync(nextProject)) return;
         Require(!externalBusy, "Wait for external synchronization before switching projects.");
+        Program.Integration?.ClaimProject(nextProject.Root); companionProfiles.Clear(); companionStamps.Clear();
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose(); externalWatcher?.Dispose(); externalActive = false; findInFiles?.Close();
         project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
@@ -716,6 +724,12 @@ public partial class MainWindow : Window
             int index = Array.IndexOf(Program.Arguments, "--smoke"); var root = Program.Arguments[index + 1]; var output = Program.Arguments[index + 2]; Directory.CreateDirectory(output);
             await SmokeColumnGuideAsync(output);
             await LoadProjectAsync(root); var results = new List<object>();
+            if (Program.Arguments.Contains("--companion-only"))
+            {
+                await SmokeCompanionAsync(output);
+                if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime lifetime) lifetime.Shutdown(0);
+                return;
+            }
             if (Program.Arguments.Contains("--cell-tip-only"))
             {
                 var pane = await OpenDocumentAsync(Path.Combine(root, "source/strings/cell-tip.json"));
@@ -806,6 +820,12 @@ public partial class MainWindow : Window
                 File.WriteAllText(System.IO.Path.Combine(output, "full-row-paste-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
+            if (Program.Arguments.Contains("--level-builder-only"))
+            {
+                await SmokeLevelBuilderAsync(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "level-builder-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--visual-builder-only"))
             {
                 await SmokeVisualBuilderAsync(output);
@@ -814,6 +834,7 @@ public partial class MainWindow : Window
             await SmokeBaseItemBuilderAsync(output);
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
+            await SmokeLevelBuilderAsync(output);
             await SmokeRememberedViewsAsync();
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
@@ -834,6 +855,7 @@ public partial class MainWindow : Window
             await SmokeBaseItemBuilderAsync(output);
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
+            await SmokeLevelBuilderAsync(output);
             await SmokeRememberedViewsAsync();
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);

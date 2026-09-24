@@ -44,7 +44,7 @@ public sealed class StudioPreferences
     public string? ProjectsFolder { get; set; }
     public static string DefaultProjectsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "D2R Mod Studio");
     public string ResolvedProjectsFolder => string.IsNullOrWhiteSpace(ProjectsFolder) ? DefaultProjectsFolder : ProjectsFolder;
-    public static string DefaultFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReimaginedD2RModStudio", "preferences.json");
+    public static string DefaultFile => Environment.GetEnvironmentVariable("MOD_STUDIO_PREFERENCES") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ReimaginedD2RModStudio", "preferences.json");
     public static StudioPreferences Load(string file) => File.Exists(file)
         ? JsonSerializer.Deserialize<StudioPreferences>(File.ReadAllText(file)) ?? new()
         : new();

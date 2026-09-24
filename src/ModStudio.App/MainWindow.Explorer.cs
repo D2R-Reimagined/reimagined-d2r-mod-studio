@@ -138,6 +138,7 @@ public partial class MainWindow
     {
         var items = new List<object>();
         if (!entry.Directory) items.Add(Item(entry.IsTable ? "Open Table" : "Open", () => OpenDocumentAsync(entry.Path)));
+        if (!entry.Directory && IsSceneFile(entry.Path)) items.Add(LevelEditorItem(entry.Path));
         if (items.Count > 0) items.Add(new Separator());
         var create = new MenuItem { Header = "New" }; var container = ContainerOf(entry);
         create.Items.Add(Item("File…", () => NewFileAsync(container))); create.Items.Add(Item("Folder…", () => NewFolderAsync(container)));

@@ -24,6 +24,7 @@ try
     layout.SetRaw("{ \"fields\": [ }");
     Throws(layout.Save, "Malformed game JSON still blocks save");
     Check(File.ReadAllText(layoutFile) == editedLayout, "Malformed game JSON does not replace disk source");
+    await CompanionTests.Run(root, Check, Throws);
     PreviewTests.Run(root, Check, Throws);
     ItemPreviewTests.Run(root, Check, Throws);
     SkillPreviewTests.Run(root, Check, Throws);
@@ -38,6 +39,7 @@ try
     BaseItemBuilderTests.Run(root, Check, Throws);
     CubeBuilderTests.Run(root, Check, Throws);
     RunewordBuilderTests.Run(root, Check, Throws);
+    LevelBuilderTests.Run(root, Check, Throws);
     AffixRecipeTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);

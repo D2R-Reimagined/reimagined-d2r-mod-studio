@@ -22,7 +22,7 @@ namespace ModStudio.App;
 /// </summary>
 internal sealed record VisualBuilderHost(Func<ModProject?> Project, Func<string> Profile, Func<int> Workspace, Func<IReadOnlyList<string>> GameData,
     Func<EditorPane, string?> DirtyDependency, Func<Task> ChooseGameData, Func<string, Document?>? FindTable = null, Func<string, Task<Document?>>? OpenTable = null,
-    Func<MonsterPreviewResult, Control>? MonsterDetails = null, Func<string, string, string, Task>? OpenInBuilder = null);
+    Func<MonsterPreviewResult, Control>? MonsterDetails = null, Func<string, string, string, Task>? OpenInBuilder = null, Func<EditorPane, Task>? OpenLevelEditor = null);
 
 /// <summary>What the window and the editor pane need from any Visual Builder, whatever its table.</summary>
 internal interface IVisualBuilder

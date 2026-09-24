@@ -8,6 +8,7 @@
     <Button Content="Open project" Click="OpenClicked" ToolTip.Tip="Open a Studio project (JSON source)" /><Button Content="Import mod…" Click="MigrateClicked" ToolTip.Tip="Turn an existing mod, unpacked .mpq or data folder into an editable Studio project" />
     <Button Content="Save all" Click="SaveAllClicked" /><Button x:Name="FindInFilesButton" Content="Find in files…" ToolTip.Tip="Search every table cell, string and file in the project; preview and edit matches without opening them (Ctrl+Shift+F)" /><Button Content="Run settings" Click="SettingsClicked" />
     <Button Content="External editor" Click="ExternalEditorClicked" ToolTip.Tip="Open deployed TXT files or a workspace in your own editor; synchronize and resolve conflicts" />
+    <Button Content="Level Editor" Click="CompanionClicked" ToolTip.Tip="Open the selected level or scene; configure companion applications" />
     <Button x:Name="ViewSettingsButton" Content="View" ToolTip.Tip="View settings: table and source editor fonts and sizes, column letters, hover cards (Ctrl + wheel zooms the view under the pointer)" />
     <Button Content="?" ToolTip.Tip="Quick start: project structure and editing" Click="TutorialClicked" />
     </StackPanel>

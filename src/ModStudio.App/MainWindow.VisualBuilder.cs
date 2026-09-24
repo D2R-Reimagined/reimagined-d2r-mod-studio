@@ -15,7 +15,7 @@ public partial class MainWindow
                 async () => { await ChooseGameDataFolderAsync(); RefreshVisualBuilders(); },
                 name => project == null ? null : FindOpenDocument(TableData.FileFor(project, "tables", name)),
                 async name => project == null || !File.Exists(TableData.FileFor(project, "tables", name)) ? null : (await OpenDocumentAsync(TableData.FileFor(project, "tables", name), false, false))?.Document,
-                MonsterCard, OpenInBuilderAsync);
+                MonsterCard, OpenInBuilderAsync, pane => OpenLevelEditorAsync(selectedPane: pane));
             return owner.Document.Table?.Name switch
             {
                 "missiles" => new MissileBuilderView(owner, host),
@@ -23,6 +23,7 @@ public partial class MainWindow
                 "weapons" or "armor" or "misc" => new BaseItemBuilderView(owner, host),
                 "cubemain" => new CubeBuilderView(owner, host),
                 "runes" => new RunewordBuilderView(owner, host),
+                "levels" => new LevelBuilderView(owner, host),
                 _ => new VisualBuilderView(owner, host)
             };
         };

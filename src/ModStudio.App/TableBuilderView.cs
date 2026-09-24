@@ -377,7 +377,7 @@ internal abstract class TableBuilderView<TEntry, TCatalog> : Grid, IVisualBuilde
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Top };
         var openTable = new Button { Content = "Show in table", Padding = new(10, 4), MinHeight = 0, FontSize = 12 };
         ToolTip.SetTip(openTable, "Switch to the Table view on this row");
-        openTable.Click += (_, _) => Try(() => pane.Jump(SelectedRow, NameColumn));
+        openTable.Click += (_, _) => Try(() => { pane.Jump(SelectedRow, NameColumn); pane.NoteViewChoice("table"); });
         var duplicate = new Button { Content = "Duplicate", Padding = new(10, 4), MinHeight = 0, FontSize = 12 };
         ToolTip.SetTip(duplicate, "Copy this row to a new row at the bottom of the table and edit the copy");
         duplicate.Click += (_, _) => Try(Duplicate);

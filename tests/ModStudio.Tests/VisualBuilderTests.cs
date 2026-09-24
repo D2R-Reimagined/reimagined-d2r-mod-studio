@@ -90,5 +90,18 @@ internal static class VisualBuilderTests
             "Set item bonuses go in the set section and link to their bonus slot");
         var inactive = new ItemPreviewResolver().Resolve(project, "uniqueitems", Row("header", "index", "Expansion"), "standard", 80, "enUS", default);
         check(inactive.Tooltip == null, "Header rows have no tooltip");
+
+        // Each file's chosen view is remembered by its full path, whatever way the path is written.
+        var prefs = new StudioPreferences();
+        var tableFile = Path.Combine(root, "views", "uniqueitems.json");
+        prefs.RememberView(tableFile, "visual");
+        check(prefs.ViewFor(Path.Combine(root, "views", ".", "uniqueitems.json")) == "visual" && prefs.ViewFor(Path.Combine(root, "views", "other.json")) == null, "A file's view is remembered by its full path");
+        prefs.RememberView(tableFile, "source");
+        check(prefs.ViewFor(tableFile) == "source" && prefs.EditorViews.Count == 1, "A new choice replaces the old one");
+        prefs.RememberView(tableFile, "table");
+        check(prefs.ViewFor(tableFile) == null && prefs.EditorViews.Count == 0, "Choosing the table, the default, forgets the file");
+        var saved = Path.Combine(root, "views", "preferences.json"); Directory.CreateDirectory(Path.GetDirectoryName(saved)!);
+        prefs.RememberView(tableFile, "visual"); prefs.Save(saved);
+        check(StudioPreferences.Load(saved).ViewFor(tableFile) == "visual", "Remembered views survive saving and loading the preferences");
     }
 }

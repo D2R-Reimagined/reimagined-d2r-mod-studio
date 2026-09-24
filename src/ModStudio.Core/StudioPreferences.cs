@@ -22,6 +22,16 @@ public sealed class StudioPreferences
     public string TableFontFamily { get; set; } = "";
     public double TableFontSize { get; set; } = 15;
     public List<string> SettingsIntroduced { get; set; } = [];
+    /// <summary>The editor view last chosen for each file ("table", "source", "visual" or "preview"), by normalized full path.</summary>
+    public Dictionary<string, string> EditorViews { get; set; } = [];
+    /// <summary>The view remembered for a file; null when none was chosen (the file opens in its default view).</summary>
+    public string? ViewFor(string file) => EditorViews.GetValueOrDefault(ViewKey(file));
+    /// <summary>Remembers a file's view; the default "table" is forgotten rather than stored.</summary>
+    public void RememberView(string file, string mode)
+    {
+        if (mode == "table") EditorViews.Remove(ViewKey(file)); else EditorViews[ViewKey(file)] = mode;
+    }
+    private static string ViewKey(string file) { var full = Path.GetFullPath(file); return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full; }
     /// <summary>Tool panels the user minimized to their strip: "explorer", "inspector", "bottom".</summary>
     public List<string> HiddenPanels { get; set; } = [];
     /// <summary>Last size in pixels the user dragged each tool panel to (width for "explorer"/"inspector", height for "bottom").</summary>

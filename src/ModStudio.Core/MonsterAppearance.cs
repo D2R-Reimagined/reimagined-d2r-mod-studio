@@ -76,18 +76,25 @@ public static class HdAppearance
     {
         var direct = Path.Combine(root, relative);
         if (directory ? Directory.Exists(direct) : File.Exists(direct)) return direct;
-        var current = root;
         var parts = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < parts.Length; i++)
+        return Search(root, 0);
+
+        string? Search(string current, int index)
         {
-            bool last = i == parts.Length - 1;
             if (!Directory.Exists(current)) return null;
-            var next = (last && !directory ? Directory.EnumerateFiles(current) : Directory.EnumerateDirectories(current))
-                .FirstOrDefault(p => Path.GetFileName(p).Equals(parts[i], StringComparison.OrdinalIgnoreCase));
-            if (next == null) return null;
-            current = next;
+            bool last = index == parts.Length - 1;
+            // Case-sensitive filesystems can contain both "tt" and "TT". Try the exact name first,
+            // but keep searching the other matches if that branch does not contain the requested file.
+            var matches = (last && !directory ? Directory.EnumerateFiles(current) : Directory.EnumerateDirectories(current))
+                .Where(p => Path.GetFileName(p).Equals(parts[index], StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => Path.GetFileName(p).Equals(parts[index], StringComparison.Ordinal));
+            foreach (var next in matches)
+            {
+                if (last) return next;
+                if (Search(next, index + 1) is { } found) return found;
+            }
+            return null;
         }
-        return current;
     }
 
     /// <summary>The file the game would load for a data-relative path: the project's copy, else the first game data folder that has it.</summary>

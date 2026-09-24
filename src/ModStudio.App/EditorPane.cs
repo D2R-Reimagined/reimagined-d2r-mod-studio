@@ -102,6 +102,35 @@ public sealed partial class EditorPane : Grid
     public Func<EditorPane, Control>? VisualBuilderFactory { get; set; }
     public bool VisualBuilderVisible => visualHost.IsVisible;
     public Control? VisualBuilder => visualHost.Child;
+    /// <summary>Raised when the user picks a view (table, source, visual, or Markdown preview) so it can be remembered for the file; not raised by navigation.</summary>
+    public event Action<EditorPane, string>? ViewChosen;
+    public void NoteViewChoice(string mode) => ViewChosen?.Invoke(this, mode);
+    /// <summary>The view the pane shows: "table", "source", "visual" or "preview".</summary>
+    public string ViewMode => visualHost.IsVisible ? "visual" : MarkdownPreview?.IsVisible == true ? "preview" : Source.IsVisible ? "source" : "table";
+
+    public void ShowTable()
+    {
+        Document.ApplySource(); Storage.Require(!Document.PendingSource, "Fix source syntax before returning to Table.");
+        Source.IsVisible = false; visualHost.IsVisible = false; tableHost.IsVisible = Document.Table != null; Refresh();
+    }
+
+    public void ShowSource()
+    {
+        syncing = true; Source.Text = Document.Text.TrimStart('\uFEFF'); syncing = false;
+        Source.IsVisible = true; tableHost.IsVisible = false; visualHost.IsVisible = false; UpdateNote();
+    }
+
+    /// <summary>Opens the view remembered for this file. A view the file cannot have (a builder for a table without one) is ignored.</summary>
+    public void RestoreView(string mode)
+    {
+        switch (mode)
+        {
+            case "source" when Document.Table != null && MarkdownPreview == null: ShowSource(); break;
+            case "visual" when VisualBuilderFactory != null && ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name) && !Document.PendingSource: ShowVisualBuilder(); break;
+            case "preview" when MarkdownPreview != null: ShowMarkdownPreview(); break;
+        }
+    }
+
     public void ShowVisualBuilder()
     {
         if (VisualBuilderFactory == null || !ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name)) return;
@@ -186,9 +215,9 @@ public sealed partial class EditorPane : Grid
         RowDefinitions = new("Auto,*,Auto");
         var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(6) };
         void Button(string label, Action action) { var b = EditorToolbarIcons.Create(label); b.Click += (_, _) => { try { action(); } catch (Exception e) { error(e); } }; toolbar.Children.Add(b); }
-        Button("Table", () => { document.ApplySource(); Storage.Require(!document.PendingSource, "Fix source syntax before returning to Table."); Source.IsVisible = false; visualHost.IsVisible = false; tableHost.IsVisible = document.Table != null; Refresh(); });
-        Button("Source", () => { syncing = true; Source.Text = document.Text.TrimStart('\uFEFF'); syncing = false; Source.IsVisible = true; tableHost.IsVisible = false; visualHost.IsVisible = false; UpdateNote(); });
-        if (ModStudio.Core.VisualBuilder.Supports(document.Table?.Name)) Button("Visual Builder", ShowVisualBuilder);
+        Button("Table", () => { ShowTable(); NoteViewChoice("table"); });
+        Button("Source", () => { ShowSource(); NoteViewChoice("source"); });
+        if (ModStudio.Core.VisualBuilder.Supports(document.Table?.Name)) Button("Visual Builder", () => { ShowVisualBuilder(); NoteViewChoice("visual"); });
         Button("Apply source", () => { document.ApplySource(); Refresh(); });
         Button("Undo", Undo); Button("Redo", Redo);
         Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); ApplyColumnWidths(); });
@@ -262,8 +291,8 @@ public sealed partial class EditorPane : Grid
             MarkdownPreview.SetValue(TextBlock.ForegroundProperty, Brushes.Black);
             markdownHost = new Border { Background = Brushes.White, Child = MarkdownPreview, IsVisible = false };
             SetRow(markdownHost, 1); Children.Add(markdownHost);
-            Button("Source", () => { markdownHost.IsVisible = false; MarkdownPreview.IsVisible = false; Source.IsVisible = true; Refresh(); });
-            Button("Preview", ShowMarkdownPreview);
+            Button("Source", () => { markdownHost.IsVisible = false; MarkdownPreview.IsVisible = false; Source.IsVisible = true; Refresh(); NoteViewChoice("source"); });
+            Button("Preview", () => { ShowMarkdownPreview(); NoteViewChoice("preview"); });
             Button("Undo", Undo); Button("Redo", Redo);
             Button("Refresh preview", ShowMarkdownPreview);
             InitializeViewMenu(toolbar);

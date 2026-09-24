@@ -54,7 +54,9 @@ internal static class MonsterBuilderTests
             && look.Variants["RA"].SequenceEqual(["hvy"]) && look.Parts.SetEquals(["HD", "TR"]) && look.Modes.SequenceEqual(["NU", "WL"]),
             "A monstats2 row gives each part's variants (quoted or not, Rav/Lav spelt as they are), the parts, modes, weapon class, shadow and light");
 
-        // Game data: the COF and two parts. The head has no "lit" file, so it falls back to "med". palshift table 4 (TransLvl 2) maps 37 to 55.
+        // Game data: the COF and two parts. On case-sensitive filesystems, tt and TT are separate folders;
+        // the head is under TT while the COF and torso are under tt. The head has no "lit" file, so it falls back to "med".
+        // palshift table 4 (TransLvl 2) maps 37 to 55.
         var project = new ModProject(Path.Combine(root, "monster-builder"), "test", "Test"); Directory.CreateDirectory(project.Root);
         var gameData = Path.Combine(root, "monster-builder-game", "data");
         void Write(string relative, byte[] bytes) { var file = Path.Combine(gameData, relative); Directory.CreateDirectory(Path.GetDirectoryName(file)!); File.WriteAllBytes(file, bytes); }
@@ -63,6 +65,8 @@ internal static class MonsterBuilderTests
         Write("global/monsters/tt/tr/tttrlitnuhth.dcc", MissileBuilderTests.SyntheticDcc(99));
         var shift = Enumerable.Range(0, 8 * 256).Select(i => (byte)(i % 256)).ToArray(); shift[4 * 256 + 37] = 55;
         Write("global/monsters/tt/cof/palshift.dat", shift);
+        check(HdAppearance.Locate(gameData, "data/global/monsters/tt/hd/tthdmednuhth.dcc") != null,
+            "A mixed-case sibling token folder is searched when the exact-case folder lacks the requested part");
         var none = MonsterGraphics.Composite(project, [], look, "NU", 0);
         check(!none.Drawable && none.Notes.Single().Contains("game data folder"), "Without game data a base-game monster asks for the game data folder");
         var composite = MonsterGraphics.Composite(project, [gameData], look, "NU", 0);

@@ -25,6 +25,28 @@ public partial class MainWindow
             return roots;
         };
     }
+    /// <summary>Smoke runs never touch the user's preferences; the views they choose are remembered here instead.</summary>
+    private readonly StudioPreferences smokeViews = new();
+    private StudioPreferences LoadViewMemory() => Program.Arguments.Contains("--smoke") ? smokeViews : StudioPreferences.Load(StudioPreferences.DefaultFile);
+
+    /// <summary>Opens a file in the view last chosen for it (table, source, Visual Builder or Markdown preview), and remembers each new choice.</summary>
+    private void RememberEditorView(EditorPane pane, string file)
+    {
+        try { if (LoadViewMemory().ViewFor(file) is { } mode) pane.RestoreView(mode); }
+        catch (Exception ex) { Status.Text = "Could not reopen the remembered view: " + ex.Message; }
+        pane.ViewChosen += (_, mode) =>
+        {
+            try
+            {
+                var prefs = LoadViewMemory();
+                if (prefs.ViewFor(file) == mode || mode == "table" && prefs.ViewFor(file) == null) return;
+                prefs.RememberView(file, mode);
+                if (!ReferenceEquals(prefs, smokeViews)) prefs.Save(StudioPreferences.DefaultFile);
+            }
+            catch (Exception ex) { ShowError(ex); }
+        };
+    }
+
     private void SaveViewPreferences()
     {
         if (Program.Arguments.Contains("--smoke")) return;

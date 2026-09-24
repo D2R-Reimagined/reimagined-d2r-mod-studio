@@ -433,6 +433,7 @@ public partial class MainWindow : Window
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane, FindOpenDocument);
         AttachVisualBuilder(pane);
+        RememberEditorView(pane, file);
         pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
         pane.ColumnGuideRequested += OpenColumnGuide;
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) { if (EditorPane.ItemHoverCards) RequestItemPreview(sender, row, anchor, sender.HoverPosition); } else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
@@ -813,6 +814,7 @@ public partial class MainWindow : Window
             await SmokeBaseItemBuilderAsync(output);
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
+            await SmokeRememberedViewsAsync();
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
@@ -832,6 +834,7 @@ public partial class MainWindow : Window
             await SmokeBaseItemBuilderAsync(output);
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
+            await SmokeRememberedViewsAsync();
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);
             await SmokeStatPreviewAsync(output);

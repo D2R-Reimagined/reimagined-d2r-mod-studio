@@ -22,6 +22,7 @@ public partial class MainWindow
                 "monstats" => new MonsterBuilderView(owner, host),
                 "weapons" or "armor" or "misc" => new BaseItemBuilderView(owner, host),
                 "cubemain" => new CubeBuilderView(owner, host),
+                "runes" => new RunewordBuilderView(owner, host),
                 _ => new VisualBuilderView(owner, host)
             };
         };

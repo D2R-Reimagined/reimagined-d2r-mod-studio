@@ -79,7 +79,7 @@ public sealed class VisualBuilderResolver
 
 public static partial class VisualBuilder
 {
-    public static bool Supports(string? table) => table is "uniqueitems" or "setitems" or "missiles" or "monstats" or "weapons" or "armor" or "misc" or "cubemain";
+    public static bool Supports(string? table) => table is "uniqueitems" or "setitems" or "missiles" or "monstats" or "weapons" or "armor" or "misc" or "cubemain" or "runes";
 
     /// <summary>The search list's view of a table: every row's identity, base code, required level and set.</summary>
     public static BuilderRow[] Rows(TableData table)

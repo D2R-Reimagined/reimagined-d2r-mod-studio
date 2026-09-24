@@ -61,9 +61,11 @@ public sealed partial class EditorPane
                 grid.Columns.Add(pair.Left); grid.Columns.Add(pair.Right);
                 grid.FrozenColumnCount = frozen.Length;
             }
-            var (start, end) = DesiredWindow(mainBar?.Value ?? 0, ViewportWidth);
+            // Only the plain window is built while the table opens; the part a table end hands to the other side follows in idle time.
+            var (start, end) = DesiredWindow(mainBar?.Value ?? 0, ViewportWidth, fill: false);
             windowStart = windowEnd = start;
             ApplyWindow(start, end);
+            QueueWindowFill();
             foreach (var grid in new[] { TableGrid, FrozenGrid })
                 if (grid.SelectedItem != null) grid.CurrentColumn = grid.Columns.FirstOrDefault(c => columnMap.TryGetValue(c, out var i) && Document.Table.Columns[i] == selectedColumn) ?? grid.Columns.FirstOrDefault(c => columnMap.ContainsKey(c));
             columnSignature = ColumnSignature();
@@ -116,10 +118,22 @@ public sealed partial class EditorPane
         finally { synchronizingWidths = false; }
         if (moved && grid.Columns.Contains(column)) foreach (var rowControl in RealizedRows(grid)) if (column.GetCellContent(rowControl) is LiveCellDisplay display) display.Invalidate();
     }
-    /// <summary>The window positions that cover the viewport plus a viewport of buffer on each side.</summary>
-    private (int Start, int End) DesiredWindow(double offset, double viewport)
+    /// <summary>
+    /// The window positions that cover the viewport plus a viewport of buffer on each side. Near an end of the table the
+    /// buffer that would fall outside it goes to the other side (unless <paramref name="fill"/> is false), so the window
+    /// keeps the same number of column controls wherever the view is: scrolling away from an end then recycles controls
+    /// instead of adding columns, and adding a column mid-scroll (a cell in every row, each hidden again by the grid's next
+    /// layout) made the first horizontal scroll of a freshly opened table stutter.
+    /// </summary>
+    private (int Start, int End) DesiredWindow(double offset, double viewport, bool fill = true)
     {
         double left = offset - viewport, right = offset + 2 * viewport, x = 0;
+        if (fill)
+        {
+            double total = 0; foreach (var i in scrollOrder) total += ColumnWidthOf(i);
+            if (left < 0) right -= left;
+            if (right > total) left -= right - total;
+        }
         int start = -1, end = scrollOrder.Length;
         for (int k = 0; k < scrollOrder.Length; k++)
         {
@@ -226,7 +240,8 @@ public sealed partial class EditorPane
         while (warmups.Count > 0 && budget.ElapsedMilliseconds < 4)
         {
             var row = warmups.Dequeue();
-            if (!row.IsVisible || !windowControls.TryGetValue(TableGrid, out var controls)) continue;
+            // A row the grid dropped since it was queued (a refresh replacing the rows) has no cells for columns added after that.
+            if (!row.IsVisible || !windowControls.TryGetValue(TableGrid, out var controls) || !rowPanels.TryGetValue(TableGrid, out var panel) || row.GetVisualParent() != panel) continue;
             foreach (var column in controls)
                 if (column.IsVisible && column.GetCellContent(row) is { } content && (content.Parent as DataGridCell ?? content.GetVisualAncestors().OfType<DataGridCell>().FirstOrDefault()) is { } cell)
                     cell.ApplyTemplate();
@@ -252,6 +267,28 @@ public sealed partial class EditorPane
             var (start, end) = DesiredWindow(offset, viewport);
             ApplyWindow(start, end);
         }, DispatcherPriority.Normal);
+    }
+    private bool windowFillQueued;
+    /// <summary>
+    /// Grows the window to its full size (see <see cref="DesiredWindow"/>) in idle time, a few columns per pass: each added
+    /// column creates a cell in every realized row, which is too much to do in one go right after the table opened.
+    /// </summary>
+    private void QueueWindowFill()
+    {
+        if (windowFillQueued) return; windowFillQueued = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            windowFillQueued = false;
+            if (Document.Table == null || spacers.Count == 0 || mainBar == null || editingCell != null) return;
+            var (start, end) = DesiredWindow(mainBar.Value, ViewportWidth);
+            // The view moved away meanwhile: the scroll's own window update takes it from there.
+            if (start >= windowEnd || end <= windowStart) return;
+            const int step = 3;
+            int nextStart = Math.Max(start, windowStart - step), nextEnd = Math.Min(end, windowEnd + step);
+            if (nextStart == windowStart && nextEnd == windowEnd) return;
+            ApplyWindow(nextStart, nextEnd);
+            QueueWindowFill();
+        }, DispatcherPriority.Background);
     }
     /// <summary>Width of the scrolling region itself: the grid minus row headers, frozen columns and the vertical scrollbar.</summary>
     private double ScrollViewportWidth

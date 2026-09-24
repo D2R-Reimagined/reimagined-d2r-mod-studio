@@ -97,6 +97,20 @@ public sealed partial class EditorPane : Grid
     public string? SortColumn => sortColumn;
     public bool SortDescending => descending;
     private readonly Grid tableHost = new() { RowDefinitions = new("Auto,*") };
+    /// <summary>The third view of unique and set item tables: the Visual Builder, created on first use by <see cref="VisualBuilderFactory"/>.</summary>
+    private readonly Border visualHost = new() { IsVisible = false };
+    public Func<EditorPane, Control>? VisualBuilderFactory { get; set; }
+    public bool VisualBuilderVisible => visualHost.IsVisible;
+    public Control? VisualBuilder => visualHost.Child;
+    public void ShowVisualBuilder()
+    {
+        if (VisualBuilderFactory == null || !ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name)) return;
+        Document.ApplySource(); Storage.Require(!Document.PendingSource, "Fix source syntax before opening the Visual Builder.");
+        HideCellTip(); Source.IsVisible = false; tableHost.IsVisible = false;
+        visualHost.Child ??= VisualBuilderFactory(this);
+        visualHost.IsVisible = true; UpdateNote();
+        (visualHost.Child as VisualBuilderView)?.Shown();
+    }
     private readonly Canvas cellTipLayer = new() { IsHitTestVisible = false, ClipToBounds = false };
     private readonly TextBlock cellTipText = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Border cellTip = new()
@@ -172,12 +186,13 @@ public sealed partial class EditorPane : Grid
         RowDefinitions = new("Auto,*,Auto");
         var toolbar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(6) };
         void Button(string label, Action action) { var b = EditorToolbarIcons.Create(label); b.Click += (_, _) => { try { action(); } catch (Exception e) { error(e); } }; toolbar.Children.Add(b); }
-        Button("Table", () => { document.ApplySource(); Storage.Require(!document.PendingSource, "Fix source syntax before returning to Table."); Source.IsVisible = false; tableHost.IsVisible = document.Table != null; Refresh(); });
-        Button("Source", () => { syncing = true; Source.Text = document.Text.TrimStart('\uFEFF'); syncing = false; Source.IsVisible = true; tableHost.IsVisible = false; UpdateNote(); });
+        Button("Table", () => { document.ApplySource(); Storage.Require(!document.PendingSource, "Fix source syntax before returning to Table."); Source.IsVisible = false; visualHost.IsVisible = false; tableHost.IsVisible = document.Table != null; Refresh(); });
+        Button("Source", () => { syncing = true; Source.Text = document.Text.TrimStart('\uFEFF'); syncing = false; Source.IsVisible = true; tableHost.IsVisible = false; visualHost.IsVisible = false; UpdateNote(); });
+        if (ModStudio.Core.VisualBuilder.Supports(document.Table?.Name)) Button("Visual Builder", ShowVisualBuilder);
         Button("Apply source", () => { document.ApplySource(); Refresh(); });
         Button("Undo", Undo); Button("Redo", Redo);
         Button("Fit columns", () => { widths.Clear(); fittedWidths.Clear(); ApplyColumnWidths(); });
-        Button("Column guide", () => ShowColumnGuide(SelectedColumn, null));
+        Button("Column guide", () => ShowColumnGuide(SelectedColumn));
         // Only worth a place on the toolbar while there is something to clear.
         clearHighlightsButton = EditorToolbarIcons.Create("Clear highlights");
         clearHighlightsButton.IsVisible = false;
@@ -206,7 +221,7 @@ public sealed partial class EditorPane : Grid
         tableHost.Children.Add(FrozenGrid); SetRow(TableGrid, 1); tableHost.Children.Add(TableGrid);
         cellTip.Child = cellTipText; cellTipLayer.Children.Add(cellTip); SetRowSpan(cellTipLayer, 2); tableHost.Children.Add(cellTipLayer);
         tableHost.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !tableHost.IsVisible) HideCellTip(); };
-        SetRow(tableHost, 1); Children.Add(tableHost); SetRow(Source, 1); Children.Add(Source);
+        SetRow(tableHost, 1); Children.Add(tableHost); SetRow(Source, 1); Children.Add(Source); SetRow(visualHost, 1); Children.Add(visualHost);
         SetRow(note, 2); note.Margin = new(10, 5); Children.Add(note);
         Source.TextChanged += (_, _) => { if (!syncing) { try { document.SetRaw((document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "") + Source.Text); } catch (Exception ex) { error(ex); Refresh(); } } };
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
@@ -300,7 +315,7 @@ public sealed partial class EditorPane : Grid
             if (e.NameScope.Find<Control>("PART_RowsPresenter") is { } rows) SetRowSpan(rows, 1);
             if (grid == TableGrid) mainBar = bar; else frozenBar = bar;
             bar.PropertyChanged += (_, args) => { if (args.Property == RangeBase.ValueProperty) { HideCellTip(); SyncBars(bar); if (grid == TableGrid) QueueWindowUpdate(); } };
-            if (grid == TableGrid) grid.SizeChanged += (_, _) => QueueWindowUpdate();
+            if (grid == TableGrid) grid.SizeChanged += (_, _) => { QueueWindowUpdate(); QueueWindowFill(); };
         };
         grid.AddHandler(PointerPressedEvent, (_, e) =>
         {
@@ -342,7 +357,7 @@ public sealed partial class EditorPane : Grid
             {
                 e.Handled = true; RequestCellReference(SelectedRow, Array.IndexOf(table.Columns, SelectedColumn), grid); return;
             }
-            if (e.Key == Key.F1 && e.KeyModifiers == KeyModifiers.None && Document.Table != null) { e.Handled = true; ShowColumnGuide(SelectedColumn, null); return; }
+            if (e.Key == Key.F1 && e.KeyModifiers == KeyModifiers.None && Document.Table != null) { e.Handled = true; ShowColumnGuide(SelectedColumn); return; }
             BeginInput(grid);
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         grid.GotFocus += (_, e) => { if (e.NavigationMethod is NavigationMethod.Tab or NavigationMethod.Directional) BeginInput(grid); };
@@ -461,10 +476,12 @@ public sealed partial class EditorPane : Grid
         var name = Document.Table!.Columns[column];
         return (frozenColumns.Contains(column) ? "▣ " : "") + (highlightedColumns.Contains(column) ? "◆ " : "") + ColumnLabel(column, name) + (Document.LockedColumns.Contains(name) ? " [locked]" : "") + (sortMark && name == sortColumn ? descending ? " ▼" : " ▲" : "");
     }
-    private double FitColumn(int index)
+    // The cache check stays out of the measuring method: its captured locals would allocate a closure on every call, and the
+    // column window asks for every column's width on each horizontal scroll step.
+    private double FitColumn(int index) => fittedWidths.TryGetValue(index, out var cached) ? cached : MeasureColumn(index);
+    private double MeasureColumn(int index)
     {
         const double maximum = 220;
-        if (fittedWidths.TryGetValue(index, out var cached)) return cached;
         var table = Document.Table!;
         var text = new TextBlock { FontFamily = TableGrid.FontFamily, FontSize = TableGrid.FontSize };
         double Measure(string value)
@@ -726,7 +743,7 @@ public sealed partial class EditorPane : Grid
         if (Document.Table == null || Document.PendingSource) return;
         rowHeaderPress = false;
         ClearReferenceHighlight();
-        Source.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
+        Source.IsVisible = false; visualHost.IsVisible = false; tableHost.IsVisible = true; filter.Text = "";
         if (skillClassDropdown.IsVisible) skillClassDropdown.SelectedIndex = 0;
         var i = Array.IndexOf(Document.Table.Columns, column);
         // The refresh keeps the top of view and its own deferred selection restore is cancelled by the version bump; the jump then scrolls to its target.

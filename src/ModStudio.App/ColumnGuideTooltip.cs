@@ -6,7 +6,7 @@ namespace ModStudio.App;
 
 /// <summary>
 /// Hover card describing a game-table column, from the bundled d2rdoc data guide. A tooltip cannot be scrolled or clicked, so
-/// the card stays short and points at <see cref="ColumnGuideFlyout"/> for the complete, searchable value table.
+/// the card stays short and points at <see cref="ColumnGuideView"/> for the complete, searchable value table.
 /// </summary>
 internal static class ColumnGuideTooltip
 {
@@ -33,7 +33,7 @@ internal static class ColumnGuideTooltip
         panel.Children.Add(new TextBlock { Text = entry.Description, TextWrapping = TextWrapping.Wrap });
         if (!string.IsNullOrEmpty(entry.Format)) panel.Children.Add(new TextBlock { Text = "Format: " + entry.Format, TextWrapping = TextWrapping.Wrap, Foreground = Mono });
         // The hint comes before the value table: a narrow card may clip the table's bottom, and the hint is what makes the rest reachable.
-        if (entry.Table is { Length: > 1 } || entry.Bits is { Length: > 0 }) panel.Children.Add(new TextBlock { Text = ColumnGuideFlyout.OpenHint, Foreground = Accent, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+        if (entry.Table is { Length: > 1 } || entry.Bits is { Length: > 0 }) panel.Children.Add(new TextBlock { Text = ColumnGuideView.OpenHint, Foreground = Accent, FontSize = 11, TextWrapping = TextWrapping.Wrap });
         if (entry.Table is { Length: > 1 })
         {
             var grid = new Grid { Margin = new(0, 4, 0, 0) };

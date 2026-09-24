@@ -24,6 +24,8 @@ public sealed class StudioPreferences
     public List<string> SettingsIntroduced { get; set; } = [];
     /// <summary>Tool panels the user minimized to their strip: "explorer", "inspector", "bottom".</summary>
     public List<string> HiddenPanels { get; set; } = [];
+    /// <summary>Last size in pixels the user dragged each tool panel to (width for "explorer"/"inspector", height for "bottom").</summary>
+    public Dictionary<string, double> PanelSizes { get; set; } = [];
     /// <summary>Find in files window size and last scope, so the popup reopens the way it was left.</summary>
     public double FindInFilesWidth { get; set; }
     public double FindInFilesHeight { get; set; }

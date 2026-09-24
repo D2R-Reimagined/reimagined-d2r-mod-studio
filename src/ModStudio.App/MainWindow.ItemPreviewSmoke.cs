@@ -84,7 +84,13 @@ public partial class MainWindow
         await Task.Delay(150);
         Require(itemPreviewContent.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Second Unique"), "Item card was not laid out in the inspector.");
         var selectable = itemPreviewContent.GetVisualDescendants().OfType<SelectableTextBlock>().ToArray();
-        Require(selectable.Length >= 2 && selectable.Any(t => t.Text?.Contains("+8 to Strength") == true), "Item preview text cannot be selected and copied.");
+        Require(selectable.Length >= 2 && selectable.Any(t => PreviewCards.RenderedText(t).Contains("+8 to Strength")), "Item preview text cannot be selected and copied.");
+        var linked = itemPreviewContent.GetVisualDescendants().OfType<PreviewLinkText>().SelectMany(t => t.Links).SelectMany(l => l.Targets).ToArray();
+        var strength = linked.FirstOrDefault(c => c is { Table: "uniqueitems", Column: "max1" });
+        Require(strength != null && linked.Any(c => c is { Table: "weapons", Column: "mindam" }), "Item card did not link its values to their cells: " + string.Join(", ", linked.Select(c => c.ToString())));
+        Require(await OpenCellLinkAsync(strength!), "Following an item preview link failed: " + Status.Text);
+        Require(Active == pane && pane.SelectedRow == 1 && pane.SelectedColumn == "max1", $"An item preview link did not move to its cell: {pane.SelectedRow}/{pane.SelectedColumn}.");
+        RequestItemPreview(pane, 1, null); await PendingItemPreview; await Task.Delay(150);
         var inspectorHeaders = InspectorTabs.Items.OfType<TabItem>().Where(t => t.IsVisible).ToArray();
         Require(inspectorHeaders.All(t => t.Bounds.Height <= 40) && inspectorHeaders.Max(t => t.Bounds.Y) - inspectorHeaders.Min(t => t.Bounds.Y) < 1, "Inspector tabs are oversized or wrap onto multiple rows.");
         using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96,96))) { bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "item-preview.png"), PngBitmapEncoderOptions.Default); }

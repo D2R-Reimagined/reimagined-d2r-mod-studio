@@ -47,7 +47,7 @@ public partial class MainWindow : Window
     private string Profile => ProfilePicker.SelectedItem is string s ? s : (ProfilePicker.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "standard";
     public MainWindow()
     {
-        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeSkillPreview(); InitializeMissilePreview(); InitializeStatPreview(); InitializeDropPreview(); InitializeMonsterPreview(); InitializePreviewLinks(); InitializeAffixPreview(); InitializeRecipePreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeLayout(); InitializeViewPreferences(); InitializeTabDragging(); Problems.ItemsSource = diagnostics;
+        InitializeComponent(); InitializeLog(); InitializeItemPreview(); InitializeSkillPreview(); InitializeMissilePreview(); InitializeStatPreview(); InitializeDropPreview(); InitializeMonsterPreview(); InitializePreviewLinks(); InitializeAffixPreview(); InitializeRecipePreview(); InitializeRowEditor(); InitializeExplorerSearch(); InitializeLaunchTargets(); InitializeFindInFiles(); BottomTabs.Items.Add(new TabItem { Header = new TextBlock { Text = "Terminal", FontSize = 13 }, Content = terminal }); InitializeGit(); InitializeColumnGuide(); InitializeLayout(); InitializeViewPreferences(); InitializeTabDragging(); Problems.ItemsSource = diagnostics;
         EditorTextInfo.Attach(CellValue, () => CellValueInfo.Text = string.IsNullOrEmpty(CellValue.Text) ? "" : EditorTextInfo.Describe(CellValue.Text));
         catalogWarningTimer.Tick += async (_, _) => { catalogWarningTimer.Stop(); if (project is { } current) await RefreshCatalogIdWarningsAsync(current); };
         // Reserve space for the overlay scrollbar only when the one-row toolbar overflows.
@@ -60,7 +60,7 @@ public partial class MainWindow : Window
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
-        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); };
+        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); RefreshVisualBuilders(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor();
         KeyDown += async (_, e) =>
@@ -250,7 +250,7 @@ public partial class MainWindow : Window
                 (Contains(Path.Combine(current.Root, "source/strings"), e.FullPath) && e.FullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
                  e is RenamedEventArgs renamedCatalog && Contains(Path.Combine(current.Root, "source/strings"), renamedCatalog.OldFullPath) && renamedCatalog.OldFullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
             { catalogWarningTimer.Stop(); catalogWarningTimer.Start(); }
-            RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview();
+            RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshVisualBuilders();
             _ = RefreshSemanticInspectorAsync();
             if (runningBuild != null && controller.Running) RunState.Text = $"Game: {runningBuild} · source changed";
             foreach (var tab in tabs)
@@ -432,7 +432,9 @@ public partial class MainWindow : Window
         var document = await Task.Run(() => new Document(file));
         if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
         var pane = new EditorPane(document, ShowError, UpdateInspector, SavePane, FindOpenDocument);
+        AttachVisualBuilder(pane);
         pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
+        pane.ColumnGuideRequested += OpenColumnGuide;
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) { if (EditorPane.ItemHoverCards) RequestItemPreview(sender, row, anchor, sender.HoverPosition); } else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview, activate); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
@@ -440,7 +442,7 @@ public partial class MainWindow : Window
         if (IsExternalTable(file)) menu.ItemsSource = new[] { CreateOpenLocationItem(file), CreateExternalEditorItem(file), reload, close };
         reload.Click += async (_, _) => { if (document.IsDirty && await ChooseAsync("Reload document", "Current edits will remain in recovery. Reload the disk version?", "Reload", "Cancel") != "Reload") return; SaveRecovery(); tabs.Remove(tab); await OpenDocumentAsync(file); };
         close.Click += async (_, _) => await CloseTabAsync(tab);
-        document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); };
+        document.Changed += () => { lastEdit[document] = DateTime.UtcNow; if (document.IsDirty) KeepTab(tab); if (runningBuild != null && controller.Running && document.IsDirty) RunState.Text = $"Game: {runningBuild} · newer unsaved edits"; buildDiagnostics.Clear(); SemanticStatus.Text = "Source changed; run checks again"; UpdateTabHeader(tab); RefreshStatus(); _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshColumnGuide(); RefreshVisualBuilders(document); };
         var recoveryFile = RecoveryFile(document);
         if (File.Exists(recoveryFile) && !Program.Arguments.Contains("--smoke"))
         {
@@ -506,7 +508,7 @@ public partial class MainWindow : Window
         if (project != current || revision != catalogWarningRevision) return;
         catalogIdWarnings.Clear(); catalogIdWarnings.AddRange(warnings); RefreshStatus();
     }
-    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); } }
+    private void DocumentSelected(object? sender, SelectionChangedEventArgs e) { if (Active != null) UpdateInspector(Active); else { RefreshRowEditor(null); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshColumnGuide(); } }
     private void UpdateInspector(EditorPane pane)
     {
         if (Active != pane) return; inspectorUpdating = true;
@@ -514,7 +516,7 @@ public partial class MainWindow : Window
         FieldPicker.ItemsSource = table?.Columns; FieldPicker.SelectedItem = table?.Columns.Contains(pane.SelectedColumn) == true ? pane.SelectedColumn : table?.Columns.FirstOrDefault(); inspectorUpdating = false; FieldSelected(null, null!);
         inspectorInfoText = table == null ? "Raw document. Unknown fields are preserved." : table.IsCatalog ? "Locale values are editable; imported IDs and keys remain stable, entries added in Studio can set theirs. Compact translation review is validated on build." : "Cell values remain strings. Empty and zero are distinct. Runtime identity columns are protected where defined by this table's schema.";
         UpdateFieldInsight();
-        RefreshRowEditor(pane); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview();
+        RefreshRowEditor(pane); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshColumnGuide();
     }
     private void FieldSelected(object? sender, SelectionChangedEventArgs e) { if (!inspectorUpdating) { CellValue.Text = Active?.Document.Table is { } table && Active.SelectedRow < table.Records.Count && FieldPicker.SelectedItem is string field ? table.Cell(Active.SelectedRow, field) : ""; UpdateFieldInsight(); _ = RefreshSemanticInspectorAsync(); } }
     private string inspectorInfoText = "";
@@ -803,6 +805,12 @@ public partial class MainWindow : Window
                 File.WriteAllText(System.IO.Path.Combine(output, "full-row-paste-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
+            if (Program.Arguments.Contains("--visual-builder-only"))
+            {
+                await SmokeVisualBuilderAsync(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--row-insert-only"))
             {
                 var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables/sounds.json"));
@@ -813,6 +821,7 @@ public partial class MainWindow : Window
             }
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeItemPreviewsAsync(output);
+            await SmokeVisualBuilderAsync(output);
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);
             await SmokeStatPreviewAsync(output);
@@ -1215,8 +1224,8 @@ public partial class MainWindow : Window
                 var menuHeaders = rowMenu.Items.OfType<MenuItem>().Select(m => m.Header?.ToString() ?? "").ToArray();
                 Require(menuHeaders.Contains("Add row above") && menuHeaders.Contains("Add row below") &&
                     menuHeaders.Contains("Clone and Append") && menuHeaders.Contains("Clone and Insert") &&
-                    rowMenu.Items.OfType<MenuItem>().SingleOrDefault(m => m.Header?.ToString()?.StartsWith("Delete row") == true) is { IsEnabled: false },
-                    "Row menu lacks add/clone/delete row actions, or lets an original row be deleted.");
+                    rowMenu.Items.OfType<MenuItem>().SingleOrDefault(m => m.Header?.ToString()?.StartsWith("Delete row") == true) is { IsEnabled: true },
+                    "Row menu lacks add/clone/delete row actions, or refuses to delete an original row.");
                 var freezeAction = rowMenu.Items.OfType<MenuItem>().First(m => m.Header?.ToString() == "Freeze row");
                 rowMenu.Close(); freezeAction.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 Require(pane.FrozenRows.Contains(rowToFreeze), "Row context action froze the wrong row.");

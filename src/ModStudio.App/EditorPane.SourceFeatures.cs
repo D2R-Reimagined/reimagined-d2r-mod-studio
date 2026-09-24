@@ -99,7 +99,7 @@ public sealed partial class EditorPane
             item.Click += (_, _) => { try { action(); } catch (Exception ex) { error(ex); } };
             return item;
         }
-        var guide = Item("Column guide… (F1)", () => ShowColumnGuide(name, null));
+        var guide = Item("Column guide… (F1)", () => ShowColumnGuide(name));
         guide.IsEnabled = !Document.Table.IsCatalog && ColumnGuide.Find(Document.Table.Name, name) != null;
         var clearHighlights = Item("Clear all highlights", ClearHighlights);
         clearHighlights.IsEnabled = HasHighlights;

@@ -68,20 +68,10 @@ public sealed partial class EditorPane
     public Point HoverPosition { get; private set; }
     private ToggleButton? itemCardToggle;
 
-    /// <summary>Opens the searchable data-guide flyout for a column, anchored at its header when it is on screen (else at the toolbar button).</summary>
-    public void ShowColumnGuide(string column, Control? anchor)
-    {
-        var table = Document.Table; if (table == null) return;
-        if (anchor == null)
-        {
-            int index = table.ColumnIndex(column);
-            var header = TableGrid.GetVisualDescendants().OfType<DataGridColumnHeader>().FirstOrDefault(h => h.IsEffectivelyVisible && h.Bounds.Width > 0 &&
-                TableGrid.Columns.FirstOrDefault(c => Equals(c.Header, h.Content)) is { } c && columnMap.TryGetValue(c, out var i) && i == index);
-            anchor = header ?? (Control)this;
-        }
-        var value = SelectedRow >= 0 && SelectedRow < table.Records.Count && table.ColumnIndex(column) >= 0 ? table.Cell(SelectedRow, column) : null;
-        ColumnGuideFlyout.Show(anchor, table, column, value, error);
-    }
+    /// <summary>Raised to bring up the Column Guide tab of the window's bottom panel for a column.</summary>
+    public event Action<EditorPane, string>? ColumnGuideRequested;
+    /// <summary>Opens the Column Guide tab on a column; it then follows the selected cell as usual.</summary>
+    public void ShowColumnGuide(string column) { if (Document.Table != null) ColumnGuideRequested?.Invoke(this, column); }
 
     /// <summary>Folders the colour-transform picker searches for an act palette: the project and its deployment. Set by the window.</summary>
     public static Func<IEnumerable<string>>? PaletteRoots { get; set; }

@@ -26,6 +26,11 @@ internal static class ItemPreviewTests
         check(result.Name == "Test Axe" && result.Lines.Contains("Required level: 10") && result.Lines.Contains("+(2–4) to Strength"), "Item preview resolves base, localization, requirements and roll ranges");
         check(result.Issues.Length == 0 && result.Lines.Any(x => x.Contains("min (6–9) / max (12–18)")), "Item physical damage calculates enhanced damage ranges with integer rounding");
         check(result.Lines.Contains("+1 to Hidden Skill") && result.Lines.Contains("Adds 5-10 Fire Damage") && result.Lines.Contains("Socketed (1–2)"), "Skill, elemental-damage and socket properties render without incomplete warnings");
+        CellLink[] Links(ItemPreviewResult r, string line) => [.. r.Text.Single(t => t.Text == line).Links.SelectMany(l => l.Targets)];
+        check(Links(result, "+(2–4) to Strength") is [{ Table: "uniqueitems", SourceId: "item", Column: "min1" }, { Column: "max1" }]
+            && Links(result, "+1 to Hidden Skill").Any(c => c.Column == "par3") && Links(result, "Required level: 10").Single() is { Table: "weapons", Column: "levelreq" }
+            && Links(result, "Axe").Any(c => c is { Table: "weapons", Column: "namestr" }) && result.Text.Single(t => t.Text.Contains("One-hand")).Links.Length == 4,
+            "Item preview values link to the item and base cells they were read from");
         var warm = Preview(); check(warm == result || warm.Lines.SequenceEqual(result.Lines), "Cached item resolution preserves preview output");
         Write("compatibility/test/profile.json", new JsonObject { ["tableOverrides"] = new JsonArray("item.json") });
         var rule = new JsonObject { ["table"] = "uniqueitems", ["record"] = "item", ["changes"] = new JsonObject { ["min1"] = new JsonObject { ["expect"] = "2", ["value"] = "3" } } }; Write("compatibility/test/item.json", rule);
@@ -48,6 +53,9 @@ internal static class ItemPreviewTests
         var set = Row("setitem", "index", "item", "item", "axe", "set", "set", "add func", "2", "aprop1a", "str", "amin1a", "1", "amax1a", "1");
         result = Preview(set, "setitems");
         check(result.IsSet && result.Lines.Contains("Item bonus with 2 set pieces:") && result.Lines.Contains("Set bonus with 2 pieces:") && result.Lines.Contains("Full set bonuses:"), "Set preview separates item partial, set partial and full-set bonuses");
+        var setLinks = result.Text.SelectMany(t => t.Links).SelectMany(l => l.Targets).ToArray();
+        check(setLinks.Any(c => c is { Table: "setitems", Column: "amin1a" }) && setLinks.Any(c => c is { Table: "sets", Column: "PMin2a" }) && setLinks.Any(c => c is { Table: "sets", Column: "FMax1" }),
+            "Set bonuses link to their setitems and sets cells");
         Table("properties", Row("scale", "code", "ac/lvl", "func1", "17", "stat1", "item_armor_perlevel"));
         Table("itemstatcost", Row("scale", "Stat", "item_armor_perlevel", "op", "4", "op base", "level", "op param", "3", "op stat1", "armorclass", "descfunc", "19", "descstrpos", "defense"));
         var scaled = Row("scaled", "index", "item", "code", "arm", "prop1", "ac/lvl", "par1", "3"); resolver.Clear();

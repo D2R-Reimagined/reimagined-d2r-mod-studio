@@ -38,8 +38,33 @@ public partial class MainWindow
         foreach (var tab in InspectorTabs.Items.OfType<TabItem>()) tab.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty) RebuildStrips(); };
         RebuildStrips();
         if (Program.Arguments.Contains("--smoke")) return;
-        try { foreach (var key in StudioPreferences.Load(StudioPreferences.DefaultFile).HiddenPanels) SetPanelVisible(key, false, persist: false); }
+        foreach (var panel in toolPanels) panel.Splitter.DragCompleted += (_, _) => SaveLayout();
+        try
+        {
+            var prefs = StudioPreferences.Load(StudioPreferences.DefaultFile);
+            foreach (var panel in toolPanels)
+                if (prefs.PanelSizes.TryGetValue(panel.Key, out var size) && size >= 40) { panel.Saved = new GridLength(size); panel.Resize(panel.Saved); }
+            foreach (var key in prefs.HiddenPanels) SetPanelVisible(key, false, persist: false);
+        }
         catch (Exception) { }
+    }
+
+    /// <summary>Writes which panels are minimized and each panel's size, so the next launch opens with the same layout.</summary>
+    private void SaveLayout()
+    {
+        if (Program.Arguments.Contains("--smoke")) return;
+        try
+        {
+            var prefs = StudioPreferences.Load(StudioPreferences.DefaultFile);
+            prefs.HiddenPanels = toolPanels.Where(p => !p.Visible).Select(p => p.Key).ToList();
+            foreach (var panel in toolPanels)
+            {
+                var size = panel.Visible ? panel.Size() : panel.Saved;
+                if (size.IsAbsolute && size.Value >= 40) prefs.PanelSizes[panel.Key] = Math.Round(size.Value);
+            }
+            prefs.Save(StudioPreferences.DefaultFile);
+        }
+        catch (Exception ex) { Status.Text = "Could not save layout: " + ex.Message; }
     }
 
     private void SetPanelVisible(string key, bool visible, bool persist = true)
@@ -50,6 +75,7 @@ public partial class MainWindow
         {
             panel.Panel.IsVisible = panel.Splitter.IsVisible = true; panel.Strip.IsVisible = false;
             panel.Resize(panel.Saved.Value >= 40 ? panel.Saved : panel.Default);
+            if (key == "bottom") RefreshColumnGuide();
         }
         else
         {
@@ -58,14 +84,7 @@ public partial class MainWindow
             panel.Resize(new GridLength(0));
             panel.Panel.IsVisible = panel.Splitter.IsVisible = false; panel.Strip.IsVisible = true;
         }
-        if (!persist || Program.Arguments.Contains("--smoke")) return;
-        try
-        {
-            var prefs = StudioPreferences.Load(StudioPreferences.DefaultFile);
-            prefs.HiddenPanels = toolPanels.Where(p => !p.Visible).Select(p => p.Key).ToList();
-            prefs.Save(StudioPreferences.DefaultFile);
-        }
-        catch (Exception ex) { Status.Text = "Could not save layout: " + ex.Message; }
+        if (persist) SaveLayout();
     }
 
     /// <summary>Selects a bottom tab and restores the panel if it was minimized, so pushed output (errors, builds) is not hidden.</summary>
@@ -104,7 +123,7 @@ public partial class MainWindow
         Require(Documents.Bounds.Width > documentsBefore + 400, $"Documents did not grow when side panels were minimized ({documentsBefore} -> {Documents.Bounds.Width}).");
         Require(LeftStrip.Bounds.Width is > 0 and < 40 && RightStrip.Bounds.Width is > 0 and < 40 && BottomStrip.Bounds.Height is > 0 and < 40, "Strips are not slim bars.");
         var stripLabels = BottomStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
-        Require(stripLabels.SequenceEqual(["Problems", "Log", "Changes", "Terminal", "Git"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
+        Require(stripLabels.SequenceEqual(["Problems", "Log", "Changes", "Terminal", "Git", "Column Guide"]), "Bottom strip tabs: " + string.Join(", ", stripLabels));
         var leftLabels = LeftStripItems.Children.SelectMany(c => c.GetVisualDescendants().OfType<TextBlock>()).Select(t => t.Text).ToArray();
         Require(leftLabels.SequenceEqual(["Project", "Git"]), "Left strip tabs: " + string.Join(", ", leftLabels));
         using (var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96))) { image.Render(this); image.Save(System.IO.Path.Combine(output, "panels-minimized.png"), PngBitmapEncoderOptions.Default); }

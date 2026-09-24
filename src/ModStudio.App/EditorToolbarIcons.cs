@@ -17,6 +17,7 @@ internal static class EditorToolbarIcons
             "Table" => ("Table view", "M3,3 H21 V21 H3 Z M3,9 H21 M3,15 H21 M9,3 V21"),
             "Format JSON" => ("Format JSON (Undo available)", "M3,4 H21 M7,9 H17 M7,14 H21 M3,19 H17"),
             "Source" => ("Edit source text", "M8,5 L2,12 L8,19 M16,5 L22,12 L16,19 M14,3 L10,21"),
+            "Visual Builder" => ("Visual Builder: edit the item as it looks in game", "M20,3 L21,4 L11,14 L9,15 L10,13 Z M6,12 L12,18 M8,16 L3,21 M17,15 L21,11 M13,3 L9,7"),
             "Apply source" => ("Apply and validate source changes", "M5,3 H15 L20,8 V13 M15,3 V8 H20 M5,3 V21 H11 M12,17 L15,20 L22,13"),
             "Undo" => ("Undo", "M8,4 L3,9 L8,14 M3,9 H14 C23,9 23,21 14,21"),
             "Redo" => ("Redo", "M16,4 L21,9 L16,14 M21,9 H10 C1,9 1,21 10,21"),

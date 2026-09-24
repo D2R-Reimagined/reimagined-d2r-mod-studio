@@ -203,7 +203,7 @@ public partial class MainWindow
     {
         var panel = new StackPanel { Spacing = 8, Margin = new(12), MaxWidth = 440 };
         panel.Children.Add(new SelectableTextBlock { Text = result.Name, FontSize = 18, Foreground = result.IsSet ? Brushes.LightGreen : Brushes.Tan, TextWrapping = TextWrapping.Wrap });
-        panel.Children.Add(new SelectableTextBlock { Text = string.Join("\n", result.Lines), Foreground = Brushes.LightSteelBlue, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new PreviewLinkText(result.Text) { Foreground = Brushes.LightSteelBlue, TextWrapping = TextWrapping.Wrap });
         if (result.Issues.Length > 0) panel.Children.Add(new SelectableTextBlock { Text = "Incomplete preview\n" + string.Join("\n", result.Issues), Foreground = Brushes.Salmon, TextWrapping = TextWrapping.Wrap });
         return new Border { Background = new SolidColorBrush(Color.Parse("#151515")), Child = panel };
     }

@@ -34,7 +34,8 @@ public sealed class PreviewLinkText : SelectableTextBlock
     private static readonly Lazy<Cursor> Hand = new(() => new Cursor(StandardCursorType.Hand));
     private Point? pressed;
 
-    public PreviewLinkText(IReadOnlyList<PreviewText> lines)
+    /// <param name="linkBrush">The linked runs' colour; the preview link blue when null. Cards that imitate the game keep its colours.</param>
+    public PreviewLinkText(IReadOnlyList<PreviewText> lines, IBrush? linkBrush = null)
     {
         PlainText = string.Join("\n", lines.Select(l => l.Text));
         // Text without links stays plain Text, the same as any other card text.
@@ -49,7 +50,7 @@ public sealed class PreviewLinkText : SelectableTextBlock
             foreach (var link in line.Links)
             {
                 if (link.Start > at) inlines.Add(new Run(text[at..link.Start]));
-                var run = new Run(text.Substring(link.Start, link.Length)) { Foreground = LinkBrush };
+                var run = new Run(text.Substring(link.Start, link.Length)) { Foreground = linkBrush ?? LinkBrush };
                 inlines.Add(run); runs.Add(run);
                 links.Add(link with { Start = offset + link.Start });
                 at = link.Start + link.Length;

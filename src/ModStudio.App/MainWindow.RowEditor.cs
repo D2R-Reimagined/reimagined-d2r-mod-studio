@@ -49,7 +49,7 @@ public partial class MainWindow
             {
                 label.TextDecorations = TextDecorations.Underline; label.Foreground = new SolidColorBrush(Color.Parse("#D8BC86")); label.Cursor = new Cursor(StandardCursorType.Hand); label.Background = Brushes.Transparent;
                 // The hover card is a short summary; a click opens the searchable guide with the field's current value highlighted.
-                label.PointerPressed += (_, e) => { e.Handled = true; if (Active?.Document.Table is { } table) ColumnGuideFlyout.Show(label, table, field.Column, field.Value, ShowError); };
+                label.PointerPressed += (_, e) => { e.Handled = true; if (Active is { Document.Table: not null } pane) OpenColumnGuide(pane, field.Column); };
             }
             Control heading = label;
             if (field.Hinted)

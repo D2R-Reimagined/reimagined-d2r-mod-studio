@@ -61,7 +61,7 @@ public partial class MainWindow
             $"Reference cell lost themed text spacing: plain={plainText.Margin}, reference={referenceText.Margin}.");
         Require(referenceText.Margin == plainText.Margin && referenceText.Padding == new Thickness(0, 0, 16, 0),
             "Reference arrow space replaced the themed margin or shifted the text's left edge.");
-        Require(Arrow(4) is { IsVisible: false }, "Empty Gamble cell shows a reference arrow.");
+        Require(Arrow(4) is null or { IsVisible: false }, "Empty Gamble cell shows a reference arrow.");
         foreach (var (row, name) in new[] { (0, "armor"), (1, "weapons"), (2, "misc") })
         {
             await ShowSource(row);

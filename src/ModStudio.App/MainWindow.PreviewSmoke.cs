@@ -33,36 +33,44 @@ public partial class MainWindow
                 Require(cells.Single(cell => Grid.GetRow(cell) == 0 && Grid.GetColumn(cell) == grid.ColumnDefinitions.Count - 1).Bounds.Height < 100,
                     "Short guide description wrapped into excessive height at " + width);
                 Require(card.Bounds.Height <= 560, $"Guide card extends past its height limit: {card.Bounds.Height} (desired {card.DesiredSize.Height}, align {card.VerticalAlignment}) at width {width}.");
-                Require(grid.RowDefinitions.Count <= ColumnGuideTooltip.TableRows + 1 && panel.Children.OfType<TextBlock>().Any(t => t.Text == ColumnGuideFlyout.OpenHint), "Hover card is not the short form with the searchable-guide hint.");
+                Require(grid.RowDefinitions.Count <= ColumnGuideTooltip.TableRows + 1 && panel.Children.OfType<TextBlock>().Any(t => t.Text == ColumnGuideView.OpenHint), "Hover card is not the short form with the searchable-guide hint.");
                 await Task.Delay(120);
                 using var image = new RenderTargetBitmap(new PixelSize(width, 800), new Vector(96, 96));
                 image.Render(host); image.Save(System.IO.Path.Combine(output, $"column-guide-{width}.png"), PngBitmapEncoderOptions.Default);
             }
             finally { host.Close(); }
         }
-        // The searchable flyout lists every bundled value, filters them, and highlights the current cell's code.
-        bool closed = false;
-        var flyoutCard = ColumnGuideFlyout.Create("skills", "cltdofunc", entry, "3", ex => throw ex, () => closed = true);
-        var flyoutHost = new Window { Width = 600, Height = 800, Content = flyoutCard, Background = Brushes.Black };
+        // The Column Guide tab lists every bundled value, filters them, highlights the current cell's code and keeps the search while only the value changes.
+        var guideView = new ColumnGuideView(ex => throw ex);
+        var guideHost = new Window { Width = 1200, Height = 260, Content = guideView, Background = Brushes.Black };
         try
         {
-            flyoutHost.Show();
-            for (int attempt = 0; attempt < 100 && flyoutCard.Bounds.Width == 0; attempt++) await Task.Delay(10);
-            flyoutHost.UpdateLayout(); await Task.Delay(50); flyoutHost.UpdateLayout();
-            var list = flyoutCard.GetVisualDescendants().OfType<ListBox>().Single();
-            var search = flyoutCard.GetVisualDescendants().OfType<TextBox>().Single();
-            Require(list.ItemCount == entry.Table!.Length - (entry.TableHasHeading ? 1 : 0) && list.ItemCount > ColumnGuideTooltip.TableRows, "Guide flyout does not list every bundled value.");
-            Require(list.SelectedIndex >= 0 && list.SelectedItem?.ToString()?.Contains("IsCurrent = True") == true, "Guide flyout did not highlight the current value.");
-            search.Text = entry.Table[5][1][..Math.Min(6, entry.Table[5][1].Length)]; await Task.Delay(30);
-            Require(list.ItemCount >= 1 && list.ItemCount < entry.Table.Length - 1, "Guide flyout search did not filter the values.");
+            guideHost.Show();
+            Require(guideView.Column == null && guideView.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == ColumnGuideView.EmptyText), "Column Guide tab does not explain what appears there before a cell is selected.");
+            var skills = TableData.FromTsv(Utf8.GetBytes("skill\tcltdofunc\r\nx\t3\r\n"), "skills", "global/excel/skills.txt");
+            guideView.Show(skills, "cltdofunc", "3");
+            for (int attempt = 0; attempt < 100 && guideView.Bounds.Width == 0; attempt++) await Task.Delay(10);
+            guideHost.UpdateLayout(); await Task.Delay(50); guideHost.UpdateLayout();
+            var list = guideView.GetVisualDescendants().OfType<ListBox>().Single();
+            var search = guideView.GetVisualDescendants().OfType<TextBox>().Single();
+            Require(guideView.Column == "cltdofunc" && list.ItemCount == entry.Table!.Length - (entry.TableHasHeading ? 1 : 0) && list.ItemCount > ColumnGuideTooltip.TableRows, "Column Guide does not list every bundled value.");
+            Require(list.SelectedIndex >= 0 && list.SelectedItem?.ToString()?.Contains("IsCurrent = True") == true, "Column Guide did not highlight the current value.");
+            Require(list.Bounds.Height > 120 && list.Bounds.Width > 500, $"Column Guide value list does not fill the panel: {list.Bounds}.");
+            var term = entry.Table![5][1][..Math.Min(6, entry.Table[5][1].Length)];
+            search.Text = term; await Task.Delay(30);
+            Require(list.ItemCount >= 1 && list.ItemCount < entry.Table.Length - 1, "Column Guide search did not filter the values.");
+            guideView.Show(skills, "cltdofunc", "4"); guideHost.UpdateLayout();
+            Require(guideView.GetVisualDescendants().OfType<TextBox>().Single().Text == term, "Column Guide lost its search when only the cell value changed.");
             Require(!entry.TableHasHeading && (ColumnGuide.Find("missiles", "pCltDoFunc")?.TableHasHeading ?? false), "Guide table heading detection is wrong for a known headed and a known unheaded table.");
-            Require(flyoutCard.GetVisualDescendants().OfType<Button>().Any(b => b.Content?.ToString()?.StartsWith("Open online guide") == true), "Guide flyout has no link to the online guide.");
-            flyoutCard.GetVisualDescendants().OfType<Button>().First(b => b.Content?.ToString() == "✕").RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
-            Require(closed, "Guide flyout close button did not close it.");
-            using var image = new RenderTargetBitmap(new PixelSize(600, 800), new Vector(96, 96));
-            image.Render(flyoutHost); image.Save(System.IO.Path.Combine(output, "column-guide-flyout.png"), PngBitmapEncoderOptions.Default);
+            Require(guideView.GetVisualDescendants().OfType<Button>().Any(b => b.Content?.ToString()?.StartsWith("Open online guide") == true), "Column Guide has no link to the online guide.");
+            using var image = new RenderTargetBitmap(new PixelSize(1200, 260), new Vector(96, 96));
+            image.Render(guideHost); image.Save(System.IO.Path.Combine(output, "column-guide-tab.png"), PngBitmapEncoderOptions.Default);
+            guideView.Show(skills, "skill", "x");
+            Require(guideView.GetVisualDescendants().OfType<TextBox>().All(t => t.Text != term), "Column Guide kept the search of a different column.");
+            guideView.Show(null, null, null);
+            Require(guideView.Column == null, "Column Guide did not return to its empty message.");
         }
-        finally { flyoutHost.Close(); }
+        finally { guideHost.Close(); }
     }
 
     private async Task SmokePreviewsAsync(string output, IEnumerable<string> realAssets)

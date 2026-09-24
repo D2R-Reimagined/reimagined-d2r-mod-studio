@@ -143,10 +143,13 @@ public sealed partial class EditorPane
         }
         /// <summary>The column control now shows another table column; everything displayed is recomputed when the cell is next visible.</summary>
         public void Invalidate() { stale = true; if (cell.IsVisible) Update(); }
-        /// <summary>The reference arrow exists only in cells that have shown a reference column; its reserved space follows the current column.</summary>
-        private void EnsureReference(bool wanted)
+        /// <summary>
+        /// Space for the reference arrow is reserved in every cell of a reference column, so values line up; the arrow itself
+        /// (a templated Button, the most expensive part of a cell to realize) is only created once the cell has a navigable value.
+        /// </summary>
+        private void EnsureReference(bool wanted, bool shown)
         {
-            if (wanted && reference == null)
+            if (shown && reference == null)
             {
                 reference = new Button
                 {
@@ -183,13 +186,15 @@ public sealed partial class EditorPane
             var value = row != null ? owner.PreviewCellValue(row.Row, index) : null;
             if (value != null) { Mirror.Text = value; Mirror.IsVisible = true; } else if (mirror != null) mirror.IsVisible = false;
             display.IsVisible = value == null;
-            EnsureReference(owner.HasCellReference(index));
+            bool wanted = owner.HasCellReference(index);
+            var key = row is { IsPlaceholder: false } ? text : "";
+            var rule = wanted ? CellReferences.Rule(owner.Document.Table!.Name, owner.Document.Table.Columns[index]) : null;
+            bool shown = value == null && !owner.Document.PendingSource && rule != null && CellReferences.CanNavigate(rule, key);
+            EnsureReference(wanted, shown);
             if (reference != null)
             {
-                var key = row is { IsPlaceholder: false } ? text : "";
-                var rule = referenceMargin ? CellReferences.Rule(owner.Document.Table!.Name, owner.Document.Table.Columns[index]) : null;
-                reference.IsVisible = value == null && !owner.Document.PendingSource && rule != null && CellReferences.CanNavigate(rule, key);
-                if (referenceKey != key)
+                if (reference.IsVisible != shown) reference.IsVisible = shown;
+                if (shown && referenceKey != key)
                 {
                     referenceKey = key;
                     ToolTip.SetTip(reference, $"Open reference ‘{key}’ (Alt+Enter)");

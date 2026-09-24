@@ -70,6 +70,10 @@ public sealed partial class EditorPane
         {
             this.owner = owner; Index = index; Slot = owner.slotColumns.Count; owner.slotColumns.Add(index);
             Binding = new Binding($"Slot[{Slot}]") { Mode = BindingMode.TwoWay };
+            // Always explicit. Left unset, the grid infers read-only from the binding path, and "Slot" is not a property of the
+            // RowView items, so a column control created after the table opened (the column window growing on scroll or resize,
+            // a freeze rebuilding the columns) refused to edit until the next Refresh happened to set it.
+            IsReadOnly = false;
         }
         public void Retarget(int index) { Index = index; owner.slotColumns[Slot] = index; }
         protected override Control GenerateElement(DataGridCell cell, object dataItem)

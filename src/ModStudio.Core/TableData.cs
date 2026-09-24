@@ -47,7 +47,7 @@ public sealed class TableData
         for (int i = 0; i < Records.Count && !moved; i++) { var slot = OriginalSlot(i); moved = slot >= 0 && slot != i; }
         RowOrderChanged = moved;
     }
-    public const string RowOrderAdvice = "Rows were inserted before original rows. In tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) this shifts existing IDs; add rows at the bottom instead if that matters.";
+    public const string RowOrderAdvice = "Rows were inserted, moved or deleted before original rows. In tables where the row number is the game ID (skills, missiles, uniqueitems, setitems…) this shifts existing IDs; add rows at the bottom, or clear rows instead of deleting them, if that matters.";
     /// <summary>A blank table row with a fresh identity. IDs are random so rows added on different branches never collide; the physical slot is written by the caller.</summary>
     public JsonObject NewRecord(JsonObject? fields = null)
     {
@@ -110,7 +110,6 @@ public sealed class TableData
         try
         {
             Require(Schema.I("schemaVersion") == 1, "Unsupported schema version.");
-            Require(Records.Count >= Schema.I("protectedRows"), "Original row slots cannot be removed.");
             // Imported catalogs can contain repeated IDs. Reserve all of their IDs up front so a new Studio entry
             // cannot reuse one, even when it was inserted before the imported entries.
             var ids = IsCatalog ? Records.Where((_, i) => IsOriginalRow(i)).Select(r => r.I("id", -1)).ToHashSet() : new HashSet<int>();
@@ -123,12 +122,11 @@ public sealed class TableData
             if (!IsCatalog && errors.Count == 0)
             {
                 var identityColumns = ((JsonArray?)Schema["identityColumns"] ?? []).Select(x => x!.GetValue<string>()).ToArray();
-                // Every imported row must still exist; the identity hash covers them in their original numbering regardless of where rows were inserted.
+                // Imported rows may be deleted; deleting one shifts the slots of later originals, which raises the order advisory. The identity
+                // hash covers the full imported set in its original numbering, so it can only be checked while no imported row is missing.
                 var originals = new JsonNode?[Schema.I("protectedRows")]; bool moved = false;
                 for (int i = 0; i < Records.Count; i++) { var slot = OriginalSlot(i); if (slot < 0) continue; originals[slot] = Records[i]; moved |= slot != i; }
-                var missing = Enumerable.Range(0, originals.Length).Where(i => originals[i] == null).ToArray();
-                if (missing.Length > 0) throw new InvalidDataException($"Original rows were removed: row-{missing[0]:D5}{(missing.Length > 1 ? $" and {missing.Length - 1} more" : "")}. Only rows added in Studio can be deleted.");
-                if (Schema.ContainsKey("identitySha256")) Require(IdentityHash(originals, identityColumns) == Schema.S("identitySha256"), "Protected runtime identities changed.");
+                if (Schema.ContainsKey("identitySha256") && originals.All(r => r != null)) Require(IdentityHash(originals, identityColumns) == Schema.S("identitySha256"), "Protected runtime identities changed.");
                 RowOrderChanged = moved;
                 if (identityColumns.Length > 0)
                 {

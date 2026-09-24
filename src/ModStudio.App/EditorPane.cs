@@ -392,7 +392,7 @@ public sealed partial class EditorPane : Grid
         string noun = rows.Length == 1 ? "row" : $"{rows.Length} rows";
         int cellCount = selectedCells.Count(c => c.Row >= 0);
         var table = Document.Table!; bool addable = !Document.PendingSource;
-        bool deletable = addable && rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r) && !Document.LockedRows.Contains(r));
+        bool deletable = addable && rows.Length > 0 && rows.All(r => !Document.LockedRows.Contains(r));
         bool frozen = rows.All(frozenRows.Contains);
         bool locked = rows.All(Document.LockedRows.Contains);
         bool rowsHighlighted = rows.Length > 0 && rows.All(highlightedRows.Contains);
@@ -422,7 +422,7 @@ public sealed partial class EditorPane : Grid
             Item("Clone and Append", () => CloneSelectedRows(append: true), addable && rows.Length > 0),
             Item("Clone and Insert", () => CloneSelectedRows(append: false), addable && rows.Length > 0 &&
                 (below == table.Records.Count || !Document.LockedRows.Contains(below))),
-            Item(rows.Length > 0 && rows.All(r => !table.IsOriginalRow(r)) ? $"Delete {noun}" : $"Delete {noun} (original rows are kept)", DeleteSelectedRows, deletable),
+            Item($"Delete {noun}", DeleteSelectedRows, deletable),
             new Separator(),
             Item($"{(frozen ? "Unfreeze" : "Freeze")} {noun}", ToggleFrozenRows, frozen || frozenRows.Union(rows).Count() <= 5),
             Item($"{(locked ? "Unlock" : "Lock")} {noun} against edits", ToggleRowLocks),

@@ -46,8 +46,12 @@ internal static class RowEditingTests
         check(doc.Table.Records.Count == 6 && doc.Table.Cell(4, "name") == "Tail" && doc.Table.Cell(5, "name") == "" && Orders().SequenceEqual([0, 1, 2, 3, 4, 5]), "Appending pre-filled rows fills only non-empty cells");
         check(doc.Table.Records.Select(r => r.S("sourceId")).Distinct().Count() == 6, "Every row has a unique identity");
 
-        throws(() => doc.DeleteRows([0]), "Original rows cannot be deleted");
-        throws(() => doc.DeleteRows([2]), "Original rows keep protection after being shifted");
+        var beforeDelete = Json(doc.Table.Records);
+        doc.DeleteRows([0, 2]);
+        check(doc.Table.Records.Count == 4 && doc.Table.Cell(0, "name") == "Inserted" && doc.Table.Cell(1, "name") == "C" && Orders().SequenceEqual([0, 1, 2, 3]) && Clean(),
+            "Original rows can be deleted and later rows shift up");
+        check(doc.Diagnostics.Any(d => d.Severity == "Warning" && d.Message == TableData.RowOrderAdvice), "Deleting original rows before others raises the order advisory");
+        doc.Undo(); check(Json(doc.Table.Records) == beforeDelete, "Undo restores deleted original rows at their slots");
         doc.DeleteRows([1, 5]);
         check(doc.Table.Records.Count == 4 && doc.Table.Cell(1, "name") == "B" && doc.Table.Cell(3, "name") == "Tail" && Orders().SequenceEqual([0, 1, 2, 3]) && Clean(), "Deleting non-contiguous added rows renumbers the rest");
         doc.Undo(); check(doc.Table.Records.Count == 6 && doc.Table.Cell(1, "name") == "Inserted" && doc.Table.Cell(5, "name") == "", "Undo restores deleted rows at their slots");
@@ -70,7 +74,8 @@ internal static class RowEditingTests
         doc.LockedRows.Add(1); throws(() => doc.InsertRows(1), "Inserting above a locked row is refused"); doc.LockedRows.Clear();
         doc.InsertRows(doc.Table.Records.Count); check(!doc.Diagnostics.Any(d => d.Severity == "Warning"), "Appending at the bottom never triggers the order advisory");
         var edited = Json(doc.Table.Records); var broken = JsonNode.Parse(edited)!.AsArray(); broken.RemoveAt(0); for (int i = 0; i < broken.Count; i++) broken[i]!["order"] = i;
-        check(new TableData((JsonObject)doc.Table.Schema.DeepClone(), broken).Validate("x").Any(d => d.Message.Contains("Original rows were removed")), "Validation names removed original rows");
+        var trimmed = new TableData((JsonObject)doc.Table.Schema.DeepClone(), broken);
+        check(trimmed.Validate("x").Count == 0 && trimmed.RowOrderChanged, "Tables with removed original rows validate, with the order advisory");
         var catalogDir = Path.Combine(root, "row-editing/source/strings"); Directory.CreateDirectory(catalogDir);
         TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } })));
         var strings = new Document(Path.Combine(catalogDir, "ui.json"));
@@ -80,7 +85,8 @@ internal static class RowEditingTests
         strings.SetCells([(1, "Key", "Added"), (1, "enUS", "Added text"), (1, "id", "40")]);
         check(strings.Table.Cell(1, "Key") == "Added" && strings.Table.Cell(1, "id") == "40" && strings.Diagnostics.Count == 0, "Studio-added entries can set their key and ID and become valid");
         throws(() => strings.SetCells([(0, "Key", "Renamed")]), "Imported string keys stay protected"); throws(() => strings.SetCells([(1, "id", "x")]), "String IDs must be integers");
-        throws(() => strings.DeleteRows([0]), "Imported string entries cannot be deleted"); strings.DeleteRows([1]); check(strings.Table.Records.Count == 1, "Added string entries can be deleted");
+        strings.DeleteRows([0]); check(strings.Table.Records.Count == 1 && strings.Table.Cell(0, "Key") == "Added" && strings.Diagnostics.Count == 0, "Imported string entries can be deleted"); strings.Undo();
+        strings.DeleteRows([1]); check(strings.Table.Records.Count == 1, "Added string entries can be deleted");
         strings.Undo(); check(strings.Table.Records.Count == 2 && strings.Table.Cell(1, "Key") == "Added", "Undo restores a deleted string entry");
         var encoded = System.Text.Json.Nodes.JsonNode.Parse(Utf8.GetString(strings.Table.EncodeCatalog(false)).TrimStart('\uFEFF'))!.AsArray();
         check(encoded.Count == 2 && encoded[1]!["id"]!.GetValue<int>() == 40 && encoded[1]!["Key"]!.GetValue<string>() == "Added" && encoded[1]!["sourceId"] == null, "Added entries build into the game catalog without Studio metadata");

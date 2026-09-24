@@ -175,13 +175,12 @@ public sealed class Document
         InsertRows(index, fields.Length, fields);
         return index;
     }
-    /// <summary>Deletes rows added in Studio. Imported rows are protected: the game data contract keeps their slots.</summary>
+    /// <summary>Deletes rows, imported or added; later rows shift up. Removing an imported row before others raises the order advisory.</summary>
     public void DeleteRows(IEnumerable<int> rows)
     {
         Require(Table != null && !PendingSource, "Apply valid source before deleting rows.");
         var targets = rows.Distinct().OrderByDescending(r => r).ToArray(); if (targets.Length == 0) return;
         Require(targets.All(r => r >= 0 && r < Table!.Records.Count), "Invalid row.");
-        Require(targets.All(r => !Table!.IsOriginalRow(r)), "Original imported rows cannot be deleted; clear their cells instead.");
         Require(targets.All(r => !LockedRows.Contains(r)), "A selected row is locked against edits.");
         RemoveRows(targets);
     }

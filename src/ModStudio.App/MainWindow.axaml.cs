@@ -975,6 +975,8 @@ public partial class MainWindow : Window
                 Require(pane.FrozenRows.Contains(200) && pane.FrozenGrid.IsVisible && !((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Any(r => r.Row == 200), "Frozen row is not separated from scrolling rows.");
                 pane.ToggleFrozenColumn(pane.Document.Table.Columns[1]);
                 Require(pane.TableGrid.FrozenColumnCount == 2, "Column freeze did not update the grid.");
+                // Freezing rebuilds every column control; none may come back read-only unless its column is locked.
+                Require(pane.TableGrid.Columns.Where(c => pane.ColumnIndexOf(c) >= 0).All(c => !c.IsReadOnly), "Rebuilt columns refuse editing until the next refresh.");
                 pane.Jump(400, field); await Task.Delay(100);
                 var horizontal = pane.TableGrid.GetVisualDescendants().OfType<ScrollBar>().Single(b => b.Name == "PART_HorizontalScrollbar");
                 Require(horizontal.Bounds.Height >= 22 && !horizontal.AllowAutoHide, "Horizontal scrollbar is too small or hides.");

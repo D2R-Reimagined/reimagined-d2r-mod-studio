@@ -97,7 +97,7 @@ public partial class MainWindow
         }
         finally { if (ReferenceEquals(missilePreviewCancellation, work)) missilePreviewCancellation = null; work.Dispose(); }
     }
-    private static Control MissileCard(MissilePreviewResult result)
+    internal static Control MissileCard(MissilePreviewResult result)
     {
         var parts = new List<Control>();
         if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));

@@ -808,6 +808,9 @@ public partial class MainWindow : Window
             if (Program.Arguments.Contains("--visual-builder-only"))
             {
                 await SmokeVisualBuilderAsync(output);
+            await SmokeMissileBuilderAsync(output);
+            await SmokeMonsterBuilderAsync(output);
+            await SmokeBaseItemBuilderAsync(output);
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
@@ -822,6 +825,9 @@ public partial class MainWindow : Window
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeItemPreviewsAsync(output);
             await SmokeVisualBuilderAsync(output);
+            await SmokeMissileBuilderAsync(output);
+            await SmokeMonsterBuilderAsync(output);
+            await SmokeBaseItemBuilderAsync(output);
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);
             await SmokeStatPreviewAsync(output);

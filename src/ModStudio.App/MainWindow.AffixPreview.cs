@@ -105,7 +105,7 @@ public partial class MainWindow
         }
         finally { if (ReferenceEquals(affixPreviewCancellation, work)) affixPreviewCancellation = null; work.Dispose(); }
     }
-    private static Control AffixCard(AffixPreviewResult result)
+    internal static Control AffixCard(AffixPreviewResult result)
     {
         var parts = new List<Control>();
         if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));

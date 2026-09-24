@@ -109,7 +109,7 @@ public sealed partial class EditorPane : Grid
         HideCellTip(); Source.IsVisible = false; tableHost.IsVisible = false;
         visualHost.Child ??= VisualBuilderFactory(this);
         visualHost.IsVisible = true; UpdateNote();
-        (visualHost.Child as VisualBuilderView)?.Shown();
+        (visualHost.Child as IVisualBuilder)?.Shown();
     }
     private readonly Canvas cellTipLayer = new() { IsHitTestVisible = false, ClipToBounds = false };
     private readonly TextBlock cellTipText = new() { TextWrapping = TextWrapping.Wrap };

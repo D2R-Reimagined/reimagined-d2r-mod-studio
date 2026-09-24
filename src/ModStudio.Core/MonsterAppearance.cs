@@ -63,6 +63,15 @@ public static class HdAppearance
             if (candidate != null && Existing(folder, candidate) is { } found) return found;
         return null;
     }
+    /// <summary>As <see cref="Locate"/>, for a folder.</summary>
+    public static string? LocateFolder(string folder, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return null;
+        relative = relative.Replace('\\', '/').TrimStart('/');
+        foreach (var candidate in new[] { relative, relative.StartsWith("data/", StringComparison.OrdinalIgnoreCase) ? relative[5..] : null })
+            if (candidate != null && Existing(folder, candidate, true) is { } found) return found;
+        return null;
+    }
     private static string? Existing(string root, string relative, bool directory = false)
     {
         var direct = Path.Combine(root, relative);

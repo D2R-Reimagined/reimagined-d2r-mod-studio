@@ -33,6 +33,9 @@ try
     DropTests.Run(root, Check, Throws);
     MonsterAppearanceTests.Run(root, Check, Throws);
     VisualBuilderTests.Run(root, Check, Throws);
+    MissileBuilderTests.Run(root, Check, Throws);
+    MonsterBuilderTests.Run(root, Check, Throws);
+    BaseItemBuilderTests.Run(root, Check, Throws);
     AffixRecipeTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);

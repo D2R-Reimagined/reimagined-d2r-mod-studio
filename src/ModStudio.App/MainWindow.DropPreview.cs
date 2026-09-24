@@ -155,7 +155,7 @@ public partial class MainWindow
         }
         finally { if (ReferenceEquals(dropPreviewCancellation, work)) dropPreviewCancellation = null; work.Dispose(); }
     }
-    private static Control DropCard(DropPreviewResult result)
+    internal static Control DropCard(DropPreviewResult result)
     {
         var parts = new List<Control>();
         if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));

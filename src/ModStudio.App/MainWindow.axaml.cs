@@ -811,6 +811,7 @@ public partial class MainWindow : Window
             await SmokeMissileBuilderAsync(output);
             await SmokeMonsterBuilderAsync(output);
             await SmokeBaseItemBuilderAsync(output);
+            await SmokeCubeBuilderAsync(output);
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
@@ -828,6 +829,7 @@ public partial class MainWindow : Window
             await SmokeMissileBuilderAsync(output);
             await SmokeMonsterBuilderAsync(output);
             await SmokeBaseItemBuilderAsync(output);
+            await SmokeCubeBuilderAsync(output);
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);
             await SmokeStatPreviewAsync(output);

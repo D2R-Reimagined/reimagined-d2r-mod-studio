@@ -95,7 +95,7 @@ public partial class MainWindow
         }
         finally { if (ReferenceEquals(recipePreviewCancellation, work)) recipePreviewCancellation = null; work.Dispose(); }
     }
-    private static Control RecipeCard(RecipePreviewResult result)
+    internal static Control RecipeCard(RecipePreviewResult result)
     {
         var parts = new List<Control>();
         if (result.Lines.Length > 0) parts.Add(PreviewCards.Prose(result.Text));

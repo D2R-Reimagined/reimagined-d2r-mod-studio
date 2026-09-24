@@ -21,6 +21,7 @@ public partial class MainWindow
                 "missiles" => new MissileBuilderView(owner, host),
                 "monstats" => new MonsterBuilderView(owner, host),
                 "weapons" or "armor" or "misc" => new BaseItemBuilderView(owner, host),
+                "cubemain" => new CubeBuilderView(owner, host),
                 _ => new VisualBuilderView(owner, host)
             };
         };

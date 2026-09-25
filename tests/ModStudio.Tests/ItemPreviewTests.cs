@@ -62,6 +62,13 @@ internal static class ItemPreviewTests
         check(Preview(scaled).Lines.Any(x => x.Contains("30") && x.Contains("at level 80")) && Preview(scaled).Lines.Contains("Defense: (35–40)"), "Level-scaled properties use the stat divisor and update defense totals");
         Table("armor", Row("armor", "code", "arm", "namestr", "armor", "minac", "100", "maxac", "200"));
         check(Preview(scaled).Lines.Contains("Defense: (130–230)"), "Changed dependency files invalidate cached item data");
+        Table("properties", Row("ease", "code", "ease", "func1", "1", "stat1", "item_req_percent", "*Tooltip", "Requirements -#%"));
+        Table("itemstatcost", Row("ease", "Stat", "item_req_percent", "descfunc", "19", "descstrpos", "ease", "descstrneg", "ease"));
+        Write("source/strings/test.json", new JsonObject { ["schema"] = new JsonObject { ["category"] = "test" }, ["records"] = new JsonArray(new[] { ("item", "Test Axe"), ("armor", "Armor"), ("ease", "Requirements %+d%%") }.Select(x => (JsonNode)new JsonObject { ["Key"] = x.Item1, ["translations"] = new JsonObject { ["enUS"] = x.Item2 } }).ToArray()) });
+        JsonObject Ease(string min, string max) => Row("ease", "index", "item", "code", "arm", "prop1", "ease", "min1", min, "max1", max);
+        resolver.Clear();
+        check(Preview(Ease("20", "20")).Lines.Contains("Requirements +20%") && Preview(Ease("-60", "-20")).Lines.Contains("Requirements -20–60%"),
+            "A *Tooltip comment's hard-coded sign follows the rolled value as the game shows it");
         check(resolver.Resolve(project, "uniqueitems", scaled, "standard", 80, "missing", default).Issues.Any(x => x.Contains("localization")), "Missing localization is explicit instead of silently showing another locale");
         using var cancel = new CancellationTokenSource(); cancel.Cancel();
         throws(() => resolver.Resolve(project, "uniqueitems", item, "standard", 80, "enUS", cancel.Token), "Canceled item resolution stops before producing results");

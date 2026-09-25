@@ -112,6 +112,23 @@ internal static class MissileBuilderTests
         var hd = MissileGraphics.Hd(project, [gameData], "sparkball");
         check(hd is { Unit: "spark_ball_hd", File.InProject: false } && hd.Particles.Single().EndsWith("spark.particles") && hd.Textures.Length == 1 && hd.Models.Length == 0, "missiles.json names the HD unit, whose dependencies are listed");
         check(MissileGraphics.Hd(project, [gameData], "other").Notes.Single().Contains("no entry"), "A missile HD does not list is said to draw nothing in HD");
+        check(hd is { Key: "spark_ball", Map.InProject: false } && MissileGraphics.HdKey("bighead1") == "bighead_1" && MissileGraphics.HdKey("Fire Arrow") == "fire_arrow" && MissileGraphics.HdKey("moltenboulder-flyingrocks") == "moltenboulder_flyingrocks",
+            "The HD entry names the key the list spells it with; new keys follow the base game's spelling");
+        WriteText(Path.Combine(gameData, "hd", "missiles", "fire_hd.json"), "{ \"dependencies\": {} }");
+        check(MissileGraphics.HdUnits(project, [gameData]).SequenceEqual(["fire_hd", "spark_ball_hd"]), "HD effect choices list every unit definition but the missile list itself");
+        var gameMap = File.ReadAllText(Path.Combine(gameData, "hd", "missiles", "missiles.json"));
+        var written = MissileGraphics.SaveHdUnit(project, hd.Map!, "newmissile2", "fire_hd");
+        check(written.StartsWith(project.Root, StringComparison.Ordinal) && File.ReadAllText(Path.Combine(gameData, "hd", "missiles", "missiles.json")) == gameMap
+            && MissileGraphics.Hd(project, [gameData], "newmissile2") is { Unit: "fire_hd", Key: "newmissile_2", Map.InProject: true } && MissileGraphics.Hd(project, [gameData], "sparkball").Unit == "spark_ball_hd",
+            "Choosing a missile's HD effect copies the game's list into the project and adds the entry, leaving the game data alone");
+        check(File.ReadAllText(written) == "{\"dependencies\":{},\"spark_ball\":\"spark_ball_hd\",\"newmissile_2\":\"fire_hd\"}", "The list keeps its entries in order and its one-line layout");
+        MissileGraphics.SaveHdUnit(project, MissileGraphics.Hd(project, [gameData], "sparkball").Map!, "SparkBall", "fire_hd");
+        check(File.ReadAllText(written).Contains("\"spark_ball\":\"fire_hd\"") && !File.ReadAllText(written).Contains("sparkball"), "Changing an effect rewrites the existing entry under its own key");
+        var stale = MissileGraphics.Hd(project, [gameData], "sparkball").Map!;
+        MissileGraphics.SaveHdUnit(project, stale, "sparkball", "");
+        check(MissileGraphics.Hd(project, [gameData], "sparkball") is { Unit: null, Key: null }, "Removing the effect deletes the entry, so HD draws nothing");
+        throws(() => MissileGraphics.SaveHdUnit(project, stale, "sparkball", "fire_hd"), "Saving over a list that changed since it was read is refused");
+        throws(() => MissileGraphics.SaveHdUnit(project, MissileGraphics.Hd(project, [gameData], "x").Map!, "x", "../evil"), "HD effect names cannot leave the missiles folder");
 
         JsonObject Row(string id, params string[] fields) { var f = new JsonObject(); for (int i = 0; i < fields.Length; i += 2) f[fields[i]] = fields[i + 1]; return new() { ["sourceId"] = id, ["fields"] = f }; }
         void Table(string name, params JsonObject[] rows) => WriteText(Path.Combine(project.Root, "source", "tables", name + ".json"), new JsonObject { ["schema"] = new JsonObject { ["name"] = name }, ["records"] = new JsonArray(rows.Cast<JsonNode?>().ToArray()) }.ToJsonString(Pretty));

@@ -47,6 +47,20 @@ public partial class MainWindow
         {
             Require(view.LastArt!.Animation is { Directions.Length: 16 } && view.LastExplosionArt?.Animation != null, "The real firebolt and its explosion did not decode: " + string.Join(" ", view.LastArt.Notes));
             Require(view.LastHd!.Unit != null || view.LastHd.Notes.Length > 0, "The HD definition was not looked up.");
+            // testbolt is not in the game's missiles.json: choosing its HD effect writes the entry into the project's copy.
+            Require(view.LastHd is { Key: null, Map.InProject: false } && view.GetVisualDescendants().OfType<AutoCompleteBox>().Any(a => Avalonia.Automation.AutomationProperties.GetName(a) == "HD effect"),
+                "A missile without an HD entry offers no HD effect picker.");
+            await view.SaveHdAsync(project!, "testbolt", view.LastHd.Map!, "firebolt");
+            var hdList = System.IO.Path.Combine(project!.Root, "data", "hd", "missiles", "missiles.json");
+            Require(view.LastHd is { Unit: "firebolt", Key: "testbolt", Map.InProject: true } && File.Exists(hdList), "Choosing an HD effect did not write the project's missiles.json.");
+            var hdPicker = view.GetVisualDescendants().OfType<AutoCompleteBox>().First(a => Avalonia.Automation.AutomationProperties.GetName(a) == "HD effect");
+            if (hdPicker.FindAncestorOfType<ScrollViewer>() is { } scroller && hdPicker.TranslatePoint(default, scroller) is { } at) scroller.Offset += new Vector(0, at.Y - 160);
+            await Task.Delay(250);
+            using (var bitmap = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96)))
+            { bitmap.Render(this); bitmap.Save(System.IO.Path.Combine(output, "missile-builder-hd.png"), PngBitmapEncoderOptions.Default); }
+            await view.SaveHdAsync(project!, "testbolt", view.LastHd.Map!, "");
+            Require(view.LastHd is { Unit: null, Key: null }, "Removing the HD effect left the entry.");
+            File.Delete(hdList);
         }
         else
         {

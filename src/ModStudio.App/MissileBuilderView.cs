@@ -7,8 +7,10 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Automation;
 using Avalonia.Threading;
 using ModStudio.Core;
+using static ModStudio.Core.Storage;
 
 namespace ModStudio.App;
 
@@ -24,7 +26,7 @@ internal sealed class MissileBuilderView : TableBuilderView<MissileEntry, Missil
     /// <summary>Compass names of the 16 facings the scene labels, clockwise from down the screen.</summary>
     private static readonly string[] Compass = ["S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW", "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE"];
     private static readonly (string Title, string Note, (string Column, string Label)[] Fields)[] Groups = [
-        ("Graphics", "The legacy animation and how it plays. HD draws its own particle effect (see HD above).", [
+        ("Graphics", "The legacy animation and how it plays. Legacy only: HD ignores these and draws the effect chosen in the HD card above.", [
             ("CelFile", "Animation (CelFile)"), ("Trans", "Blend (Trans)"), ("AnimSpeed", "Anim speed (16ths)"), ("animrate", "Anim rate"), ("AnimLen", "Anim length"), ("LoopAnim", "Loop"), ("RandStart", "Random start"),
             ("SubLoop", "Sub-loop"), ("SubStart", "Sub-loop start"), ("SubStop", "Sub-loop stop"), ("InitSteps", "Invisible for (frames)"), ("xoffset", "X offset"), ("yoffset", "Y offset"),
             ("zoffset", "Height (Z offset)"), ("NumDirections", "Directions"), ("LocalBlood", "Local blood"), ("MissileWeaponVFX", "Weapon VFX")]),
@@ -267,7 +269,7 @@ internal sealed class MissileBuilderView : TableBuilderView<MissileEntry, Missil
         artNote = new TextBlock { FontSize = 11, Foreground = Muted, TextWrapping = TextWrapping.Wrap };
         panel.Children.Add(artNote);
         hdHost = new ContentControl();
-        var hdCard = Card("HD", hdHost, note: "D2R's HD mode draws this missile as a particle effect; these are the files it loads.");
+        var hdCard = Card("HD", hdHost, note: "HD mode ignores CelFile and the legacy animation: it draws the particle effect data/hd/missiles/missiles.json names for this missile. Choose it here.");
         hdCard.VerticalAlignment = VerticalAlignment.Top; hdCard.MaxWidth = 380;
         // The HD card sits beside the flight when there is room and under it when there is not.
         return new WrapPanel { Children = { panel, hdCard }, ItemSpacing = 16, LineSpacing = 12, Orientation = Orientation.Horizontal };
@@ -321,25 +323,33 @@ internal sealed class MissileBuilderView : TableBuilderView<MissileEntry, Missil
         var explosionMotion = explosionRow < 0 ? null : MissileMotion.Read(c => table.ColumnIndex(c) >= 0 ? table.Cell(explosionRow, c) : "");
         var explosionCel = explosionRow < 0 ? "" : table.Cell(explosionRow, "CelFile");
         var gameData = host.GameData(); int palette = act.SelectedIndex + 1;
+        // Missiles drawing the same legacy animation, whose HD effect a missile without one most likely wants (a copied row).
+        var siblings = cel.Length == 0 ? [] : Enumerable.Range(0, table.Records.Count).Where(i => i != row && table.Cell(i, "CelFile").Equals(cel, StringComparison.OrdinalIgnoreCase))
+            .Select(i => table.Cell(i, "Missile")).Where(m => m.Length > 0).Take(16).ToArray();
         var key = string.Join('|', project.Root, id, cel, explosionCel, palette, string.Join(';', gameData));
         // Timing and blending of the explosion follow its row even when its files are unchanged.
         if (explosionSprite != null && explosionMotion != null) explosionSprite = explosionSprite with { Motion = explosionMotion };
         if (key == artKey) return;
         artKey = key;
-        PendingArt = LoadArtAsync(project, gameData, id, cel, explosionCel, explosionMotion, palette);
+        PendingArt = LoadArtAsync(project, gameData, id, cel, explosionCel, explosionMotion, palette, siblings);
     }
 
-    private async Task LoadArtAsync(ModProject project, IReadOnlyList<string> gameData, string id, string cel, string explosionCel, MissileMotion? explosionMotion, int palette)
+    private async Task LoadArtAsync(ModProject project, IReadOnlyList<string> gameData, string id, string cel, string explosionCel, MissileMotion? explosionMotion, int palette, string[] siblings)
     {
         artCancellation?.Cancel();
         var work = artCancellation = new CancellationTokenSource(); var token = work.Token;
         try
         {
-            var (art, explosion, colors, hd) = await Task.Run(() => (
-                MissileGraphics.Art(project, gameData, cel, token),
-                explosionCel.Length == 0 ? null : MissileGraphics.Art(project, gameData, explosionCel, token),
-                MissileGraphics.Palette(project, gameData, palette),
-                MissileGraphics.Hd(project, gameData, id)), token);
+            var (art, explosion, colors, hd, suggested) = await Task.Run(() =>
+            {
+                var hd = MissileGraphics.Hd(project, gameData, id);
+                (string? Missile, string? Unit) suggested = default;
+                if (hd.Key == null)
+                    foreach (var sibling in siblings)
+                        if (MissileGraphics.Hd(project, gameData, sibling) is { File: not null } other) { suggested = (sibling, other.Unit); break; }
+                return (MissileGraphics.Art(project, gameData, cel, token), explosionCel.Length == 0 ? null : MissileGraphics.Art(project, gameData, explosionCel, token),
+                    MissileGraphics.Palette(project, gameData, palette), hd, suggested);
+            }, token);
             if (token.IsCancellationRequested) return;
             LastArt = art; LastExplosionArt = explosion; LastHd = hd;
             sprite = art.Animation != null && colors != null ? new(art.Animation, colors, motion) : null;
@@ -352,7 +362,7 @@ internal sealed class MissileBuilderView : TableBuilderView<MissileEntry, Missil
             if (colors == null) notes.Add($"No act {palette} palette (data/global/palette/act{palette}/pal.dat) in the project or the game data, so nothing can be coloured.");
             artNote.Text = string.Join("\n", notes);
             sceneNotice.Content = sprite == null && !art.Invisible && gameData.Count == 0 ? NoticeWithChooser(art.Notes.FirstOrDefault() ?? "") : null;
-            hdHost.Content = HdView(hd);
+            hdHost.Content = HdView(project, id, hd, suggested.Missile, suggested.Unit);
             DrawScene();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -368,15 +378,61 @@ internal sealed class MissileBuilderView : TableBuilderView<MissileEntry, Missil
         return new Border { Background = new SolidColorBrush(Color.FromArgb(220, 20, 18, 16)), Padding = new(10), CornerRadius = new(4), Child = panel };
     }
 
-    private static Control HdView(HdMissile hd)
+    /// <summary>
+    /// What HD draws for the missile and a picker to change it. HD effects are compiled particle systems Studio cannot draw, so
+    /// the effect is chosen by name; saving writes the missile's entry in the project's missiles.json.
+    /// </summary>
+    private Control HdView(ModProject project, string id, HdMissile hd, string? suggestedFrom, string? suggestedUnit)
     {
         var panel = new StackPanel { Spacing = 4 };
         TextBlock Line(string text, IBrush? brush = null) => new SelectableTextBlock { Text = text, FontSize = 12, Foreground = brush ?? WhiteBrush, TextWrapping = TextWrapping.Wrap };
-        if (hd.Unit != null) panel.Children.Add(Line($"Unit: {hd.Unit}.json" + (hd.File != null ? $" · {hd.File.Origin}" : "")));
+        if (hd.Unit != null) panel.Children.Add(Line($"Effect: {hd.Unit}" + (hd.File != null ? $" · {hd.File.Origin}" : "") + (hd.Key != null && hd.Map != null ? $" · entry \"{hd.Key}\" in missiles.json ({hd.Map.Origin})" : "")));
         foreach (var (label, files) in new[] { ("Particles", hd.Particles), ("Models", hd.Models), ("Textures", hd.Textures) })
             if (files.Length > 0) panel.Children.Add(Line($"{label}: " + string.Join(", ", files.Select(Path.GetFileName)), Muted));
-        foreach (var note in hd.Notes) panel.Children.Add(Line(note, Muted));
+        foreach (var note in hd.Notes) panel.Children.Add(Line(note, hd.File == null ? Brushes.Salmon : Muted));
+        if (hd.Map == null) return panel;
+
+        var units = catalog?.HdUnits ?? [];
+        var picker = new AutoCompleteBox { Width = 220, ItemsSource = units, FilterMode = AutoCompleteFilterMode.Contains, MinimumPrefixLength = 0, PlaceholderText = "HD effect", Text = hd.Unit ?? suggestedUnit ?? "" };
+        AutomationProperties.SetName(picker, "HD effect");
+        ToolTip.SetTip(picker, "A unit definition in data/hd/missiles (without .json). Missiles can share one.");
+        var save = new Button { Content = "Save to mod", Padding = new(10, 3), MinHeight = 0 };
+        var remove = new Button { Content = "Remove", Padding = new(10, 3), MinHeight = 0, IsEnabled = hd.Key != null };
+        ToolTip.SetTip(remove, "Remove the missile's entry from missiles.json: HD then draws nothing for it.");
+        var status = new TextBlock { FontSize = 11, Foreground = Muted, TextWrapping = TextWrapping.Wrap };
+        if (hd.Key == null && suggestedUnit != null) status.Text = $"{suggestedFrom} draws the same legacy animation and uses {suggestedUnit} in HD. Save to use it here too.";
+        void Update()
+        {
+            var unit = picker.Text?.Trim() ?? "";
+            save.IsEnabled = unit.Length > 0 && !unit.Equals(hd.Unit, StringComparison.OrdinalIgnoreCase);
+            if (unit.Length > 0 && units.Length > 0 && !units.Contains(unit, StringComparer.OrdinalIgnoreCase)) status.Text = $"No data/hd/missiles/{unit}.json in the project or the game data: HD would draw nothing.";
+            else if (save.IsEnabled && !hd.Map.InProject) status.Text = "Saving copies missiles.json from the game data into the project first.";
+        }
+        picker.TextChanged += (_, _) => Update();
+        save.Click += async (_, _) => await SaveHdAsync(project, id, hd.Map, picker.Text?.Trim() ?? "", status);
+        remove.Click += async (_, _) => await SaveHdAsync(project, id, hd.Map, "", status);
+        var row = new WrapPanel { Orientation = Orientation.Horizontal, ItemSpacing = 6, LineSpacing = 6 };
+        row.Children.Add(picker); row.Children.Add(save); row.Children.Add(remove);
+        panel.Children.Add(Labeled("HD effect", row, "The particle effect HD mode draws for this missile"));
+        panel.Children.Add(status);
+        panel.Children.Add(Line("Studio cannot draw HD particle effects; check the result in game. The entry follows the missile id, so renaming the missile needs a new entry.", Muted));
+        Update();
         return panel;
+    }
+
+    /// <summary>Writes the missile's HD effect (empty: removes its entry) and reloads what HD draws.</summary>
+    internal async Task SaveHdAsync(ModProject project, string id, HdFile map, string unit, TextBlock? status = null)
+    {
+        try
+        {
+            var target = map.InProject ? map.Path : Inside(project.Root, map.Relative);
+            Require(host.FindFile?.Invoke(target) is not { IsDirty: true }, $"Save or discard the open edits to {Path.GetFileName(target)} first.");
+            if (status != null) status.Text = "Saving…";
+            var written = await Task.Run(() => MissileGraphics.SaveHdUnit(project, map, id, unit));
+            SetStatus((unit.Length == 0 ? $"Removed {id}'s HD effect from " : $"{id} now uses {unit} in HD · saved ") + Path.GetRelativePath(project.Root, written) + (map.InProject ? "" : " (copied from the game data)"));
+            artKey = null; RequestArt(); await PendingArt;
+        }
+        catch (Exception ex) { if (status != null) status.Text = ex.Message; SetStatus(ex.Message, true); }
     }
 
     private void Animate()

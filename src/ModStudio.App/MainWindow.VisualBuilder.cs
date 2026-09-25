@@ -15,7 +15,7 @@ public partial class MainWindow
                 async () => { await ChooseGameDataFolderAsync(); RefreshVisualBuilders(); },
                 name => project == null ? null : FindOpenDocument(TableData.FileFor(project, "tables", name)),
                 async name => project == null || !File.Exists(TableData.FileFor(project, "tables", name)) ? null : (await OpenDocumentAsync(TableData.FileFor(project, "tables", name), false, false))?.Document,
-                MonsterCard, OpenInBuilderAsync, pane => OpenLevelEditorAsync(selectedPane: pane));
+                MonsterCard, OpenInBuilderAsync, pane => OpenLevelEditorAsync(selectedPane: pane), FindOpenDocument);
             return owner.Document.Table?.Name switch
             {
                 "missiles" => new MissileBuilderView(owner, host),

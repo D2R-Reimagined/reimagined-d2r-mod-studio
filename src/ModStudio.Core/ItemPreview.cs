@@ -138,6 +138,8 @@ public sealed class ItemPreviewResolver
                     return;
                 }
                 decimal tooltipLow = low, tooltipHigh = high; CellLink? tooltipLowCell = lowCell, tooltipHighCell = highCell;
+                // How the game signs the shown stat: 1 prints the value's own sign, -1 the opposite (descfunc 20/21), 0 unknown.
+                int tooltipSign = 0;
                 foreach (var entry in functions.SelectMany(slot => definition.S("func" + slot) == "7" ? new[] { (Slot: slot, Minimum: true), (Slot: slot, Minimum: false) } : new[] { (Slot: slot, Minimum: false) }))
                 {
                     int slot = entry.Slot;
@@ -169,6 +171,14 @@ public sealed class ItemPreviewResolver
                     if (function is "5" or "6" or "7") stat = function switch { "5" => "mindamage", "6" => "maxdamage", _ => entry.Minimum ? "item_mindamage_percent" : "item_maxdamage_percent" };
                     var cost = Find("itemstatcost", "Stat", stat);
                     Require(cost != null, "Missing stat metadata: " + stat);
+                    if (authoredTooltip.Length > 0 && tooltipSign == 0)
+                        tooltipSign = cost!.S("descfunc") switch
+                        {
+                            "1" or "4" or "6" or "8" or "12" => 1,
+                            "19" when Localize(cost.S("descstrpos")).Contains("%+d", StringComparison.Ordinal) => 1,
+                            "20" or "21" => -1,
+                            _ => 0
+                        };
                     if (main)
                     {
                         var targetStat = function == "17" && cost!.S("op stat1").Length > 0 ? cost.S("op stat1") : stat;
@@ -208,7 +218,19 @@ public sealed class ItemPreviewResolver
                         lines.Add(label + (function == "17" ? $" (at level {level})" : ""));
                     }
                 }
-                if (authoredTooltip.Length > 0) lines.Add(FillPropertyTemplate(authoredTooltip, [InlineRange(tooltipLow, tooltipHigh, tooltipLowCell, tooltipHighCell)], parameter, parameterCell, functionIds.Contains("17") ? $" (at level {level})" : ""));
+                if (authoredTooltip.Length > 0)
+                {
+                    // The *Tooltip comment hard-codes one sign ("Requirements -#%"); the game signs the rolled value itself.
+                    var template = authoredTooltip; var value = InlineRange(tooltipLow, tooltipHigh, tooltipLowCell, tooltipHighCell);
+                    decimal shownLow = tooltipSign * tooltipLow, shownHigh = tooltipSign * tooltipHigh;
+                    if (tooltipSign != 0 && Regex.Match(template, "[-+]?#") is { Value.Length: 2 } signed && (shownLow >= 0 && shownHigh >= 0 || shownLow <= 0 && shownHigh <= 0))
+                    {
+                        bool negative = shownLow < 0 || shownHigh < 0, ascending = Math.Abs(tooltipLow) <= Math.Abs(tooltipHigh);
+                        template = template[..signed.Index] + (negative ? "-" : "+") + template[(signed.Index + 1)..];
+                        value = ascending ? InlineRange(Math.Abs(tooltipLow), Math.Abs(tooltipHigh), tooltipLowCell, tooltipHighCell) : InlineRange(Math.Abs(tooltipHigh), Math.Abs(tooltipLow), tooltipHighCell, tooltipLowCell);
+                    }
+                    lines.Add(FillPropertyTemplate(template, [value], parameter, parameterCell, functionIds.Contains("17") ? $" (at level {level})" : ""));
+                }
             }
             catch (Exception e) when (e is FormatException or InvalidOperationException or InvalidDataException or OverflowException) { Unsupported(e.Message); }
         }

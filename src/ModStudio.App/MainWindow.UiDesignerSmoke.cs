@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ModStudio.Core;
@@ -20,6 +21,7 @@ public partial class MainWindow
     /// </summary>
     private async Task SmokeUiDesignerAsync(string output)
     {
+        SmokePixelFormats();
         async Task Until(Func<bool> condition, string failure, Func<string>? state = null)
         {
             var deadline = DateTime.UtcNow.AddSeconds(10);
@@ -228,11 +230,40 @@ public partial class MainWindow
         UpdateLayout(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(1);
         using var image = new RenderTargetBitmap(new PixelSize((int)Bounds.Width, (int)Bounds.Height), new Vector(96, 96));
         image.Render(this);
+        return Pixel(image, new PixelPoint((int)at.X, (int)at.Y));
+    }
+
+    private static Avalonia.Media.Color Pixel(Bitmap image, PixelPoint at)
+    {
+        var format = image.Format;
+        Require(format == PixelFormat.Bgra8888 || format == PixelFormat.Rgba8888,
+            "Unsupported smoke bitmap pixel format: " + format);
         var buffer = new byte[4];
         var memory = System.Runtime.InteropServices.Marshal.AllocHGlobal(4);
-        try { image.CopyPixels(new PixelRect((int)at.X, (int)at.Y, 1, 1), memory, 4, 4); System.Runtime.InteropServices.Marshal.Copy(memory, buffer, 0, 4); }
+        try { image.CopyPixels(new PixelRect(at.X, at.Y, 1, 1), memory, 4, 4); System.Runtime.InteropServices.Marshal.Copy(memory, buffer, 0, 4); }
         finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(memory); }
-        // BGRA.
-        return Avalonia.Media.Color.FromArgb(buffer[3], buffer[2], buffer[1], buffer[0]);
+        // CopyPixels preserves the bitmap's native channel order, which differs across platforms.
+        return format == PixelFormat.Rgba8888
+            ? Avalonia.Media.Color.FromArgb(buffer[3], buffer[0], buffer[1], buffer[2])
+            : Avalonia.Media.Color.FromArgb(buffer[3], buffer[2], buffer[1], buffer[0]);
+    }
+
+    private static void SmokePixelFormats()
+    {
+        // Exercise both native channel orders on every OS, including a nonzero pixel offset.
+        foreach (var format in new[] { PixelFormat.Bgra8888, PixelFormat.Rgba8888 })
+        {
+            using var image = new WriteableBitmap(new PixelSize(2, 2), new Vector(96, 96), format, AlphaFormat.Unpremul);
+            Require(image.Format == format, "The pixel fixture did not preserve its requested format: " + format);
+            using (var frame = image.Lock())
+            {
+                byte[] bytes = format == PixelFormat.Rgba8888 ? [40, 90, 160, 255] : [160, 90, 40, 255];
+                for (int y = 0; y < 2; y++)
+                    System.Runtime.InteropServices.Marshal.Copy(new byte[8], 0, frame.Address + y * frame.RowBytes, 8);
+                System.Runtime.InteropServices.Marshal.Copy(bytes, 0, frame.Address + frame.RowBytes + 4, 4);
+            }
+            var actual = Pixel(image, new PixelPoint(1, 1));
+            Require(actual == Avalonia.Media.Color.FromRgb(40, 90, 160), $"Pixel sampling misread {format}: {actual}.");
+        }
     }
 }

@@ -154,10 +154,15 @@ public partial class MainWindow : Window
         Log($"Converted {converted} tables to single-file layout in {candidate.Root}");
         return true;
     }
+    private IEnumerable<IEditedFile> EditedFiles => tabs.Select(t => t.Content).OfType<IEditedFile>();
+    /// <summary>Whether any open document or edited file (such as a particle effect) has unsaved changes.</summary>
+    private bool AnyUnsaved => tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty) || EditedFiles.Any(f => f.IsDirty);
     private async Task<bool> MayLeaveAsync()
     {
-        if (!tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty)) return true;
-        var choice = await ChooseAsync("Unsaved documents", "Save changes before leaving this project? Invalid source remains available in local recovery.", "Save all", "Keep recovery and leave", "Cancel");
+        if (!AnyUnsaved) return true;
+        bool effects = EditedFiles.Any(f => f.IsDirty);
+        var choice = await ChooseAsync("Unsaved documents", "Save changes before leaving this project? Invalid source remains available in local recovery." + (effects ? " Unsaved effect edits have no recovery copy and are lost unless saved." : ""), "Save all", effects ? "Leave without saving" : "Keep recovery and leave", "Cancel");
+        if (choice == "Leave without saving") { SaveRecovery(); return true; }
         if (choice == "Save all") return await SaveAllAsync(); if (choice == "Keep recovery and leave") { SaveRecovery(); return true; } return false;
     }
     private async void OpenClicked(object? sender, RoutedEventArgs e)
@@ -223,7 +228,7 @@ public partial class MainWindow : Window
         Program.Integration?.ClaimProject(nextProject.Root); companionProfiles.Clear(); companionStamps.Clear();
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose(); externalWatcher?.Dispose(); externalActive = false; findInFiles?.Close();
-        project = nextProject; terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
+        project = nextProject; WarmSearchCache(nextProject); terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         await RefreshCatalogIdWarningsAsync(nextProject);
@@ -276,7 +281,7 @@ public partial class MainWindow : Window
     private void UpdateTabHeader(TabItem tab)
     {
         bool preview = tab == previewTab;
-        var label = tab.Content is EditorPane pane ? Label(pane.Document) : tab.Tag is string path ? System.IO.Path.GetFileName(path) : tab.Tag?.ToString();
+        var label = tab.Content is EditorPane pane ? Label(pane.Document) : tab.Content is IEditedFile edited ? (edited.IsDirty ? "● " : "") + System.IO.Path.GetFileName(edited.FilePath) : tab.Tag is string path ? System.IO.Path.GetFileName(path) : tab.Tag?.ToString();
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         header.Children.Add(new TextBlock { Text = label + (preview ? " · preview" : ""), FontSize = 13, VerticalAlignment = VerticalAlignment.Center,
             FontStyle = preview ? FontStyle.Italic : FontStyle.Normal,
@@ -288,9 +293,9 @@ public partial class MainWindow : Window
         close.Click += async (_, e) => { e.Handled = true; await CloseTabAsync(tab); };
         close.DoubleTapped += (_, e) => e.Handled = true;
         header.Children.Add(close); tab.Header = header;
-        var filePath = (tab.Content as EditorPane)?.Document.FilePath ?? tab.Tag as string;
+        var filePath = (tab.Content as EditorPane)?.Document.FilePath ?? (tab.Content as IEditedFile)?.FilePath ?? tab.Tag as string;
         if (filePath != null) header.ContextMenu = new ContextMenu { ItemsSource = IsExternalTable(filePath) ? new[] { CreateOpenLocationItem(filePath), CreateExternalEditorItem(filePath) } : new[] { CreateOpenLocationItem(filePath) } };
-        ToolTip.SetTip(tab, preview ? "Temporary preview · Double-click this tab to keep it open" : tab.Content is EditorPane p ? p.Document.FilePath : tab.Tag);
+        ToolTip.SetTip(tab, preview ? "Temporary preview · Double-click this tab to keep it open" : tab.Content is EditorPane p ? p.Document.FilePath : filePath);
     }
     private MenuItem CreateOpenLocationItem(string path, bool directory = false)
     {
@@ -331,6 +336,11 @@ public partial class MainWindow : Window
                 }
                 else return;
             }
+            else if (tab.Content is IEditedFile edited && edited.IsDirty)
+            {
+                var choice = await ChooseAsync("Close file", $"Save the changes to {System.IO.Path.GetFileName(edited.FilePath)} before closing?", "Save", "Discard Changes", "Cancel");
+                if (choice == "Save") edited.Save(); else if (choice != "Discard Changes") return;
+            }
             if (previewTab == tab) previewTab = null;
             tabs.Remove(tab); RefreshStatus();
         }
@@ -346,7 +356,7 @@ public partial class MainWindow : Window
     {
         if (preview && previewTab != null)
         {
-            if (previewTab.Content is EditorPane old && old.Document.IsDirty) KeepTab(previewTab);
+            if (previewTab.Content is EditorPane old && old.Document.IsDirty || previewTab.Content is IEditedFile { IsDirty: true }) KeepTab(previewTab);
             else { tabs.Remove(previewTab); previewTab = null; }
         }
         if (preview) previewTab = tab;
@@ -400,6 +410,17 @@ public partial class MainWindow : Window
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var existing = tabs.FirstOrDefault(t => t != loadingTab && string.Equals((t.Content as EditorPane)?.Document.FilePath ?? t.Tag as string, file, comparison)); if (existing != null) { if (!preview) KeepTab(existing); if (activate) Documents.SelectedItem = existing; return existing.Content as EditorPane; }
         var extension = System.IO.Path.GetExtension(file).ToLowerInvariant();
+        if (ParticleInspectorPane.Supports(file))
+        {
+            if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
+            var particleTab = loadingTab ?? new TabItem { Tag = file };
+            var particlePane = new ParticleInspectorPane(file, new ParticleHost(() => project == null ? [] : [project.Root], GameDataFolders, path => _ = OpenDocumentAsync(path),
+                path => tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty && string.Equals(p.Document.FilePath, System.IO.Path.GetFullPath(path), comparison))));
+            particlePane.Changed += () => { particleTab.Tag = particlePane.FilePath; if (particlePane.IsDirty) KeepTab(particleTab); else UpdateTabHeader(particleTab); RefreshStatus(); };
+            particleTab.Content = particlePane;
+            if (loadingTab == null) AddDocumentTab(particleTab, preview, activate); else UpdateTabHeader(particleTab);
+            return null;
+        }
         if (SpecialistPreviewPane.Supports(file))
         {
             if (openingProject != project || loadingTab != null && !tabs.Contains(loadingTab)) return null;
@@ -563,6 +584,7 @@ public partial class MainWindow : Window
             {
                 if (!pane.Document.IsDirty) continue; pane.Document.Save(); var recovery = RecoveryFile(pane.Document); if (File.Exists(recovery)) File.Delete(recovery); pane.Refresh();
             }
+            foreach (var edited in EditedFiles.Where(f => f.IsDirty).ToList()) edited.Save();
             Status.Text = "All documents saved."; await Task.CompletedTask; return true;
         }
         catch (Exception e) { SaveRecovery(); ShowError(e); return false; }
@@ -655,7 +677,7 @@ public partial class MainWindow : Window
         {
             Require(project != null && operation == null && !externalBusy, "Open a project and wait for the current operation.");
             var settings = RunSettings.Load(project!, Profile);
-            if (tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty))
+            if (AnyUnsaved)
             {
                 if (!settings.SaveBeforePlay && await ChooseAsync("Unsaved documents", "Save all documents before this build?", "Save and continue", "Cancel") != "Save and continue") return;
                 if (!await SaveAllAsync()) return;
@@ -826,6 +848,18 @@ public partial class MainWindow : Window
                 File.WriteAllText(System.IO.Path.Combine(output, "level-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
+            if (Program.Arguments.Contains("--ui-designer-only"))
+            {
+                await SmokeUiDesignerAsync(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "ui-designer-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
+            if (Program.Arguments.Contains("--particle-inspector-only"))
+            {
+                await SmokeParticleInspectorAsync(output);
+                File.WriteAllText(System.IO.Path.Combine(output, "particle-inspector-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--visual-builder-only"))
             {
                 await SmokeVisualBuilderAsync(output);
@@ -835,6 +869,7 @@ public partial class MainWindow : Window
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
             await SmokeLevelBuilderAsync(output);
+            await SmokeUiDesignerAsync(output);
             await SmokeRememberedViewsAsync();
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
@@ -848,6 +883,7 @@ public partial class MainWindow : Window
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
+            await SmokeParticleInspectorAsync(output);
             await SmokeItemPreviewsAsync(output);
             await SmokeVisualBuilderAsync(output);
             await SmokeMissileBuilderAsync(output);
@@ -856,6 +892,7 @@ public partial class MainWindow : Window
             await SmokeCubeBuilderAsync(output);
             await SmokeRunewordBuilderAsync(output);
             await SmokeLevelBuilderAsync(output);
+            await SmokeUiDesignerAsync(output);
             await SmokeRememberedViewsAsync();
             await SmokeSkillPreviewAsync(output);
             await SmokeMissilePreviewAsync(output);

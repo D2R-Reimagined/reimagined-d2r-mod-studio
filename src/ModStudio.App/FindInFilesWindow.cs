@@ -18,7 +18,7 @@ using static ModStudio.Core.Storage;
 namespace ModStudio.App;
 
 /// <summary>What Find in files needs from the main window: the project, the editors that are open, and a way to open a file without switching to it.</summary>
-internal sealed record FindInFilesHost(Func<ModProject?> Project, Func<string, EditorPane?> OpenPane, Func<IEnumerable<EditorPane>> Panes, Func<string, bool, Task<EditorPane?>> Open, Action<Exception> Error, Action<string> Status);
+internal sealed record FindInFilesHost(Func<ModProject?> Project, Func<string, EditorPane?> OpenPane, Func<IEnumerable<EditorPane>> Panes, Func<string, bool, Task<EditorPane?>> Open, Action<Exception> Error, Action<string> Status, Func<SearchCache?> Cache);
 
 /// <summary>A row of the table preview. Values come from the live editor when the file is open, otherwise from the table the search parsed; edits go to the editor.</summary>
 internal sealed class PreviewRow(FindInFilesWindow owner, string file, int row) : INotifyPropertyChanged
@@ -212,7 +212,7 @@ internal sealed class FindInFilesWindow : Window
         status.Text = "Searching…";
         try
         {
-            var found = await Task.Run(() => WorkspaceSearch.Run(project, request, tables, texts, token, count => Dispatcher.UIThread.Post(() => { if (current == generation) status.Text = $"Searching… {count:N0} files"; })), token);
+            var found = await Task.Run(() => WorkspaceSearch.Run(project, request, tables, texts, token, count => Dispatcher.UIThread.Post(() => { if (current == generation) status.Text = $"Searching… {count:N0} files"; }), host.Cache()), token);
             if (current != generation) return;
             ShowResults(found);
         }
@@ -225,7 +225,8 @@ internal sealed class FindInFilesWindow : Window
     private void ShowResults(SearchResult found)
     {
         result = found;
-        foreach (var pair in found.Tables) snapshots[pair.Key] = pair.Value;
+        // Tables the search did not parse (its cache already held them) are read when first previewed.
+        snapshots.Clear(); foreach (var pair in found.Tables) snapshots[pair.Key] = pair.Value;
         var previous = previewed;
         results.ItemsSource = found.Hits;
         empty.IsVisible = found.Hits.Count == 0; empty.Text = "No matches." + (found.Issues.Count > 0 ? " " + found.Issues[0] : "");
@@ -310,11 +311,14 @@ internal sealed class FindInFilesWindow : Window
         else ShowText(hit, relative);
     }
 
-    /// <summary>The table to read cells from: the open editor's document when there is one, else what the search parsed.</summary>
+    /// <summary>The table to read cells from: the open editor's document when there is one, else the disk copy the search matched.</summary>
     private TableData? LiveTable(string file)
     {
         if (host.OpenPane(file)?.Document is { Table: { } live, PendingSource: false }) return live;
-        return snapshots.GetValueOrDefault(file);
+        if (snapshots.TryGetValue(file, out var snapshot)) return snapshot;
+        if (host.Project() is not { } project) return null;
+        try { var table = WorkspaceSearch.ReadTable(project, file); if (table != null) snapshots[file] = table; return table; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
     internal string CellValue(string file, int row, int column)
     {

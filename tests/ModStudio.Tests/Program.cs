@@ -40,6 +40,8 @@ try
     CubeBuilderTests.Run(root, Check, Throws);
     RunewordBuilderTests.Run(root, Check, Throws);
     LevelBuilderTests.Run(root, Check, Throws);
+    UiLayoutTests.Run(root, Check, Throws);
+    ParticleFileTests.Run(root, Check, Throws);
     AffixRecipeTests.Run(root, Check, Throws);
     PreviewPerformanceTests.Run(root, Check);
     GuideAndDetectionTests.Run(root, Check, Write);

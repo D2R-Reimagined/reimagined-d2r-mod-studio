@@ -35,6 +35,19 @@ Well, there are a few reasons. First off I can't stand the amount of merge concl
 * Build, Deploy and Play report warnings such as an item name with no string-catalog key; the details are in the Problems tab and the **Log** tab keeps every status-bar message (click the status bar to open it).
 * The **deployment folder's name is the mod's name**: Studio lays the build out as `<folder>.mpq` and launches the game with `-mod <folder>`. Deploying to `mods/MyMod-test` therefore runs the same project as a separate mod beside `mods/MyMod`; the folder no longer has to be named after the project.
 
+## UI Designer
+
+Any layout under `data/global/ui/layouts` opens with a **UI Designer** button beside Source: the layout drawn the way the game draws it, on the 3840 × 2160 reference screen, next to a tree of its widgets and an inspector.
+
+* **As in game**: the `basedOn` parent is merged in (children by name, fields one by one), `$variables` come from the profile (`_profilehd.json`, plus `_profilelv.json` or the `controller/` profiles for the other profiles in the toolbar), `@strings` from your string catalogs, sprites from `data/hd/global/ui` and text is set in the game's own fonts (Exocet, Formal). Studio ships none of these: they are read from the project first, then from your extracted game data folder.
+* **Edit on the canvas**: click to select (Alt+click picks what is underneath), drag to move, drag handles to resize (pictures without a size scale instead), arrow keys nudge (Shift ×10). Edges and centres snap to siblings and the parent (hold Ctrl to place freely); with a widget selected, hovering another shows the distance between them.
+* **Clean diffs**: every change is written as the smallest text edit that makes it; comments, trailing commas and your formatting stay as they are. Edits share Undo, Save and the dirty marker with the Source view, and *Show in source* jumps to a widget's entry.
+* **Where each value comes from**: the inspector marks each field as written in this file, inherited from the parent layout, or a profile `$variable` (with *Go to* for its definition). Changing an inherited widget writes an override for it into this file; a `$variable` rect you drag becomes this file's own rect. Parent layouts and profiles are never changed from here; *Copy to project* brings a game-data file into the mod when you do want to change it.
+* **Inspector**: position, size, scale and anchor (the 3 × 3 anchor grid keeps the widget where it is on screen unless you untick *Keep on screen*), fit to parent, the picture with a sprite browser and every frame, text with its localized string and a profile style picker, colours, and every field as JSON with suggestions from the fields the game's own layouts use.
+* **Preview**: switch profile (PC / controller, normal / large font) and aspect ratio (16:9, 16:10, 21:9, 32:9, 4:3); the *State* menu shows buttons hovered, pressed, disabled or toggled (in Normal the button under the pointer shows its hovered frame); *Layers* draws other layouts underneath, dimmed, such as the HUD under an inventory. Widgets can be hidden on the canvas from the tree without changing the file.
+* Shortcuts: **F** whole screen, **P** the panel, **Z** the selection, **1** actual size, **Ctrl+D** duplicate, **Del** delete, **Esc** select the parent, wheel to zoom, middle-drag or Space+drag to pan. Right-click a widget to add a child, change its draw order or hide it.
+* Unresolved `$variables`, missing parent layouts and missing sprites are listed under the canvas. Legacy (SD) layouts are shown with outlines and text; their DC6 art is not drawn.
+
 ## Keep using your TXT editor
 
 Migration does not require using Studio's grid. **External editor** in the toolbar provides:

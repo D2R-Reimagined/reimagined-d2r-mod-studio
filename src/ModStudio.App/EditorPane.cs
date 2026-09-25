@@ -100,6 +100,8 @@ public sealed partial class EditorPane : Grid
     /// <summary>The third view of unique and set item tables: the Visual Builder, created on first use by <see cref="VisualBuilderFactory"/>.</summary>
     private readonly Border visualHost = new() { IsVisible = false };
     public Func<EditorPane, Control>? VisualBuilderFactory { get; set; }
+    /// <summary>Whether the file has a Visual Builder: a table with a builder, or a UI layout (the UI Designer).</summary>
+    public bool HasVisualBuilder => VisualBuilderFactory != null && (ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name) || Document.Table == null && UiLayoutSources.IsLayout(Document.FilePath));
     public bool VisualBuilderVisible => visualHost.IsVisible;
     public Control? VisualBuilder => visualHost.Child;
     /// <summary>Raised when the user picks a view (table, source, visual, or Markdown preview) so it can be remembered for the file; not raised by navigation.</summary>
@@ -126,14 +128,14 @@ public sealed partial class EditorPane : Grid
         switch (mode)
         {
             case "source" when Document.Table != null && MarkdownPreview == null: ShowSource(); break;
-            case "visual" when VisualBuilderFactory != null && ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name) && !Document.PendingSource: ShowVisualBuilder(); break;
+            case "visual" when HasVisualBuilder && !Document.PendingSource: ShowVisualBuilder(); break;
             case "preview" when MarkdownPreview != null: ShowMarkdownPreview(); break;
         }
     }
 
     public void ShowVisualBuilder()
     {
-        if (VisualBuilderFactory == null || !ModStudio.Core.VisualBuilder.Supports(Document.Table?.Name)) return;
+        if (VisualBuilderFactory == null || !HasVisualBuilder) return;
         Document.ApplySource(); Storage.Require(!Document.PendingSource, "Fix source syntax before opening the Visual Builder.");
         HideCellTip(); Source.IsVisible = false; tableHost.IsVisible = false;
         visualHost.Child ??= VisualBuilderFactory(this);
@@ -264,7 +266,9 @@ public sealed partial class EditorPane : Grid
         if (document.Table == null)
         {
             toolbar.Children.Clear();
-            Button("Source", () => { Source.IsVisible = true; Refresh(); });
+            Button("Source", () => { visualHost.IsVisible = false; Source.IsVisible = true; Refresh(); if (UiLayoutSources.IsLayout(document.FilePath)) NoteViewChoice("source"); });
+            // UI layouts get the UI Designer; the factory is attached after construction, so the button checks it when clicked.
+            if (UiLayoutSources.IsLayout(document.FilePath)) Button("UI Designer", () => { if (VisualBuilderFactory == null) return; ShowVisualBuilder(); NoteViewChoice("visual"); });
             Button("Undo", Undo); Button("Redo", Redo);
             if (System.IO.Path.GetExtension(document.FilePath).Equals(".json", StringComparison.OrdinalIgnoreCase))
                 Button("Format JSON", () =>

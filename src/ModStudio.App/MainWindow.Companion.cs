@@ -134,7 +134,7 @@ public partial class MainWindow
             Require(OperatingSystem.IsWindows(), "Level Editor is currently available on Windows.");
             var current = project ?? throw new InvalidOperationException("Open a project first.");
             Require(operation == null && !externalBusy, "Finish the current operation first.");
-            if (tabs.Select(t => t.Content).OfType<EditorPane>().Any(p => p.Document.IsDirty))
+            if (AnyUnsaved)
             {
                 if (await ChooseAsync("Save before opening Level Editor", "Level Editor reads saved project data. Save current edits before continuing?", "Save and continue", "Cancel") != "Save and continue" || !await SaveAllAsync()) return;
             }

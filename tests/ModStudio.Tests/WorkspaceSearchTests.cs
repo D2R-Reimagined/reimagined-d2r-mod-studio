@@ -50,6 +50,24 @@ internal static class WorkspaceSearchTests
         var raw = WorkspaceSearch.Run(project, new("axe raw"), texts: new Dictionary<string, string> { [weapons] = "line one\nHand Axe raw\n" });
         check(raw.Hits.Single() is { IsCell: false, Line: 2 }, "Raw source under edit is searched as text");
 
+        // A file's timestamp must be over two seconds old before the cache trusts it, so age the fixture.
+        foreach (var entry in project.SourceEntries()) File.SetLastWriteTimeUtc(entry.FullName, DateTime.UtcNow.AddMinutes(-10));
+        var cache = new SearchCache(); cache.Warm(project);
+        SearchQuery[] queries = [new("axe"), new("axe", Scope: "source"), new("Axe", MatchCase: true), new("axe", WholeWord: true), new("^b.*axe$", Regex: true), new("a.e", Regex: true), new("AXE", FileMask: "armor*"), new("hax"), new("panel")];
+        static string Shape(SearchResult r) => string.Join("|", r.Hits.Select(h => $"{h.File},{h.Row},{h.Column},{h.Line},{h.Text},{h.Start},{h.Length},{h.Label},{h.Offset}")) + $"#{r.Files},{r.MatchedFiles},{r.Truncated}";
+        check(cache.Count == project.SourceEntries().Count(f => !f.FullName.EndsWith(".dds") && !f.FullName.EndsWith(".bin")), "Warming caches every searchable file");
+        check(queries.All(q => Shape(WorkspaceSearch.Run(project, q, cache: cache)) == Shape(WorkspaceSearch.Run(project, q))), "Cached search returns exactly the hits of a fresh search in every mode");
+        check(WorkspaceSearch.Run(project, new("axe"), cache: cache).Tables.Count == 0 && WorkspaceSearch.ReadTable(project, weapons)!.Cell(0, "name") == "Hand Axe" && WorkspaceSearch.ReadTable(project, panel) == null,
+            "Warm searches parse no tables; previews read the ones they need");
+        var weaponsTable = TableData.Load(weapons); weaponsTable.SetCell(1, "name", "Battle Hammer"); TableData.Write(weapons, weaponsTable);
+        File.SetLastWriteTimeUtc(weapons, DateTime.UtcNow.AddMinutes(-5));
+        var changed = WorkspaceSearch.Run(project, new("hammer"), cache: cache);
+        check(changed.Hits.Single() is { Row: 1, Column: "name" } && changed.Tables.ContainsKey(weapons), "A file whose write time changed is read again");
+        weaponsTable.SetCell(1, "name", "Battle Axe"); TableData.Write(weapons, weaponsTable);
+        check(WorkspaceSearch.Run(project, new("battle axe"), cache: cache).Hits.Count == 1 && WorkspaceSearch.Run(project, new("battle axe"), cache: cache).Tables.Count == 1, "A file written in the last two seconds is never trusted from the cache");
+        File.Delete(panel); File.SetLastWriteTimeUtc(weapons, DateTime.UtcNow.AddMinutes(-1)); cache.Warm(project);
+        check(cache.Count == project.SourceEntries().Count(f => !f.FullName.EndsWith(".dds") && !f.FullName.EndsWith(".bin")), "Warming drops files that no longer exist");
+
         File.WriteAllText(armor, "{ not a table", Utf8);
         var broken = WorkspaceSearch.Run(project, new("table", Scope: "source/tables"));
         check(broken.Hits.Single() is { IsCell: false, Line: 1 } && broken.Hits[0].File == armor, "A table that fails to parse is searched as text");

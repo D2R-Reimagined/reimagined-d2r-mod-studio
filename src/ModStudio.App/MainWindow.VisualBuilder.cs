@@ -8,14 +8,16 @@ public partial class MainWindow
 {
     private void AttachVisualBuilder(EditorPane pane)
     {
-        if (!VisualBuilder.Supports(pane.Document.Table?.Name)) return;
+        bool layout = pane.Document.Table == null && UiLayoutSources.IsLayout(pane.Document.FilePath);
+        if (!VisualBuilder.Supports(pane.Document.Table?.Name) && !layout) return;
         pane.VisualBuilderFactory = owner =>
         {
             var host = new VisualBuilderHost(() => project, () => Profile, () => workspaceRevision, GameDataFolders, DirtyItemDependency,
                 async () => { await ChooseGameDataFolderAsync(); RefreshVisualBuilders(); },
                 name => project == null ? null : FindOpenDocument(TableData.FileFor(project, "tables", name)),
                 async name => project == null || !File.Exists(TableData.FileFor(project, "tables", name)) ? null : (await OpenDocumentAsync(TableData.FileFor(project, "tables", name), false, false))?.Document,
-                MonsterCard, OpenInBuilderAsync, pane => OpenLevelEditorAsync(selectedPane: pane), FindOpenDocument);
+                MonsterCard, OpenInBuilderAsync, pane => OpenLevelEditorAsync(selectedPane: pane), FindOpenDocument, OpenFileAtAsync);
+            if (layout) return new UiDesignerView(owner, host);
             return owner.Document.Table?.Name switch
             {
                 "missiles" => new MissileBuilderView(owner, host),
@@ -47,6 +49,21 @@ public partial class MainWindow
         if (pane == null) return;
         pane.ShowVisualBuilder();
         if (pane.VisualBuilder is IVisualBuilder builder && builder.SelectWhere(column, value)) Status.Text = $"Opened {table} · {value}";
+    }
+
+    /// <summary>Opens a file in its Source view with the caret at a character offset (a profile $variable, a parent layout's widget).</summary>
+    private async Task OpenFileAtAsync(string file, int offset)
+    {
+        var pane = await OpenDocumentAsync(file);
+        if (pane == null) return;
+        pane.ShowSource();
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            pane.Source.Focus();
+            pane.Source.CaretOffset = Math.Clamp(offset, 0, pane.Source.Text?.Length ?? 0);
+            var location = pane.Source.Document.GetLocation(pane.Source.CaretOffset);
+            pane.Source.ScrollTo(location.Line, location.Column);
+        }, Avalonia.Threading.DispatcherPriority.Background);
     }
 
     /// <summary>Something the builders read changed (another document, the profile, files on disk, the game data folder).</summary>

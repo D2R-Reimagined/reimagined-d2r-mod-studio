@@ -58,14 +58,16 @@ public static class WorkspaceSearch
     /// <summary>
     /// Searches the project's build inputs. <paramref name="tables"/> and <paramref name="texts"/> (keyed by full path) stand in
     /// for the disk copy of files whose unsaved state lives in an editor; a file in <paramref name="texts"/> is searched as text
-    /// even when it is a table, since raw source under edit has no reliable cells.
+    /// even when it is a table, since raw source under edit has no reliable cells. Disk files come from <paramref name="cache"/>
+    /// when it holds a current copy; without one every file is read and parsed again.
     /// </summary>
-    public static SearchResult Run(ModProject project, SearchQuery query, IReadOnlyDictionary<string, TableData>? tables = null, IReadOnlyDictionary<string, string>? texts = null, CancellationToken token = default, Action<int>? progress = null)
+    public static SearchResult Run(ModProject project, SearchQuery query, IReadOnlyDictionary<string, TableData>? tables = null, IReadOnlyDictionary<string, string>? texts = null, CancellationToken token = default, Action<int>? progress = null, SearchCache? cache = null)
     {
         var matcher = Matcher(query); var mask = MaskMatcher(query.FileMask);
         var hits = new List<SearchHit>(); var issues = new List<string>(); var parsed = new Dictionary<string, TableData>(StringComparer.Ordinal);
         int files = 0, matchedFiles = 0; bool truncated = false;
         if (query.Text.Length == 0) return new(hits, 0, 0, false, issues, parsed);
+        cache ??= new SearchCache(retain: false);
         var scope = query.Scope.Trim('/');
         foreach (var entry in project.SourceEntries())
         {
@@ -73,14 +75,18 @@ public static class WorkspaceSearch
             var file = entry.FullName; var relative = Relative(project.Root, file);
             if (scope.Length > 0 && !relative.StartsWith(scope + "/", StringComparison.OrdinalIgnoreCase)) continue;
             if (mask != null && !mask.IsMatch(Path.GetFileName(file))) continue;
-            if (BinaryExtensions.Contains(Path.GetExtension(file))) continue;
+            if (IsBinary(file)) continue;
             files++; if (files % 200 == 0) progress?.Invoke(files);
             int before = hits.Count;
             try
             {
                 if (texts?.TryGetValue(file, out var text) == true) SearchText(file, text, matcher, hits);
-                else if (LoadTable(file, relative, entry.Length, tables, parsed) is { } table) SearchTable(file, table, matcher, hits);
-                else if (entry.Length <= MaxTextBytes && ReadText(file) is { } content) SearchText(file, content, matcher, hits);
+                else if (tables?.TryGetValue(file, out var buffered) == true) { parsed[file] = buffered; SearchTable(file, buffered, matcher, hits); }
+                else switch (cache.Get(entry, relative, table => parsed[file] = table))
+                {
+                    case SearchCache.TableEntry cells: cells.Cells.Search(file, matcher, !query.Regex, hits); break;
+                    case SearchCache.TextEntry { Content: { } content }: SearchText(file, content, matcher, hits); break;
+                }
             }
             catch (RegexMatchTimeoutException) { issues.Add($"{relative}: the pattern took too long to match; simplify it."); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { issues.Add($"{relative}: {e.Message}"); }
@@ -92,25 +98,31 @@ public static class WorkspaceSearch
         return new(hits, files, matchedFiles, truncated, issues, parsed);
     }
 
-    /// <summary>Table files under source/, and tab-separated .txt files elsewhere, are searched by cell. A file that fails to parse is searched as text instead.</summary>
-    private static TableData? LoadTable(string file, string relative, long length, IReadOnlyDictionary<string, TableData>? buffers, Dictionary<string, TableData> parsed)
+    internal static bool IsBinary(string file) => BinaryExtensions.Contains(Path.GetExtension(file));
+
+    /// <summary>The table a search reads cells from, parsed from disk; null when the file is searched as text.</summary>
+    public static TableData? ReadTable(ModProject project, string file)
     {
-        if (buffers?.TryGetValue(file, out var buffered) == true) { parsed[file] = buffered; return buffered; }
+        var info = new FileInfo(file);
+        return info.Exists ? ParseTable(file, Relative(project.Root, file), info.Length) : null;
+    }
+
+    /// <summary>Table files under source/, and tab-separated .txt files elsewhere, are searched by cell. A file that fails to parse is searched as text instead.</summary>
+    internal static TableData? ParseTable(string file, string relative, long length)
+    {
         bool sourceTable = relative.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && (relative.StartsWith("source/tables/", StringComparison.OrdinalIgnoreCase) || relative.StartsWith("source/strings/", StringComparison.OrdinalIgnoreCase));
         bool tsv = relative.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) && length <= MaxTextBytes;
         if (!sourceTable && !tsv) return null;
         try
         {
-            TableData? table = null;
-            if (sourceTable) { var node = Read(file); if (TableData.IsTableFile(node)) table = TableData.FromFile(node, file); }
-            else { var bytes = File.ReadAllBytes(file); if (bytes.Contains((byte)'\t') && TextFileEncoding.LooksLikeText(bytes[..Math.Min(bytes.Length, 8192)])) table = TableData.FromTsv(bytes, Path.GetFileNameWithoutExtension(file), "global/excel/" + Path.GetFileName(file)); }
-            if (table != null) parsed[file] = table;
-            return table;
+            if (sourceTable) { var node = Read(file); return TableData.IsTableFile(node) ? TableData.FromFile(node, file) : null; }
+            var bytes = File.ReadAllBytes(file);
+            return bytes.Contains((byte)'	') && TextFileEncoding.LooksLikeText(bytes[..Math.Min(bytes.Length, 8192)]) ? TableData.FromTsv(bytes, Path.GetFileNameWithoutExtension(file), "global/excel/" + Path.GetFileName(file)) : null;
         }
         catch (Exception e) when (e is InvalidDataException or System.Text.Json.JsonException or InvalidOperationException or FormatException or ArgumentException) { return null; }
     }
 
-    private static string? ReadText(string file)
+    internal static string? ReadText(string file)
     {
         var bytes = File.ReadAllBytes(file);
         if (!TextFileEncoding.LooksLikeText(bytes[..Math.Min(bytes.Length, 8192)])) return null;

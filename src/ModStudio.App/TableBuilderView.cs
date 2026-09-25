@@ -19,11 +19,12 @@ namespace ModStudio.App;
 /// What a Visual Builder reads from the window: the open project, the profile, the workspace revision and where base-game
 /// files live. <see cref="FindTable"/> is a related table already open in a tab; <see cref="OpenTable"/> opens one in a
 /// background tab so a builder can edit it too. <see cref="MonsterDetails"/> draws the monster preview's full card.
+/// <see cref="OpenFileAt"/> opens any file in the Source view with the caret at a character offset.
 /// </summary>
 internal sealed record VisualBuilderHost(Func<ModProject?> Project, Func<string> Profile, Func<int> Workspace, Func<IReadOnlyList<string>> GameData,
     Func<EditorPane, string?> DirtyDependency, Func<Task> ChooseGameData, Func<string, Document?>? FindTable = null, Func<string, Task<Document?>>? OpenTable = null,
     Func<MonsterPreviewResult, Control>? MonsterDetails = null, Func<string, string, string, Task>? OpenInBuilder = null, Func<EditorPane, Task>? OpenLevelEditor = null,
-    Func<string, Document?>? FindFile = null);
+    Func<string, Document?>? FindFile = null, Func<string, int, Task>? OpenFileAt = null);
 
 /// <summary>What the window and the editor pane need from any Visual Builder, whatever its table.</summary>
 internal interface IVisualBuilder

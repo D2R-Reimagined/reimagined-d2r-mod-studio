@@ -1,10 +1,25 @@
 using Avalonia.Input;
+using ModStudio.Core;
 
 namespace ModStudio.App;
 
 public partial class MainWindow
 {
     private FindInFilesWindow? findInFiles;
+    private SearchCache? searchCache;
+    private CancellationTokenSource? searchWarm;
+
+    /// <summary>Starts a fresh search cache for the opened project and fills it in the background, so the first search is already warm.</summary>
+    private void WarmSearchCache(ModProject opened)
+    {
+        searchWarm?.Cancel(); var cache = searchCache = new SearchCache(); var work = searchWarm = new();
+        _ = Task.Run(() =>
+        {
+            try { cache.Warm(opened, work.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception e) { Console.Error.WriteLine("Search cache warm-up failed: " + e.Message); }
+        });
+    }
 
     private void InitializeFindInFiles()
     {
@@ -32,7 +47,7 @@ public partial class MainWindow
         }
         if (findInFiles == null)
         {
-            findInFiles = new FindInFilesWindow(new FindInFilesHost(() => project, PaneFor, () => tabs.Select(t => t.Content).OfType<EditorPane>(), (file, activate) => OpenDocumentAsync(file, activate: activate), ShowError, text => Status.Text = text));
+            findInFiles = new FindInFilesWindow(new FindInFilesHost(() => project, PaneFor, () => tabs.Select(t => t.Content).OfType<EditorPane>(), (file, activate) => OpenDocumentAsync(file, activate: activate), ShowError, text => Status.Text = text, () => searchCache));
             findInFiles.Closed += (_, _) => findInFiles = null;
             findInFiles.Show(this);
         }

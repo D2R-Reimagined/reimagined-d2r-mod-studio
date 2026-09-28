@@ -76,7 +76,8 @@ public partial class MainWindow
                     ]
                 }
                 """);
-            var derivedText = "{\n    \"basedOn\": \"TestBaseHD.json\",\n    \"type\": \"TestPanel\", \"name\": \"Derived\",\n    \"children\": [\n        // An extra button\n        {\n            \"type\": \"ButtonWidget\", \"name\": \"extra\",\n            \"fields\": {\n                \"rect\": { \"x\": 100, \"y\": 200 },\n                \"filename\": \"PANEL\\\\Test\\\\Button\",\n                \"hoveredFrame\": 1,\n            },\n        },\n    ]\n}\n";
+            // A children list replaces the parent's, so the parent's widgets it keeps are listed by type and name.
+            var derivedText = "{\n    \"basedOn\": \"TestBaseHD.json\",\n    \"type\": \"TestPanel\", \"name\": \"Derived\",\n    \"children\": [\n        { \"type\": \"ImageWidget\", \"name\": \"background\" },\n        { \"type\": \"TextBoxWidget\", \"name\": \"title\" },\n        // An extra button\n        {\n            \"type\": \"ButtonWidget\", \"name\": \"extra\",\n            \"fields\": {\n                \"rect\": { \"x\": 100, \"y\": 200 },\n                \"filename\": \"PANEL\\\\Test\\\\Button\",\n                \"hoveredFrame\": 1,\n            },\n        },\n    ]\n}\n";
             Write("testderivedhd.json", derivedText);
             var file = System.IO.Path.Combine(layouts, "testderivedhd.json");
 
@@ -109,7 +110,8 @@ public partial class MainWindow
             var from = ToWindow(extra.X + 30, extra.Y + 20);
             this.MouseDown(from, MouseButton.Left); this.MouseMove(new Point(from.X + 40, from.Y + 20)); this.MouseMove(new Point(from.X + 80, from.Y + 40)); this.MouseUp(new Point(from.X + 80, from.Y + 40), MouseButton.Left);
             await Until(() => view.Selected?.Name == "extra" && pane.Document.Text != derivedText, "Dragging the button did not select and move it.");
-            var dragged = UiJsonParser.Parse(pane.Document.Text)["children"]!.Items[0]["fields"]!["rect"]!;
+            static UiJsonNode ExtraRect(string text) => UiJsonParser.Parse(text)["children"]!.Items.First(i => i["name"]?.String == "extra")["fields"]!["rect"]!;
+            var dragged = ExtraRect(pane.Document.Text);
             double expectX = 100 + Math.Round(80 / view.Canvas.Zoom), expectY = 200 + Math.Round(40 / view.Canvas.Zoom);
             Require(Math.Abs(dragged["x"]!.Number!.Value - expectX) <= 1 && Math.Abs(dragged["y"]!.Number!.Value - expectY) <= 1, $"The drag wrote {pane.Document.Text[dragged.Start..dragged.End]}, expected about {expectX}, {expectY}.");
             Require(pane.Document.Text.Replace(pane.Document.Text[dragged.Start..dragged.End], "{ \"x\": 100, \"y\": 200 }") == derivedText, "Dragging changed more than the rect's numbers.");
@@ -133,7 +135,7 @@ public partial class MainWindow
             for (int k = 0; k < 3; k++) this.KeyPress(Key.Right, RawInputModifiers.None, PhysicalKey.ArrowRight, null);
             this.KeyPress(Key.Down, RawInputModifiers.Shift, PhysicalKey.ArrowDown, null);
             await Until(() => pane.Document.Text != afterDrag, "Arrow keys did not nudge the selection.");
-            var nudged = UiJsonParser.Parse(pane.Document.Text)["children"]!.Items[0]["fields"]!["rect"]!;
+            var nudged = ExtraRect(pane.Document.Text);
             Require(nudged["x"]!.Number == dragged["x"]!.Number + 3 && nudged["y"]!.Number == dragged["y"]!.Number + 10, "Nudging moved by the wrong amount: " + pane.Document.Text[nudged.Start..nudged.End]);
             pane.Undo(); history++;
             Require(pane.Document.Text == afterDrag, "A burst of nudges was not one undo step.");
@@ -145,7 +147,7 @@ public partial class MainWindow
             try { await UiDesignerView.KnownFieldsLoading; } catch (Exception e) { throw new InvalidDataException("Loading field suggestions failed: " + e.Message, e); }
             var widthBox = (TextBox)view.InspectorField("rect.width")!;
             widthBox.Focus(); widthBox.Text = "120"; this.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
-            await Until(() => UiJsonParser.Parse(pane.Document.Text)["children"]!.Items[0]["fields"]!["rect"]!["width"]?.Number == 120, "Typing a width in the inspector did not write it.");
+            await Until(() => ExtraRect(pane.Document.Text)["width"]?.Number == 120, "Typing a width in the inspector did not write it.");
             Require(pane.Document.Text.Contains("\"y\": " + nudged["y"]!.Text + ", \"width\": 120 }"), "The width was not added to the same rect: " + pane.Document.Text);
 
             // An inherited widget: moving it adds an override entry for it here; the parent file is untouched.
@@ -168,9 +170,12 @@ public partial class MainWindow
             await Until(() => view.Scene?.Find("Derived/extra_copy") == null, "Delete did not remove the copy.");
             view.Select(view.Scene!.Find("Derived/background"));
             view.Canvas.Focus();
+            // An inherited widget is deleted by leaving it out of this layout's list; the parent layout keeps it.
             this.KeyPress(Key.Delete, RawInputModifiers.None, PhysicalKey.Delete, null);
-            await Until(() => view.StatusText.Contains("cannot remove"), "Deleting an inherited widget was not refused.", () => view.StatusText);
-            Require(view.Scene!.Find("Derived/background") != null, "An inherited widget was deleted.");
+            await Until(() => view.Scene?.Find("Derived/background") == null, "Deleting an inherited widget did not leave it out of this layout.", () => view.StatusText);
+            Require(File.ReadAllText(System.IO.Path.Combine(layouts, "testbasehd.json")) == parentText, "Deleting an inherited widget changed the parent layout.");
+            pane.Undo();
+            await Until(() => view.Scene?.Find("Derived/background") != null, "Undo did not bring the inherited widget back.");
 
             view.Select(view.Scene!.Find("Derived/extra"));
             view.Canvas.ShowNames = true; view.Canvas.InvalidateVisual();
@@ -189,6 +194,59 @@ public partial class MainWindow
             pane.Undo();
             while (pane.Document.CanUndo) pane.Undo();
             await Until(() => pane.Document.Text == derivedText && !pane.Document.IsDirty && view.Scene?.Find("Derived/extra")?.X == scene.Root.X + 100, "Undo did not bring the layout back.");
+            await CloseTabAsync(tabs.First(t => t.Content == pane));
+
+            // A stash-like panel keeps several screens in one file; the designer shows one tab's screen at a time.
+            Sprite("panel/test/stash_a.sprite", 600, 400, 1, (200, 40, 40));
+            Sprite("panel/test/stash_b.sprite", 600, 400, 1, (40, 200, 40));
+            Sprite("panel/test/stash_c.sprite", 600, 400, 1, (40, 40, 200));
+            Sprite("panel/test/tabs.sprite", 195, 72, 2, (90, 80, 60));
+            Write("teststashhd.json", """
+                {
+                    "type": "BankPanel", "name": "Stash",
+                    "fields": { "rect": "$PanelRect", "anchor": "$PanelAnchor", "backgroundFile": [ "PANEL\\Test\\Stash_A", "PANEL\\Test\\Stash_B", "PANEL\\Test\\Stash_C" ] },
+                    "children": [
+                        { "type": "ImageWidget", "name": "background", "fields": { "filename": "PANEL\\Test\\Stash_A" } },
+                        { "type": "TabBarWidget", "name": "BankTabs", "fields": { "rect": { "x": 0, "y": 0 }, "tabCount": 3, "tabSize": { "x": 195, "y": 72 }, "filename": "PANEL\\Test\\Tabs",
+                            "activeFrames": [ 1, 1, 1 ], "inactiveFrames": [ 0, 0, 0 ], "textStrings": [ "@personal", "@shared", "@gems" ] } },
+                        { "type": "Widget", "name": "basicstash_container", "children": [
+                            { "type": "ButtonWidget", "name": "grid", "fields": { "rect": { "x": 20, "y": 330 }, "filename": "PANEL\\Test\\Button" } },
+                            { "type": "Widget", "name": "SharedStashTabContainer", "children": [ { "type": "ButtonWidget", "name": "next", "fields": { "rect": { "x": 100, "y": 330 }, "filename": "PANEL\\Test\\Button" } } ] } ] },
+                        { "type": "Widget", "name": "advancedstash_gems", "children": [ { "type": "ButtonWidget", "name": "gcw", "fields": { "rect": { "x": 300, "y": 330 }, "filename": "PANEL\\Test\\Button" } } ] },
+                    ]
+                }
+                """);
+            var stashPane = (await OpenDocumentAsync(System.IO.Path.Combine(layouts, "teststashhd.json"), true))!;
+            stashPane.ShowVisualBuilder();
+            var stash = (UiDesignerView)stashPane.VisualBuilder!;
+            await Until(() => stash.Scene != null && stash.Canvas.Bounds.Width > 100 && stash.CurrentPage != null, "The stash did not open on a page.");
+            bool OnTab(string key) => string.Equals(stash.CurrentPage?.Label, key, StringComparison.OrdinalIgnoreCase);
+            // Tab names are localized when the game's strings are there ("Personal"), else shown as their keys.
+            Require(stash.PageItems.Select(i => i.Label.ToLowerInvariant()).SequenceEqual(["all pages", "personal", "shared", "gems"]) && OnTab("personal"), "The stash's pages are not its tabs, or it did not open on the first: " + string.Join(", ", stash.PageItems.Select(i => i.Label)));
+            var stashScene = stash.Scene!;
+            Require(stash.Canvas.IsHidden(stashScene.Find("Stash/advancedstash_gems/gcw")!) && stash.Canvas.IsHidden(stashScene.Find("Stash/basicstash_container/SharedStashTabContainer")!) && !stash.Canvas.IsHidden(stashScene.Find("Stash/basicstash_container/grid")!),
+                "The personal tab shows other tabs' widgets.");
+            Point StashPoint(double x, double y) => stash.Canvas.TranslatePoint(new Point(x * stash.Canvas.Zoom + stash.Canvas.Pan.X, y * stash.Canvas.Zoom + stash.Canvas.Pan.Y), this)!.Value;
+            var inside = StashPoint(stashScene.Root.X + 300, stashScene.Root.Y + 200);
+            bool Near(Avalonia.Media.Color c, int r, int g, int b) => Math.Abs(c.R - r) < 14 && Math.Abs(c.G - g) < 14 && Math.Abs(c.B - b) < 14;
+            await UiBitmaps.Pending;
+            await Until(() => Near(Pixel(inside), 200, 40, 40), "The personal tab's background is not drawn.", () => Pixel(inside).ToString());
+            // Clicking a tab on the canvas shows its page, with its background.
+            var bar = stashScene.Find("Stash/BankTabs")!;
+            var gemsTab = StashPoint(bar.X + 2 * 195 + 97, bar.Y + 36);
+            this.MouseDown(gemsTab, MouseButton.Left); this.MouseUp(gemsTab, MouseButton.Left);
+            await Until(() => OnTab("gems"), "Clicking the gems tab did not show its page.", () => stash.CurrentPage?.Label ?? "all");
+            await UiBitmaps.Pending;
+            await Until(() => Near(Pixel(inside), 40, 40, 200) && !stash.Canvas.IsHidden(stash.Scene!.Find("Stash/advancedstash_gems/gcw")!), "The gems tab's background or slots are not drawn.", () => Pixel(inside).ToString());
+            Screenshot("ui-designer-stash-pages.png");
+            // Picking a widget another tab shows switches to that tab.
+            stash.Select(stash.Scene!.Find("Stash/basicstash_container/SharedStashTabContainer/next"), fromTree: true);
+            await Until(() => OnTab("shared") && stash.Selected?.Name == "next", "Picking the shared stash's button did not show the shared tab.", () => stash.CurrentPage?.Label ?? "all");
+            await UiBitmaps.Pending;
+            await Until(() => Near(Pixel(inside), 40, 200, 40), "The shared tab's background is not drawn.", () => Pixel(inside).ToString());
+            Require(stash.ShowPage("All pages") && stash.CurrentPage == null && !stash.Canvas.IsHidden(stash.Scene!.Find("Stash/advancedstash_gems/gcw")!), "All pages did not show everything.");
+            Require(!stashPane.Document.IsDirty, "Switching pages edited the file.");
+            await CloseTabAsync(tabs.First(t => t.Content == stashPane));
 
             if (GameDataFolders().FirstOrDefault(f => HdAppearance.Locate(f, "data/global/ui/layouts/playerinventoryexpansionlayouthd.json") != null) is { } game)
             {
@@ -213,8 +271,22 @@ public partial class MainWindow
                 Screenshot("ui-designer-inventory-zoomed.png");
                 Require(!inventory.Document.IsDirty, "Looking at the game's inventory edited it.");
                 await CloseTabAsync(tabs.First(t => t.Content == inventory));
+
+                // The game's stash, one tab at a time.
+                var bank = (await OpenDocumentAsync(HdAppearance.Locate(game, "data/global/ui/layouts/bankexpansionlayouthd.json")!, true))!;
+                bank.ShowVisualBuilder();
+                var bankView = (UiDesignerView)bank.VisualBuilder!;
+                await Until(() => bankView.CurrentPage?.Label == "Personal", "The game's stash did not open on its Personal tab.", () => bankView.CurrentPage?.Label ?? "all");
+                foreach (var page in new[] { "Personal", "Gems", "Materials" })
+                {
+                    Require(bankView.ShowPage(page), "The game's stash has no " + page + " page.");
+                    bankView.Canvas.FitPanel();
+                    await UiBitmaps.Pending; await Task.Delay(200); await UiBitmaps.Pending; await Until(() => true, "");
+                    Screenshot($"ui-designer-stash-{page.ToLowerInvariant()}.png");
+                }
+                Require(!bank.Document.IsDirty, "Looking at the game's stash edited it.");
+                await CloseTabAsync(tabs.First(t => t.Content == bank));
             }
-            await CloseTabAsync(tabs.First(t => t.Content == pane));
         }
         finally
         {

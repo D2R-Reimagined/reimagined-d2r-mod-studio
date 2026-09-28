@@ -323,6 +323,8 @@ internal sealed partial class UiDesignerView
         row.Children.Add(box);
         body.Children.Add(Labeled(field, row));
         browse.Click += (_, _) => ShowSpritePicker(browse, filename, picked => SetField(w, field, UiJsonEditor.Quote(picked), $"{w.Name}.{field} = {picked}"));
+        if (canvas.Page is { } page && page.Sprites.TryGetValue(w.Path, out var swapped))
+            body.Children.Add(Line($"On the {page.Label} page the game draws {swapped} here instead (the panel's per-tab picture), and so does the canvas. The value above is what the file sets.", Inherited, 11));
         var sprite = assets?.Sprite(filename);
         if (sprite == null)
         {

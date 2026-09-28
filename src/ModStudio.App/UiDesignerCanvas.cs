@@ -81,13 +81,16 @@ internal sealed class UiDesignerCanvas : Control
         set
         {
             scene = value; runs.Clear();
+            // Edits can shorten a scroll view's content; views that are gone forget their scroll.
+            foreach (var path in scrolls.Keys.ToArray())
+                if (value?.Find(path) is { } view) scrolls[path] = Math.Min(scrolls[path], ScrollRange(view)); else scrolls.Remove(path);
             if (Selected != null) Selected = value?.Find(Selected.Path);
             if (Hovered != null) Hovered = value?.Find(Hovered.Path);
             InvalidateVisual();
         }
     }
 
-    public void Select(UiWidget? widget) { CommitNudge(); Selected = widget; InvalidateVisual(); }
+    public void Select(UiWidget? widget) { CommitNudge(); Selected = widget; if (widget != null) Reveal(widget); InvalidateVisual(); }
 
     // ── View ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -146,7 +149,12 @@ internal sealed class UiDesignerCanvas : Control
 
     // ── Geometry helpers ──────────────────────────────────────────────────────────────────────────
 
-    private UiSpriteInfo? SpriteOf(UiWidget w) => UiLayout.SpriteField(w) is { } field ? Assets?.Sprite(w.String(field)) : null;
+    /// <summary>A widget's picture: the one the shown page swaps in (a stash tab's background), else its own.</summary>
+    internal UiSpriteInfo? SpriteOf(UiWidget w)
+    {
+        if (Page?.Sprites.TryGetValue(w.Path, out var swapped) == true && Assets?.Sprite(swapped) is { } page) return page;
+        return UiLayout.SpriteField(w) is { } field ? Assets?.Sprite(w.String(field)) : null;
+    }
 
     /// <summary>The offset a pending gesture (drag or nudge) adds to a widget or one of its descendants, in layout pixels.</summary>
     private (double X, double Y) Offset(UiWidget w)
@@ -159,18 +167,99 @@ internal sealed class UiDesignerCanvas : Control
         return (0, 0);
     }
 
+    /// <summary>How far each scroll view (by path) is scrolled, in layout pixels.</summary>
+    private readonly Dictionary<string, double> scrolls = [];
+
+    private static IEnumerable<UiWidget> ScrollViews(UiWidget w)
+    {
+        for (var at = w.Parent; at != null; at = at.Parent) if (at.Type == "ScrollViewWidget") yield return at;
+    }
+
+    /// <summary>How far the scroll views around a widget move it up.</summary>
+    private double ScrollOf(UiWidget w) => ScrollViews(w).Sum(v => scrolls.GetValueOrDefault(v.Path));
+
+    /// <summary>A widget's rectangle where the layout and the scroll views around it put it.</summary>
+    internal UiRect Placed(UiWidget w) { var b = w.Bounds; return new(b.X, b.Y - ScrollOf(w), b.Width, b.Height); }
+
+    /// <summary>The area a widget shows through: the scroll views around it clip their content, as in game. Null when none do.</summary>
+    internal Rect? ClipOf(UiWidget w)
+    {
+        Rect? clip = null;
+        foreach (var view in ScrollViews(w))
+        {
+            var r = ToRect(Placed(view));
+            if (r.Width <= 0 || r.Height <= 0) continue;
+            clip = clip is { } c ? c.Intersect(r) : r;
+        }
+        return clip;
+    }
+
+    /// <summary><see cref="ClipOf"/> in view pixels.</summary>
+    private Rect? ViewClip(UiWidget w) => ClipOf(w) is { } c ? new Rect(ToView(c.X, c.Y), ToView(c.Right, c.Bottom)) : null;
+
+    /// <summary>How far a scroll view can scroll: its content's height beyond its own.</summary>
+    private static double ScrollRange(UiWidget view)
+    {
+        var b = view.Bounds;
+        double bottom = view.Descendants().Where(d => d.HasSize).Select(d => d.Bounds.Bottom).DefaultIfEmpty(b.Bottom).Max();
+        return Math.Max(0, bottom - b.Bottom);
+    }
+
+    private void ScrollTo(UiWidget view, double offset)
+    {
+        offset = Math.Clamp(offset, 0, ScrollRange(view));
+        if (offset == scrolls.GetValueOrDefault(view.Path)) return;
+        scrolls[view.Path] = offset; InvalidateVisual();
+    }
+
+    /// <summary>Scrolls the scroll views around a widget so it shows, as the game does when a row takes focus.</summary>
+    private void Reveal(UiWidget w)
+    {
+        foreach (var view in ScrollViews(w).Reverse())
+        {
+            var v = Placed(view); var b = Placed(w);
+            double current = scrolls.GetValueOrDefault(view.Path);
+            // Only a widget scrolled out of sight moves the view, so clicking a half-shown row does not jolt it mid-drag.
+            if (b.Bottom <= v.Y) ScrollTo(view, current - (v.Y - b.Y));
+            else if (b.Y >= v.Bottom) ScrollTo(view, current + Math.Min(b.Bottom - v.Bottom, b.Y - v.Y));
+        }
+    }
+
     /// <summary>A widget's rectangle on screen as drawn now, including a gesture in progress.</summary>
     internal UiRect DrawnBounds(UiWidget w)
     {
         var (ox, oy) = Offset(w);
-        var b = w.Bounds;
+        var b = Placed(w);
         if (drag is { Moved: true } d && d.Widget == w && d.Kind != "move") b = d.Preview;
         else b = new UiRect(b.X + ox, b.Y + oy, b.Width, b.Height);
         if (b.Width <= 0 && b.Height <= 0) return new UiRect(b.X - 8 / Zoom, b.Y - 8 / Zoom, 16 / Zoom, 16 / Zoom);
         return b;
     }
 
-    private bool IsHidden(UiWidget w) { for (var at = w; at != null; at = at.Parent) if (Hidden.Contains(at.Path)) return true; return false; }
+    /// <summary>Hidden from the tree's eye, or by the page shown (a stash tab hides the other tabs' containers).</summary>
+    internal bool IsHidden(UiWidget w)
+    {
+        for (var at = w; at != null; at = at.Parent) if (Hidden.Contains(at.Path) || Page?.Hidden.Contains(at.Path) == true) return true;
+        return false;
+    }
+
+    /// <summary>The page shown: which containers it hides, pictures it swaps and the tab it selects. Null shows everything.</summary>
+    public UiPage? Page { get; set; }
+
+    /// <summary>A tab of a tab bar was clicked (without dragging): the designer shows its page.</summary>
+    public event Action<UiWidget, int>? TabClicked;
+
+    /// <summary>The tab a tab bar shows as selected: the shown page's, else the first.</summary>
+    private int ActiveTab(UiWidget bar) => Page?.TabBar == bar.Path ? Page.Tab : 0;
+
+    /// <summary>Which tab of a tab bar is at a layout point, or -1.</summary>
+    internal int TabAt(UiWidget bar, Point layout)
+    {
+        if (UiLayout.TabBar(bar) is not { } tabs || !DrawnBounds(bar).Contains(layout.X, layout.Y)) return -1;
+        double step = (tabs.Width + tabs.Padding) * bar.Scale;
+        int index = (int)((layout.X - DrawnBounds(bar).X) / step);
+        return index >= 0 && index < tabs.Count ? index : -1;
+    }
 
     /// <summary>The sprite frame a widget shows in the previewed state, falling back to its resting frame.</summary>
     internal int FrameFor(UiWidget w, bool live = true)
@@ -188,7 +277,7 @@ internal sealed class UiDesignerCanvas : Control
         return UiLayout.SpriteFrame(w);
     }
 
-    private bool DrawsSomething(UiWidget w) => SpriteOf(w) != null || TextOf(w) != null || w.Type is "RectangleWidget" or "NineTileImageWidget" or "InventorySlotWidget" or "InventoryGridWidget";
+    private bool DrawsSomething(UiWidget w) => SpriteOf(w) != null || TextOf(w) != null || w.Type is "RectangleWidget" or "NineTileImageWidget" or "InventorySlotWidget" or "InventoryGridWidget" or "TabBarWidget";
 
     // ── Rendering ─────────────────────────────────────────────────────────────────────────────────
 
@@ -203,7 +292,12 @@ internal sealed class UiDesignerCanvas : Control
             foreach (var reference in References)
                 using (context.PushOpacity(0.45))
                     foreach (var w in reference.Widgets) DrawWidget(context, w, reference, false);
-            foreach (var w in scene.Widgets) if (!IsHidden(w)) DrawWidget(context, w, scene, true);
+            foreach (var w in scene.Widgets)
+            {
+                if (IsHidden(w)) continue;
+                if (ClipOf(w) is { } clip) using (context.PushClip(clip)) DrawWidget(context, w, scene, true);
+                else DrawWidget(context, w, scene, true);
+            }
         }
         context.DrawRectangle(null, ScreenPen, screen);
         DrawOverlays(context);
@@ -224,6 +318,7 @@ internal sealed class UiDesignerCanvas : Control
                 context.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromArgb(200, 110, 96, 70)), 3 * scale), ToRect(b));
                 return;
         }
+        if (UiLayout.TabBar(w) is { } tabs) { DrawTabs(context, w, tabs, b, scale); return; }
         if (SpriteOf(w) is { } sprite)
         {
             var target = SpriteRect(w, sprite, b, scale);
@@ -248,7 +343,7 @@ internal sealed class UiDesignerCanvas : Control
     /// <summary>Whether the widget draws something at a layout point: its picture's opaque pixels, its text, its fill.</summary>
     private bool DrawnAt(UiWidget w, Point layout)
     {
-        if (TextOf(w) != null || w.Type is "RectangleWidget" or "NineTileImageWidget" or "InventorySlotWidget" or "InventoryGridWidget") return true;
+        if (TextOf(w) != null || w.Type is "RectangleWidget" or "NineTileImageWidget" or "InventorySlotWidget" or "InventoryGridWidget" or "TabBarWidget") return true;
         if (SpriteOf(w) is not { } sprite) return false;
         var r = SpriteRect(w, sprite, DrawnBounds(w), w.Scale);
         if (!r.Contains(layout)) return false;
@@ -266,6 +361,39 @@ internal sealed class UiDesignerCanvas : Control
     }
 
     internal static JsonObject? StyleOf(UiWidget w) => w.Value("style") as JsonObject ?? w.Value("text/style") as JsonObject ?? w.Value("textStyle") as JsonObject;
+
+    /// <summary>
+    /// A tab bar as the game draws it: one tab per textStrings entry, tabSize apart, each the sprite's active or inactive
+    /// frame with its label centred in the active or inactive text colour. The selected tab is the shown page's.
+    /// </summary>
+    private void DrawTabs(DrawingContext context, UiWidget w, (int Count, double Width, double Height, double Padding) tabs, UiRect b, double scale)
+    {
+        static int FrameAt(JsonNode? frames, int i, int fallback) => (frames as JsonArray) is { } a && i < a.Count && UiLayout.Number(a[i]) is { } n ? (int)n : fallback;
+        var sprite = SpriteOf(w);
+        var labels = w.Value("textStrings") as JsonArray;
+        var style = w.Value("textStyle") as JsonObject;
+        double size = Math.Max(1, UiLayout.Member(style, "pointSize", 26) * scale);
+        var typeface = new Typeface(UiFonts.For(Assets, (style?["fontFace"] as JsonValue)?.TryGetValue<string>(out var f) == true ? f : null));
+        int active = ActiveTab(w);
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            var rect = new Rect(b.X + i * (tabs.Width + tabs.Padding) * scale, b.Y, tabs.Width * scale, tabs.Height * scale);
+            bool on = i == active;
+            int frame = on ? FrameAt(w.Value("activeFrames"), i, 1) : FrameAt(w.Value("inactiveFrames"), i, 0);
+            if (sprite != null && frame >= 0)
+            {
+                var bitmap = UiBitmaps.Get(sprite, frame, InvalidateVisual);
+                var target = new Rect(rect.X, rect.Y, sprite.Width * scale, sprite.DrawHeight * scale);
+                if (bitmap != null) context.DrawImage(bitmap, new Rect(bitmap.Size), target); else context.FillRectangle(Loading, target);
+            }
+            var raw = labels != null && i < labels.Count && (labels[i] as JsonValue)?.TryGetValue<string>(out var s) == true ? s : "";
+            var label = raw.StartsWith('@') ? Localize?.Invoke(raw[1..]) ?? raw : raw;
+            if (label.Length == 0) continue;
+            var color = UiLayout.Color(w.Value(on ? "activeTextColor" : "inactiveTextColor")) ?? (on ? ((byte)240, (byte)240, (byte)240, (byte)255) : ((byte)125, (byte)141, (byte)144, (byte)255));
+            var text = new FormattedText(label, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, size, new SolidColorBrush(Color.FromArgb(color.A, color.R, color.G, color.B)));
+            context.DrawText(text, new Point(rect.X + (rect.Width - text.Width) / 2, rect.Y + (rect.Height - text.Height) / 2));
+        }
+    }
 
     /// <summary>A widget's text set once per scene: the run, its drop shadow, and how it sits in the widget's rect.</summary>
     private sealed record TextRun(FormattedText Main, FormattedText? Shadow, string Horizontal, string Vertical);
@@ -318,12 +446,13 @@ internal sealed class UiDesignerCanvas : Control
             {
                 if (w.Parent == null || IsHidden(w) || w == Selected) continue;
                 var r = ToView(DrawnBounds(w));
-                if (r.Width < 2 && r.Height < 2) continue;
-                context.DrawRectangle(null, w.InDocument ? OwnPen : InheritedPen, r);
+                if (r.Width < 2 && r.Height < 2 || ViewClip(w) is { } clip && !clip.Intersects(r)) continue;
+                using (context.PushClip(ViewClip(w) ?? new Rect(Bounds.Size))) context.DrawRectangle(null, w.InDocument ? OwnPen : InheritedPen, r);
             }
         if (ShowNames)
             foreach (var w in scene.Widgets)
-                if (w.Parent != null && !IsHidden(w) && ToView(DrawnBounds(w)) is var r && r.Width > 50 && r.Height > 14) Label(context, w.Name, r.TopLeft, 10);
+                if (w.Parent != null && !IsHidden(w) && ToView(DrawnBounds(w)) is var r && r.Width > 50 && r.Height > 14 && (ViewClip(w) is not { } clip || clip.Contains(r.TopLeft)))
+                    Label(context, w.Name, r.TopLeft, 10);
         if (Hovered != null && Hovered != Selected && !IsHidden(Hovered)) context.DrawRectangle(null, HoverPen, ToView(DrawnBounds(Hovered)));
         if (Selected is { } s)
         {
@@ -332,7 +461,7 @@ internal sealed class UiDesignerCanvas : Control
             context.DrawRectangle(null, SelectedPen, r);
             // The anchor: where on the parent the rect offset is measured from.
             var (ax, ay) = Offset(s.Parent ?? s);
-            var anchor = ToView(s.AnchorPoint.X + ax, s.AnchorPoint.Y + ay);
+            var anchor = ToView(s.AnchorPoint.X + ax, s.AnchorPoint.Y + ay - ScrollOf(s));
             context.DrawLine(AnchorPen, new Point(anchor.X - 6, anchor.Y), new Point(anchor.X + 6, anchor.Y));
             context.DrawLine(AnchorPen, new Point(anchor.X, anchor.Y - 6), new Point(anchor.X, anchor.Y + 6));
             context.DrawEllipse(null, AnchorPen, anchor, 3.5, 3.5);
@@ -384,7 +513,7 @@ internal sealed class UiDesignerCanvas : Control
 
     private string SizeCaption(UiWidget s)
     {
-        var b = drag is { Moved: true } d && d.Widget == s && d.Kind != "move" ? d.Preview : s.Bounds;
+        var b = drag is { Moved: true } d && d.Widget == s && d.Kind != "move" ? d.Preview : Placed(s);
         var rect = s.Value("rect") as JsonObject;
         double x = UiLayout.Member(rect, "x"), y = UiLayout.Member(rect, "y");
         if (drag is { Moved: true } m && m.Widget == s && m.Kind == "move") { x += m.Dx; y += m.Dy; }
@@ -442,7 +571,7 @@ internal sealed class UiDesignerCanvas : Control
         for (int k = scene.Widgets.Count - 1; k >= 1; k--)
         {
             var w = scene.Widgets[k];
-            if (IsHidden(w) || !DrawnBounds(w).Contains(layout.X, layout.Y)) continue;
+            if (IsHidden(w) || !DrawnBounds(w).Contains(layout.X, layout.Y) || ClipOf(w) is { } clip && !clip.Contains(layout)) continue;
             bool fills = w.Flag("fitToParent");
             int rank = DrawsSomething(w) ? (DrawnAt(w, layout) ? (fills ? 3 : 0) : 4) : Catchers.Contains(w.Type) || fills ? 2 : 1;
             hits.Add((w, rank));
@@ -503,7 +632,7 @@ internal sealed class UiDesignerCanvas : Control
 
     private void StartDrag(UiWidget widget, string kind, Point layout, PointerPressedEventArgs e)
     {
-        drag = new Drag { Widget = widget, Kind = kind, Start = layout, Original = widget.Bounds, Preview = widget.Bounds };
+        drag = new Drag { Widget = widget, Kind = kind, Start = layout, Original = Placed(widget), Preview = Placed(widget) };
         e.Pointer.Capture(this); e.Handled = true;
     }
 
@@ -564,8 +693,8 @@ internal sealed class UiDesignerCanvas : Control
         var others = new List<UiRect>();
         if (w.Parent != null)
         {
-            others.Add(w.Parent.Bounds);
-            foreach (var sibling in w.Parent.Children) if (sibling != w && !IsHidden(sibling) && (sibling.HasSize || SpriteOf(sibling) != null)) others.Add(sibling.Bounds);
+            others.Add(Placed(w.Parent));
+            foreach (var sibling in w.Parent.Children) if (sibling != w && !IsHidden(sibling) && (sibling.HasSize || SpriteOf(sibling) != null)) others.Add(Placed(sibling));
         }
         if (scene != null) others.Add(new UiRect(0, 0, scene.Width, scene.Height));
         double[] mineX = [r.X, r.X + r.Width / 2, r.Right], mineY = [r.Y, r.Y + r.Height / 2, r.Bottom];
@@ -629,7 +758,12 @@ internal sealed class UiDesignerCanvas : Control
         if (panFrom != null) { panFrom = null; e.Pointer.Capture(null); Cursor = Cursor.Default; return; }
         var d = drag; drag = null; guides.Clear();
         e.Pointer.Capture(null);
-        if (d is not { Moved: true }) { InvalidateVisual(); return; }
+        if (d is not { Moved: true })
+        {
+            // A click on a tab shows its page, as in game.
+            if (d is { Kind: "move" } click && UiLayout.TabBar(click.Widget) != null && TabAt(click.Widget, click.Start) is var tab and >= 0) TabClicked?.Invoke(click.Widget, tab);
+            InvalidateVisual(); return;
+        }
         var w = d.Widget; var rect = w.Value("rect") as JsonObject;
         double ps = w.ParentScale, x0 = UiLayout.Member(rect, "x"), y0 = UiLayout.Member(rect, "y");
         UiCanvasEdit edit;
@@ -692,7 +826,11 @@ internal sealed class UiDesignerCanvas : Control
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
-        if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) { Pan += new Vector(e.Delta.Y * 60, 0); fit = null; InvalidateVisual(); ViewChanged?.Invoke(); }
+        // Ctrl+wheel scrolls the scroll view under the pointer, as the wheel does in game.
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && scene != null && ToLayout(e.GetPosition(this)) is var at
+            && scene.Widgets.LastOrDefault(w => w.Type == "ScrollViewWidget" && !IsHidden(w) && Placed(w).Contains(at.X, at.Y) && ScrollRange(w) > 0) is { } view)
+            ScrollTo(view, scrolls.GetValueOrDefault(view.Path) - e.Delta.Y * 120);
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) { Pan += new Vector(e.Delta.Y * 60, 0); fit = null; InvalidateVisual(); ViewChanged?.Invoke(); }
         else ZoomAt(Math.Pow(1.15, e.Delta.Y), e.GetPosition(this));
         e.Handled = true;
     }

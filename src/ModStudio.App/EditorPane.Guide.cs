@@ -54,6 +54,8 @@ public sealed partial class EditorPane
         AddHandler(PointerWheelChangedEvent, (_, e) =>
         {
             if (!e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.Delta.Y == 0) return;
+            // The UI Designer's canvas scrolls its scroll views with Ctrl+wheel.
+            if (e.Source is Avalonia.Visual v && (v is UiDesignerCanvas || v.FindAncestorOfType<UiDesignerCanvas>() != null)) return;
             e.Handled = true; ViewSettings.Zoom(Source.IsVisible, e.Delta.Y > 0 ? 1 : -1);
         }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
         AddHandler(KeyDownEvent, (_, e) =>

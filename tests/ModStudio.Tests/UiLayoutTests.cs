@@ -60,7 +60,8 @@ internal static class UiLayoutTests
                 ]
             }
             """);
-        var derivedText = "{\n    \"basedOn\": \"BasePanelHD.json\",\n    \"type\": \"TestPanel\", \"name\": \"Derived\",\n    \"children\": [\n        {\n            \"type\": \"TextBoxWidget\", \"name\": \"title\",\n            \"fields\": {\n                \"text\": \"Hello\",\n            },\n        },\n        {\n            \"type\": \"ImageWidget\", \"name\": \"extra\",\n            \"fields\": { \"rect\": { \"x\": 1, \"y\": 2 } },\n        },\n    ]\n}\n";
+        // A children list replaces the parent's: the parent's widgets it keeps are listed by type and name.
+        var derivedText = "{\n    \"basedOn\": \"BasePanelHD.json\",\n    \"type\": \"TestPanel\", \"name\": \"Derived\",\n    \"children\": [\n        { \"type\": \"ImageWidget\", \"name\": \"background\" },\n        {\n            \"type\": \"TextBoxWidget\", \"name\": \"title\",\n            \"fields\": {\n                \"text\": \"Hello\",\n            },\n        },\n        { \"type\": \"Widget\", \"name\": \"group\" },\n        {\n            \"type\": \"ImageWidget\", \"name\": \"extra\",\n            \"fields\": { \"rect\": { \"x\": 1, \"y\": 2 } },\n        },\n    ]\n}\n";
         Write("derivedpanelhd.json", derivedText);
         var derivedPath = Path.Combine(layouts, "derivedpanelhd.json");
         var sources = new UiLayoutSources(project, [], derivedPath);
@@ -70,7 +71,12 @@ internal static class UiLayoutTests
         check(UiLayoutMode.For("derivedpanelhd.json") == UiLayoutMode.PcHd && UiLayoutMode.For("controller/xhd.json") == UiLayoutMode.ControllerHd && UiLayoutMode.For("hudpanel.json") == UiLayoutMode.Sd, "A layout's folder and name pick its default profile");
         var scene = Resolve(derivedText);
         check(scene.Issues.Count == 0, "A based-on layout resolves cleanly: " + string.Join(" | ", scene.Issues));
-        check(scene.Root.Name == "Derived" && scene.Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group", "extra"]), "basedOn keeps the parent's widgets in order and appends the file's new ones");
+        check(scene.Root.Name == "Derived" && scene.Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group", "extra"]) && scene.Find("Derived/group/ok") != null && scene.Find("Derived/background")!.String("filename") == "PANEL\\Test\\Background",
+            "Entries named like the parent's widgets take them on whole (fields and children)");
+        var partial = "{ \"basedOn\": \"BasePanelHD.json\", \"type\": \"TestPanel\", \"name\": \"Derived\", \"children\": [ { \"type\": \"Widget\", \"name\": \"group\" }, { \"type\": \"TextBoxWidget\", \"name\": \"title\" } ] }";
+        check(Resolve(partial).Root.Children.Select(c => c.Name).SequenceEqual(["group", "title"]), "A children list replaces the parent's: widgets it leaves out are dropped, and its order wins (as controller layouts drop close buttons)");
+        var noList = "{\n    \"basedOn\": \"BasePanelHD.json\",\n    \"type\": \"TestPanel\", \"name\": \"Derived\",\n    \"fields\": {\n        \"anchor\": { \"x\": 1.0, \"y\": 0.5 },\n    },\n}\n";
+        check(Resolve(noList).Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group"]), "A file with no children list keeps the parent's children");
         var title = scene.Find("Derived/title")!;
         check(title.String("text") == "Hello" && title.Fields["text"].InDocument && !title.Fields["rect"].InDocument && title.Inherited && title.InDocument, "Merged fields remember which file wrote them");
         check(UiLayout.Color((title.Value("style") as System.Text.Json.Nodes.JsonObject)?["fontColor"]) == (199, 179, 119, 255), "Profile $variables resolve through other variables inside objects");
@@ -105,8 +111,15 @@ internal static class UiLayoutTests
         var okMoved = UiLayoutEdit.SetMembers(derivedText, ok, "rect", [("y", 9)]);
         var okScene = Resolve(okMoved);
         check(okScene.Issues.Count == 0 && okScene.Find("Derived/group/ok")!.Fields["rect"].InDocument && okScene.Find("Derived/group")!.InDocument && okScene.Find("Derived/group")!.Bounds.Width == 400,
-            "Overriding a nested inherited widget adds type-and-name entries for it and its parent");
-        check(okScene.Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group", "extra"]), "Override entries merge with the parent's widgets rather than adding new ones");
+            "Overriding a nested inherited widget gives its parent's entry a children list naming it");
+        check(okScene.Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group", "extra"]) && okScene.Find("Derived/group")!.Children.Count == 1, "Override entries take on the parent's widgets rather than adding new ones");
+        // In a file that keeps the parent's children, the first override writes the whole list, or the others would disappear.
+        var noListScene = Resolve(noList);
+        var noListMoved = UiLayoutEdit.SetMembers(noList, noListScene.Find("Derived/title")!, "rect", [("x", 120)]);
+        var noListMovedScene = Resolve(noListMoved);
+        check(noListMovedScene.Root.Children.Select(c => c.Name).SequenceEqual(["background", "title", "group"]) && noListMovedScene.Find("Derived/title")!.X == noListScene.Root.X + 120 && noListMovedScene.Find("Derived/group/ok") != null,
+            "Overriding a widget in a file without a children list lists every inherited child, so none is dropped");
+        check(noListMoved.Contains("    \"children\": [\n        { \"type\": \"ImageWidget\", \"name\": \"background\" },\n"), "The list is written one entry per line in the file's style: " + noListMoved);
         // The root's rect is a profile variable: moving it writes a literal here, leaving the profile alone.
         var rootMoved = UiLayoutEdit.SetMembers(derivedText, scene.Root, "rect", [("x", -1000)]);
         var rootScene = Resolve(rootMoved);
@@ -122,16 +135,76 @@ internal static class UiLayoutTests
         var dupInherited = UiLayoutEdit.Duplicate(derivedText, ok, "ok_copy");
         var dupInheritedScene = Resolve(dupInherited);
         check(dupInheritedScene.Find("Derived/group/ok_copy") is { } okCopy && okCopy.X == ok.X && okCopy.Fields["anchor"].InDocument, "Duplicating an inherited widget writes out its merged fields");
-        throws(() => UiLayoutEdit.Delete(derivedText, title), "An inherited widget cannot be deleted");
+        var baseText = File.ReadAllText(Path.Combine(layouts, "basepanelhd.json"));
+        check(Resolve(UiLayoutEdit.Delete(derivedText, title)).Find("Derived/title") == null && File.ReadAllText(Path.Combine(layouts, "basepanelhd.json")) == baseText,
+            "Deleting an inherited widget leaves it out of this layout; the parent layout keeps it");
+        check(Resolve(UiLayoutEdit.Delete(noList, noListScene.Find("Derived/background")!)).Root.Children.Select(c => c.Name).SequenceEqual(["title", "group"]), "Deleting from a file without a children list keeps the other inherited children");
         check(Resolve(UiLayoutEdit.Delete(duplicated, dupScene.Find("Derived/extra_copy")!)).Root.Children.Count == 4 && UiLayoutEdit.Delete(duplicated, dupScene.Find("Derived/extra_copy")!) == derivedText, "Deleting an added widget removes exactly its text");
         var reordered = UiLayoutEdit.Move(derivedText, extra, -1);
-        check(UiJsonParser.Parse(reordered)["children"]!.Items[0]["name"]!.String == "extra", "Draw order swaps a widget with its sibling in this file");
+        check(UiJsonParser.Parse(reordered)["children"]!.Items[2]["name"]!.String == "extra" && Resolve(reordered).Root.Children[2].Name == "extra", "Draw order swaps a widget with its sibling in this file");
         var withChild = UiLayoutEdit.AddChild(derivedText, extra, "TextBoxWidget", "label", [("text", "\"Hi\"")]);
         check(Resolve(withChild).Find("Derived/extra/label")?.String("text") == "Hi", "A child can be added to a widget with no children yet");
         var renamed = UiLayoutEdit.Rename(derivedText, extra, "bonus");
         check(Resolve(renamed).Find("Derived/bonus") != null, "A widget this file adds can be renamed");
         throws(() => UiLayoutEdit.Rename(derivedText, title, "heading"), "An inherited widget cannot be renamed");
         check(UiLayoutEdit.FreeName(scene.Root, "title") == "title_2", "New names avoid siblings' names");
+
+        // ── Pages ──────────────────────────────────────────────────────────────────────────────────
+        // A stash-like panel: a tab bar whose tabs name the containers beside it, and one background per tab.
+        var stashText = """
+            {
+                "type": "BankPanel", "name": "Stash",
+                "fields": { "rect": { "x": 0, "y": 0, "width": 1162, "height": 1507 }, "backgroundFile": [ "PANEL\\A", "PANEL\\B", "PANEL\\C" ] },
+                "children": [
+                    { "type": "ImageWidget", "name": "background", "fields": { "filename": "PANEL\\A" } },
+                    { "type": "TabBarWidget", "name": "BankTabs", "fields": { "rect": { "x": 82, "y": 146 }, "tabCount": 3, "tabSize": { "x": 195, "y": 72 }, "tabPadding": { "x": 5, "y": 0 }, "textStrings": [ "@personal", "@shared", "@gems" ] } },
+                    { "type": "Widget", "name": "PreviousSeasonToggleDisplay", "children": [ { "type": "TextBoxWidget", "name": "label", "fields": { "text": "x" } } ] },
+                    { "type": "Widget", "name": "basicstash_container", "children": [
+                        { "type": "InventoryGridWidget", "name": "grid", "fields": { "rect": { "x": 89, "y": 219 }, "cellCount": { "x": 10, "y": 10 }, "cellSize": { "x": 98, "y": 98 } } },
+                        { "type": "Widget", "name": "SharedStashTabContainer", "children": [ { "type": "ButtonWidget", "name": "next", "fields": { "rect": { "x": 1, "y": 1, "width": 10, "height": 10 } } } ] } ] },
+                    { "type": "Widget", "name": "advancedstash_gems", "children": [ { "type": "AdvancedStashSlotWidget", "name": "gcw", "fields": { "rect": { "x": 164, "y": 232, "width": 98, "height": 98 } } } ] },
+                ]
+            }
+            """;
+        Write("teststashhd.json", stashText);
+        var stashPath = Path.Combine(layouts, "teststashhd.json");
+        var stash = UiLayout.Resolve(new UiLayoutSources(project, [], stashPath), stashPath, stashText, UiLayoutMode.PcHd, UiScreen.All[0], null);
+        check(stash.Find("Stash/BankTabs")!.Bounds is { Width: 595, Height: 72 }, "A tab bar is as wide as its tabs and the gaps between them");
+        var stashPages = UiPages.Find(stash, key => key == "personal" ? "Personal" : null);
+        check(stashPages.Count == 1 && stashPages[0].Preferred && stashPages[0].Pages.Select(p => p.Label).SequenceEqual(["Personal", "shared", "gems"]), "A tab bar naming the containers beside it makes one page per tab, labelled with its localized tab name");
+        var (personal, shared, gems) = (stashPages[0].Pages[0], stashPages[0].Pages[1], stashPages[0].Pages[2]);
+        check(personal.Hidden.SetEquals(["Stash/basicstash_container/SharedStashTabContainer", "Stash/advancedstash_gems"]) && shared.Hidden.SetEquals(["Stash/advancedstash_gems"]) && gems.Hidden.SetEquals(["Stash/basicstash_container", "Stash/basicstash_container/SharedStashTabContainer"]),
+            "Each stash tab hides the other tabs' containers: the shared navigation shows only on Shared, containers named for no tab always show");
+        check(personal.Sprites["Stash/background"] == "PANEL\\A" && gems.Sprites["Stash/background"] == "PANEL\\C" && gems.TabBar == "Stash/BankTabs" && gems.Tab == 2, "Each tab shows the panel's background for it and selects its tab");
+        var overlapping = """
+            { "type": "Panel", "name": "Quest", "children": [
+                { "type": "Widget", "name": "Tab0", "children": [ { "type": "ImageWidget", "name": "a", "fields": { "rect": { "x": 10, "y": 10, "width": 300, "height": 300 } } } ] },
+                { "type": "Widget", "name": "Tab1", "children": [ { "type": "ImageWidget", "name": "b", "fields": { "rect": { "x": 20, "y": 20, "width": 300, "height": 300 } } } ] },
+                { "type": "TableWidget", "name": "Options", "children": [
+                    { "type": "TableRowWidget", "name": "Row A", "children": [ { "type": "TextBoxWidget", "name": "t", "fields": { "rect": { "width": 100, "height": 40 }, "text": "a" } } ] },
+                    { "type": "TableRowWidget", "name": "Row B", "children": [ { "type": "TextBoxWidget", "name": "t", "fields": { "rect": { "width": 100, "height": 40 }, "text": "b" } } ] } ] }
+            ] }
+            """;
+        var overlapScene = UiLayout.Resolve(new UiLayoutSources(project, [], stashPath), stashPath, overlapping, UiLayoutMode.PcHd, UiScreen.All[0], null);
+        var overlapPages = UiPages.Find(overlapScene);
+        check(overlapPages.Count == 1 && !overlapPages[0].Preferred && overlapPages[0].Pages.Select(p => p.Label).SequenceEqual(["Tab0", "Tab1"]) && overlapPages[0].Pages[0].Hidden.SetEquals(["Quest/Tab1"]),
+            "Sibling containers covering the same area are offered as pages, opt-in; table rows placed at runtime are not");
+        var table = """
+            { "type": "Panel", "name": "Opts", "children": [
+                { "type": "TableWidget", "name": "T", "fields": { "rect": { "x": 70, "y": 150 }, "rowHeight": 70, "cellPadding": { "top": 5 },
+                    "columns": [ { "width": 1000, "alignment": { "h": "fit", "v": "fit" } }, { "width": 700, "alignment": { "h": "center", "v": "center" } } ] },
+                  "children": [
+                    { "type": "TableRowWidget", "name": "Row", "children": [ { "type": "TextBoxWidget", "name": "a", "fields": { "text": "a" } } ] },
+                    { "type": "TableRowWidget", "name": "Row", "children": [
+                        { "type": "TextBoxWidget", "name": "b", "fields": { "rect": { "x": 40 }, "text": "b" } },
+                        { "type": "ButtonWidget", "name": "c", "fields": { "rect": { "width": 100, "height": 40 } } } ] } ] }
+            ] }
+            """;
+        var tableScene = UiLayout.Resolve(new UiLayoutSources(project, [], stashPath), stashPath, table, UiLayoutMode.PcHd, UiScreen.All[0], null);
+        check(tableScene.Find("Opts/T/Row/a")!.Bounds == new UiRect(70, 155, 1000, 65) && tableScene.Find("Opts/T/Row/b")!.Bounds == new UiRect(110, 225, 960, 65),
+            "Table rows sit rowHeight apart inside cellPadding, and a fit column stretches its widget over the cell less its offset");
+        check(tableScene.Find("Opts/T/Row/c")!.Bounds == new UiRect(70 + 1000 + 300, 225 + 12.5, 100, 40) && tableScene.Find("Opts/T")!.Bounds is { Width: 1700, Height: 140 },
+            "A row's second widget goes in the second column, centred there; the table is as big as its rows");
 
         // ── Assets ─────────────────────────────────────────────────────────────────────────────────
         var sprites = Directory.CreateDirectory(Path.Combine(project.Root, "data", "hd", "global", "ui", "panel", "test")).FullName;
@@ -178,6 +251,14 @@ internal static class UiLayoutTests
                 catch (Exception e) { failures.Add($"{Path.GetFileName(file)}: {e.Message}"); }
             }
             check(failures.Count == 0, $"Every vanilla layout resolves ({count}): " + string.Join(" | ", failures.Take(5)));
+            foreach (var bank in new[] { "bankexpansionlayouthd.json", "controller/bankexpansionlayouthd.json" })
+            {
+                var file = Path.Combine(vanilla, bank.Replace('/', Path.DirectorySeparatorChar));
+                var bankScene = UiLayout.Resolve(new UiLayoutSources(null, [game], file), file, File.ReadAllText(file), UiLayoutMode.For(bank), UiScreen.All[0], f => gameAssets.Sprite(f) is { } s ? (s.Width, s.DrawHeight) : null);
+                var tabs = UiPages.Find(bankScene, k => gameAssets.Localize(k)).SingleOrDefault(s => s.Preferred);
+                check(tabs != null && tabs.Pages.Select(p => p.Label).SequenceEqual(["Personal", "Shared", "Gems", "Materials", "Runes"]) && tabs.Pages.All(p => p.Sprites.Count == 1 && gameAssets.Sprite(p.Sprites.Values.Single()) != null)
+                    && bankScene.Root.Children.All(c => c.Name is not ("grid" or "gold_amount")), $"The vanilla {bank} has its five tabs, each with its background, and no classic stash grid");
+            }
             check(found >= sprited * 0.95, $"Vanilla HD layouts find their sprites ({found} of {sprited}; missing {string.Join(", ", missing.Take(12))})");
         }
     }

@@ -100,6 +100,7 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
         AutomationProperties.SetName(state, "Button state");
         state.SelectionChanged += (_, _) => { canvas.PreviewState = (state.SelectedItem as string ?? "Normal").ToLowerInvariant(); canvas.InvalidateVisual(); };
         bar.Children.Add(state);
+        InitializePages(bar);
         bar.Children.Add(Separator());
         bar.Children.Add(Toggle("Outlines", "Outline every widget: gold for widgets this file defines, dashed blue for ones it inherits", canvas.ShowOutlines, v => canvas.ShowOutlines = v));
         bar.Children.Add(Toggle("Names", "Label every widget with its name", canvas.ShowNames, v => canvas.ShowNames = v));
@@ -162,7 +163,7 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
 
         Document.Changed += DocumentChanged;
         pane.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && Visible && stale) Shown(); };
-        SetStatus("Click a widget to select it · drag to move · handles resize · arrows nudge (Shift ×10) · Alt+click picks what is underneath · wheel zooms, middle-drag or Space+drag pans");
+        SetStatus("Click a widget to select it · drag to move · handles resize · arrows nudge (Shift ×10) · Alt+click picks what is underneath · Ctrl+wheel scrolls a scroll view · wheel zooms, middle-drag or Space+drag pans");
     }
 
     private bool Visible => pane.IsVisible && pane.VisualBuilderVisible;
@@ -224,6 +225,7 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
             canvas.Localize = key => assets.Localize(key);
             canvas.References = [.. referenceNames.Select(name => ResolveReference(sources, name, screen)).OfType<UiScene>()];
             canvas.Scene = resolved;
+            RefreshPages();
             RebuildTree();
             if (selectedPath != null && canvas.Selected == null && resolved.Find(selectedPath) is { } again) canvas.Select(again);
             SyncTreeSelection();
@@ -287,6 +289,7 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
     internal void Select(UiWidget? widget, bool fromTree = false)
     {
         if (widget == canvas.Selected) return;
+        RevealPage(widget);
         canvas.Select(widget);
         // Make sure the tree shows it: its ancestors expanded.
         for (var at = widget?.Parent; at != null; at = at.Parent) collapsed.Remove(at.Path);
@@ -315,13 +318,13 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
         void Add(UiWidget w, int depth)
         {
             bool expanded = !collapsed.Contains(w.Path);
-            next.Add(new(w, depth, w.Children.Count > 0, expanded, canvas.Hidden.Contains(w.Path)));
+            next.Add(new(w, depth, w.Children.Count > 0, expanded, canvas.IsHidden(w)));
             if (expanded) foreach (var c in w.Children) Add(c, depth + 1);
         }
         if (filter.Length == 0) Add(scene.Root, 0);
         else
             foreach (var w in scene.Widgets.Where(w => VisualBuilder.Matches((w.Name + " " + w.Type).ToLowerInvariant(), filter)))
-                next.Add(new(w, 0, false, false, canvas.Hidden.Contains(w.Path)));
+                next.Add(new(w, 0, false, false, canvas.IsHidden(w)));
         syncingTree = true;
         try
         {
@@ -350,12 +353,15 @@ internal sealed partial class UiDesignerView : Grid, IVisualBuilder
         DockPanel.SetDock(chevron, Dock.Left); panel.Children.Add(chevron);
         var eye = new TextBlock
         {
-            Text = row.Hidden ? "◌" : "●", Width = 18, FontSize = 9, Foreground = row.Hidden ? Muted : EyeBrush, Background = Brushes.Transparent,
+            Text = canvas.Hidden.Contains(w.Path) ? "◌" : "●", Width = 18, FontSize = 9, Foreground = row.Hidden ? Muted : EyeBrush, Background = Brushes.Transparent,
             VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Center, Cursor = new Cursor(StandardCursorType.Hand)
         };
-        ToolTip.SetTip(eye, row.Hidden ? "Show on the canvas (view only; the file is not changed)" : "Hide on the canvas to see what is behind it (view only; the file is not changed)");
+        ToolTip.SetTip(eye, !canvas.Hidden.Contains(w.Path) && row.Hidden ? $"Not on the page shown ({canvas.Page?.Label}); pick it to switch to a page that has it"
+            : row.Hidden ? "Show on the canvas (view only; the file is not changed)" : "Hide on the canvas to see what is behind it (view only; the file is not changed)");
         eye.PointerPressed += (_, e) => { if (!canvas.Hidden.Remove(w.Path)) canvas.Hidden.Add(w.Path); canvas.InvalidateVisual(); RebuildTree(); e.Handled = true; };
         DockPanel.SetDock(eye, Dock.Right); panel.Children.Add(eye);
+        // Widgets not drawn (hidden, or on another page) stay listed but faded.
+        if (row.Hidden) panel.Opacity = 0.5;
         panel.DoubleTapped += (_, _) => { Select(w); ZoomToSelection(); };
         panel.ContextRequested += (_, e) => { Select(w); ShowContextMenu(w, panel); e.Handled = true; };
         var text = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };

@@ -97,7 +97,7 @@ public sealed class UiWidget
     public string Path => Parent == null ? Name : Parent.Path + "/" + Name;
     /// <summary>Whether this file defines the widget (true for the root); false when it only comes from a basedOn parent.</summary>
     public bool InDocument => Parent == null || Definitions.Any(d => d.File.IsDocument);
-    /// <summary>Whether a basedOn parent defines it too, so this file can override but not remove it.</summary>
+    /// <summary>Whether a basedOn parent defines it too: its name ties it to the parent's widget, so it cannot be renamed here.</summary>
     public bool Inherited => Definitions.Any(d => !d.File.IsDocument);
 
     /// <summary>The widget's position: its parent's, plus its anchor on the parent and its rect offset, in the parent's scale.</summary>
@@ -213,8 +213,8 @@ public sealed class UiLayoutSources
 
 /// <summary>
 /// Resolves D2R UI layout files the way the game assembles them. A layout names its type, name, fields and children; basedOn
-/// names a parent layout whose widgets it merges into by name (fields override one by one, children the file does not list
-/// are kept, new ones are added). "$Name" values are read from the profile files (_profilehd.json and the files it is based
+/// names a parent layout it builds on: fields override one by one, and a children list replaces the parent's, each entry
+/// taking on the parent's widget of the same name (a file with no children list keeps the parent's). "$Name" values are read from the profile files (_profilehd.json and the files it is based
 /// on, per <see cref="UiLayoutMode"/>), and a widget sits at its parent's position plus its anchor (a fraction of the parent's
 /// size) plus its rect offset, all scaled by the parent's scale.
 /// </summary>
@@ -306,22 +306,24 @@ public static class UiLayout
             if (d.Node["fields"] is { IsObject: true } fields)
                 foreach (var member in fields.Members) widget.Fields[member.Key] = new UiField { Key = member.Key, Raw = member.Value, File = d.File };
         }
-        // Children: the first definition's order, later files' same-named children merged in, new ones appended.
+        // Children: a definition that has a children list replaces the list it is based on, in its own order; each entry
+        // takes on the same-named entry of the list it replaces (by occurrence), so an entry of type and name alone keeps the
+        // parent's widget as it was. A definition with no children key keeps the list it is based on. (Controller layouts
+        // drop the parent's close buttons and hinges by leaving them out; expansion layouts list every parent widget again.)
         var groups = new List<(string Name, List<Definition> Parts)>();
         foreach (var d in definitions)
         {
             if (d.Node["children"] is not { IsArray: true } children) continue;
+            var next = new List<(string Name, List<Definition> Parts)>();
             var used = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var child in children.Items.Where(c => c.IsObject))
             {
                 var childName = child["name"]?.String ?? "";
                 int occurrence = used[childName] = used.GetValueOrDefault(childName) + 1;
-                int found = -1, seen = 0;
-                for (int k = 0; k < groups.Count; k++)
-                    if (groups[k].Name == childName && ++seen == occurrence) { found = k; break; }
-                if (found >= 0) groups[found].Parts.Add(new(d.File, child));
-                else groups.Add((childName, [new(d.File, child)]));
+                var inherited = groups.Where(g => g.Name == childName).Skip(occurrence - 1).FirstOrDefault();
+                next.Add((childName, [.. inherited.Parts ?? [], new(d.File, child)]));
             }
+            groups = next;
         }
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var (childName, parts) in groups)
@@ -409,7 +411,52 @@ public static class UiLayout
         return 0;
     }
 
-    private static void Place(UiWidget widget, double parentX, double parentY, double parentWidth, double parentHeight, double parentScale, Func<string, (double Width, double Height)?>? spriteSize)
+    /// <summary>A tab bar's tabs: how many, each tab's size and the gap between them; null for other widgets.</summary>
+    public static (int Count, double Width, double Height, double Padding)? TabBar(UiWidget widget)
+    {
+        if (widget.Type != "TabBarWidget" || widget.Value("tabSize") is not JsonObject size) return null;
+        int count = (int)(widget.Number("tabCount") ?? (widget.Value("textStrings") as JsonArray)?.Count ?? 0);
+        return count <= 0 ? null : (count, Member(size, "x"), Member(size, "y"), Member(widget.Value("tabPadding") as JsonObject, "x"));
+    }
+
+    /// <summary>A table's columns: each one's width and how a cell's widget sits in it ("fit" fills that side).</summary>
+    public static (double Width, string H, string V)[] TableColumns(UiWidget table) =>
+        (table.Value("columns") as JsonArray)?.Select(c => (Member(c, "width"), Align(c, "h"), Align(c, "v"))).ToArray() ?? [];
+
+    private static string Align(JsonNode? column, string side) =>
+        ((column as JsonObject)?["alignment"] as JsonObject)?[side] is JsonValue v && v.TryGetValue<string>(out var s) ? s : side == "h" ? "left" : "top";
+
+    /// <summary>
+    /// Lays a table out as the game does at runtime: row i sits i × rowHeight down, and a row's k-th widget goes in column k,
+    /// inside cellPadding. A "fit" side stretches a widget with no size of its own over the cell (less its offset), so text
+    /// wraps at the column's width; other alignments place it in the cell by its size.
+    /// </summary>
+    private static void PlaceTable(UiWidget table, Func<string, (double Width, double Height)?>? spriteSize)
+    {
+        var columns = TableColumns(table);
+        double rowHeight = table.Number("rowHeight") ?? 0, scale = table.Scale;
+        var padding = table.Value("cellPadding") as JsonObject;
+        double left = Member(padding, "left"), right = Member(padding, "right"), top = Member(padding, "top"), bottom = Member(padding, "bottom");
+        double rowWidth = columns.Sum(c => c.Width);
+        for (int i = 0; i < table.Children.Count; i++)
+        {
+            var row = table.Children[i];
+            double rowY = table.Y + i * rowHeight * scale;
+            row.X = table.X; row.Y = rowY; row.LocalWidth = rowWidth; row.LocalHeight = rowHeight; row.Scale = scale; row.AnchorPoint = (table.X, rowY);
+            double cellX = table.X;
+            for (int k = 0; k < row.Children.Count; k++)
+            {
+                // Widgets past the last column share it, as a row can hold more widgets than the table has columns.
+                var column = columns.Length == 0 ? (Width: rowWidth, H: "left", V: "top") : columns[Math.Min(k, columns.Length - 1)];
+                var cell = (X: cellX + left * scale, Y: rowY + top * scale, Width: Math.Max(0, column.Width - left - right), Height: Math.Max(0, rowHeight - top - bottom));
+                Place(row.Children[k], cell.X, cell.Y, cell.Width, cell.Height, scale, spriteSize, (column.H, column.V));
+                if (k < columns.Length) cellX += column.Width * scale;
+            }
+        }
+        if (table.LocalWidth <= 0 && table.LocalHeight <= 0) (table.LocalWidth, table.LocalHeight) = (rowWidth, rowHeight * table.Children.Count);
+    }
+
+    private static void Place(UiWidget widget, double parentX, double parentY, double parentWidth, double parentHeight, double parentScale, Func<string, (double Width, double Height)?>? spriteSize, (string H, string V)? alignIn = null)
     {
         var rect = widget.Value("rect") as JsonObject;
         var anchor = widget.Value("anchor") as JsonObject;
@@ -426,19 +473,33 @@ public static class UiLayout
         else { x = anchorPoint.X + Member(rect, "x") * parentScale; y = anchorPoint.Y + Member(rect, "y") * parentScale; }
         // A widget with no size of its own is as big as the picture it draws; the root fills the screen.
         if (widget.Parent == null && width <= 0 && height <= 0) (width, height) = (parentWidth, parentHeight);
+        else if (width <= 0 && height <= 0 && TabBar(widget) is { } tabs) (width, height) = (tabs.Count * tabs.Width + Math.Max(0, tabs.Count - 1) * tabs.Padding, tabs.Height);
         else if (width <= 0 && height <= 0 && SpriteField(widget) is { } field && spriteSize?.Invoke(widget.String(field)!) is { } sprite)
             (width, height) = (sprite.Width, sprite.Height);
         if (widget.Type == "InventoryGridWidget" && width <= 0 && widget.Value("cellCount") is JsonObject count && widget.Value("cellSize") is JsonObject cell)
             (width, height) = (Member(count, "x") * Member(cell, "x"), Member(count, "y") * Member(cell, "y"));
+        if (alignIn is var (h, v))
+        {
+            // In a table cell: the column's alignment sizes or places the widget; the shift joins its anchor point, so a
+            // drag still edits rect as an offset from where the table puts it.
+            double rx = Member(rect, "x"), ry = Member(rect, "y");
+            if (h == "fit" && width <= 0) width = Math.Max(0, parentWidth - rx);
+            if (v == "fit" && height <= 0) height = Math.Max(0, parentHeight - ry);
+            double dx = h switch { "center" => (parentWidth - width * scale / parentScale) / 2, "right" => parentWidth - width * scale / parentScale, _ => 0 } * parentScale;
+            double dy = v switch { "center" => (parentHeight - height * scale / parentScale) / 2, "bottom" => parentHeight - height * scale / parentScale, _ => 0 } * parentScale;
+            x += dx; y += dy; anchorPoint = (anchorPoint.X + dx, anchorPoint.Y + dy);
+        }
         widget.X = x; widget.Y = y; widget.LocalWidth = width; widget.LocalHeight = height; widget.Scale = scale; widget.AnchorPoint = anchorPoint;
+        if (widget.Type == "TableWidget" && widget.Children.Count > 0 && widget.Children.All(c => c.Type == "TableRowWidget")) { PlaceTable(widget, spriteSize); return; }
         foreach (var child in widget.Children) Place(child, x, y, width, height, scale, spriteSize);
     }
 }
 
 /// <summary>
 /// Plans text edits for a layout in the designer. Everything is written into the document being edited: a field set on a
-/// widget that only a basedOn parent defines gets an override entry for that widget in this file (created with its type and
-/// name, and its parents', as the merge needs), so parent files and the profile are never changed from here.
+/// widget that only a basedOn parent defines gets an entry for that widget in this file (type and name, which take on the
+/// parent's widget; a children list written for the first time lists all the current children, since it replaces the
+/// parent's), so parent files and the profile are never changed from here.
 /// </summary>
 public static class UiLayoutEdit
 {
@@ -496,8 +557,9 @@ public static class UiLayoutEdit
     /// <summary>Adds a new child widget (type, name and fields as literals) at the end of a widget's children.</summary>
     public static string AddChild(string text, UiWidget parent, string type, string name, IReadOnlyList<(string Key, string Literal)> fields)
     {
-        (text, var node) = EnsureWidget(text, parent);
-        return AppendChild(text, node, type, name, fields);
+        text = EnsureChildren(text, parent);
+        var children = Locate(UiJsonParser.Parse(text), parent)!["children"]!;
+        return UiJsonEditor.Apply(text, UiJsonEditor.AppendItem(text, children, ChildBlock(text, children, type, name, fields)));
     }
 
     /// <summary>
@@ -520,27 +582,30 @@ public static class UiLayoutEdit
             return UiJsonEditor.Apply(text, UiJsonEditor.InsertItemAfter(text, siblings, index, copy));
         }
         var fields = widget.Fields.Values.Select(f => (f.Key, f.RawText)).ToList();
-        (text, var parentNode) = EnsureWidget(text, widget.Parent!);
-        return AppendChild(text, parentNode, widget.Type, newName, fields);
+        return AddChild(text, widget.Parent!, widget.Type, newName, fields);
     }
 
-    /// <summary>Removes a widget this file adds (one a parent file also defines can only be overridden, not removed).</summary>
+    /// <summary>
+    /// Removes a widget from this layout. For a widget a parent layout defines, that is leaving it out of this file's children
+    /// list (as controller layouts drop close buttons): the parent layout keeps it.
+    /// </summary>
     public static string Delete(string text, UiWidget widget)
     {
         Require(widget.Parent != null, "The root widget cannot be deleted.");
-        Require(!widget.Inherited, $"{widget.Name} comes from {widget.Definitions[0].File.Name}; this file can override its fields but cannot remove it.");
+        text = EnsureChildren(text, widget.Parent!);
         var doc = UiJsonParser.Parse(text);
         var node = Locate(doc, widget) ?? throw new InvalidDataException($"{widget.Path} is not written in this file.");
         var siblings = Locate(doc, widget.Parent!)!["children"]!;
         return UiJsonEditor.Apply(text, [UiJsonEditor.RemoveItem(text, siblings, siblings.Items.IndexOf(node))]);
     }
 
-    /// <summary>Moves a widget one place earlier (drawn below) or later (drawn above) among the siblings written in this file.</summary>
+    /// <summary>Moves a widget one place earlier (drawn below) or later (drawn above) among its siblings, in this file's list.</summary>
     public static string Move(string text, UiWidget widget, int direction)
     {
         Require(widget.Parent != null, "The root widget cannot move.");
+        text = EnsureChildren(text, widget.Parent!);
         var doc = UiJsonParser.Parse(text);
-        var node = Locate(doc, widget) ?? throw new InvalidDataException($"{widget.Name} is not written in this file, so its order comes from {widget.Definitions[0].File.Name}.");
+        var node = Locate(doc, widget) ?? throw new InvalidDataException($"{widget.Name} is not written in this file.");
         var siblings = Locate(doc, widget.Parent!)!["children"]!;
         int index = siblings.Items.IndexOf(node), other = index + Math.Sign(direction);
         Require(other >= 0 && other < siblings.Items.Count, direction < 0 ? $"{widget.Name} is already drawn first." : $"{widget.Name} is already drawn last.");
@@ -581,46 +646,41 @@ public static class UiLayoutEdit
         return node;
     }
 
-    /// <summary>Makes sure this file lists the widget (and its parents), adding type-and-name entries that merge with a parent file's widgets.</summary>
+    /// <summary>
+    /// Makes sure this file lists the widget (and its parents): a type-and-name entry takes on the parent layout's widget
+    /// of that name, so it changes nothing until fields are added to it.
+    /// </summary>
     private static (string Text, UiJsonNode Node) EnsureWidget(string text, UiWidget widget)
     {
-        for (int guard = 0; guard < 64; guard++)
-        {
-            var root = UiJsonParser.Parse(text);
-            var path = new List<UiWidget>();
-            for (var w = widget; w.Parent != null; w = w.Parent) path.Insert(0, w);
-            var node = root; bool changed = false;
-            foreach (var step in path)
-            {
-                if (node["children"] is not { IsArray: true } children)
-                {
-                    text = AppendChild(text, node, step.Type, step.Name, []);
-                    changed = true; break;
-                }
-                var match = children.Items.Where(c => c.IsObject && (c["name"]?.String ?? "") == step.Key.Name).Skip(step.Key.Occurrence).FirstOrDefault();
-                if (match == null)
-                {
-                    // Earlier same-named siblings must be listed first so the occurrence lines up.
-                    text = UiJsonEditor.Apply(text, UiJsonEditor.AppendItem(text, children, StubBlock(text, children, step)));
-                    changed = true; break;
-                }
-                node = match;
-            }
-            if (!changed) return (text, node);
-        }
-        throw new InvalidDataException($"Could not add an entry for {widget.Path} to this file.");
+        if (widget.Parent == null) return (text, UiJsonParser.Parse(text));
+        text = EnsureChildren(text, widget.Parent);
+        var children = Locate(UiJsonParser.Parse(text), widget.Parent)!["children"]!;
+        if (Entry(children, widget) is { } listed) return (text, listed);
+        // Not listed although the list is this file's: the scene is older than the text. List it at the end.
+        text = UiJsonEditor.Apply(text, UiJsonEditor.AppendItem(text, children, ChildBlock(text, children, widget.Type, widget.Name, [])));
+        return (text, Locate(UiJsonParser.Parse(text), widget) ?? throw new InvalidDataException($"Could not add an entry for {widget.Path} to this file."));
     }
 
-    /// <summary>An entry for a widget laid out like the array it goes into: on its own lines when the siblings are.</summary>
-    private static string StubBlock(string text, UiJsonNode children, UiWidget widget) => ChildBlock(text, children, widget.Type, widget.Name, []);
+    private static UiJsonNode? Entry(UiJsonNode children, UiWidget widget) =>
+        children.Items.Where(c => c.IsObject && (c["name"]?.String ?? "") == widget.Key.Name).Skip(widget.Key.Occurrence).FirstOrDefault();
 
-    private static string AppendChild(string text, UiJsonNode node, string type, string name, IReadOnlyList<(string Key, string Literal)> fields)
+    /// <summary>
+    /// Makes sure this file has a children list for the widget. A children list replaces the parent layout's, so one written
+    /// for the first time lists every child the widget has now (type and name, which keep them as they are), in order.
+    /// </summary>
+    private static string EnsureChildren(string text, UiWidget widget)
     {
-        if (node["children"] is { IsArray: true } children)
-            return UiJsonEditor.Apply(text, UiJsonEditor.AppendItem(text, children, ChildBlock(text, children, type, name, fields)));
-        var indent = MemberIndent(text, node); var nl = UiJsonEditor.NewLine(text); var unit = Unit(indent);
-        var block = "[" + nl + indent + unit + Block(type, name, fields, indent + unit, unit, nl) + "," + nl + indent + "]";
-        return UiJsonEditor.Apply(text, UiJsonEditor.SetMember(text, node, "children", block));
+        (text, var node) = EnsureWidget(text, widget);
+        if (node["children"] is { IsArray: true }) return text;
+        var entries = widget.Children.Select(c => "{ \"type\": " + UiJsonEditor.Quote(c.Type) + ", \"name\": " + UiJsonEditor.Quote(c.Name) + " }").ToList();
+        string list;
+        if (text.IndexOf('\n', node.Start, node.End - node.Start) < 0) list = entries.Count == 0 ? "[ ]" : "[ " + string.Join(", ", entries) + " ]";
+        else
+        {
+            var indent = MemberIndent(text, node); var nl = UiJsonEditor.NewLine(text); var unit = Unit(indent);
+            list = "[" + string.Concat(entries.Select(e => nl + indent + unit + e + ",")) + nl + indent + "]";
+        }
+        return UiJsonEditor.Apply(text, UiJsonEditor.SetMember(text, node, "children", list));
     }
 
     private static string ChildBlock(string text, UiJsonNode children, string type, string name, IReadOnlyList<(string Key, string Literal)> fields)

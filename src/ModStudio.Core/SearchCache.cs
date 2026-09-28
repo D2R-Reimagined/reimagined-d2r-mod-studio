@@ -38,17 +38,31 @@ public sealed class SearchCache(bool retain = true)
         return entry;
     }
 
-    /// <summary>Reads every searchable project file ahead of the first search, and drops files that no longer exist.</summary>
-    public void Warm(ModProject project, CancellationToken token = default)
+    /// <summary>
+    /// Reads every searchable project file ahead of the first search, and drops files that no longer exist. The work runs on
+    /// <paramref name="workers"/> dedicated below-normal-priority threads (the caller's included) rather than the thread pool, so
+    /// warming a large project neither starves the pool the UI awaits on nor competes with it for CPU.
+    /// </summary>
+    public void Warm(ModProject project, CancellationToken token = default, int workers = 2)
     {
         var seen = new ConcurrentDictionary<string, byte>(entries.Comparer);
         var files = project.SourceEntries().Where(f => !WorkspaceSearch.IsBinary(f.FullName)).ToArray();
-        Parallel.ForEach(files, new ParallelOptions { CancellationToken = token, MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) }, file =>
+        int next = -1;
+        void Work()
         {
-            seen[file.FullName] = 0;
-            try { Get(file, Storage.Relative(project.Root, file.FullName)); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { }
-        });
+            for (int index; !token.IsCancellationRequested && (index = Interlocked.Increment(ref next)) < files.Length;)
+            {
+                var file = files[index]; seen[file.FullName] = 0;
+                try { Get(file, Storage.Relative(project.Root, file.FullName)); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { }
+            }
+        }
+        var helpers = Enumerable.Range(1, Math.Clamp(workers, 1, Environment.ProcessorCount) - 1)
+            .Select(_ => new Thread(Work) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "Search index" }).ToArray();
+        foreach (var helper in helpers) helper.Start();
+        Work();
+        foreach (var helper in helpers) helper.Join();
+        token.ThrowIfCancellationRequested();
         foreach (var key in entries.Keys) if (!seen.ContainsKey(key)) entries.TryRemove(key, out _);
     }
 

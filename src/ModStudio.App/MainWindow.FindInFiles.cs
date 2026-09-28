@@ -9,16 +9,26 @@ public partial class MainWindow
     private SearchCache? searchCache;
     private CancellationTokenSource? searchWarm;
 
-    /// <summary>Starts a fresh search cache for the opened project and fills it in the background, so the first search is already warm.</summary>
-    private void WarmSearchCache(ModProject opened)
+    /// <summary>Drops the previous project's search cache (stopping its warm-up) and starts an empty one; searches fill it on demand.</summary>
+    private void ResetSearchCache()
     {
-        searchWarm?.Cancel(); var cache = searchCache = new SearchCache(); var work = searchWarm = new();
-        _ = Task.Run(() =>
+        searchWarm?.Cancel(); searchWarm = null; searchCache = new SearchCache();
+    }
+
+    /// <summary>
+    /// Fills the search cache on a low-priority background thread so the first search is already warm. Called once the project
+    /// and its restored tabs are up, so indexing (thousands of files read and parsed) never competes with loading.
+    /// </summary>
+    private void StartSearchIndexing(ModProject opened)
+    {
+        if (project != opened || searchCache is not { } cache || searchWarm != null) return;
+        var work = searchWarm = new();
+        new Thread(() =>
         {
             try { cache.Warm(opened, work.Token); }
             catch (OperationCanceledException) { }
             catch (Exception e) { Console.Error.WriteLine("Search cache warm-up failed: " + e.Message); }
-        });
+        }) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "Search index" }.Start();
     }
 
     private void InitializeFindInFiles()

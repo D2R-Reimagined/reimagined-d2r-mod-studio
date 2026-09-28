@@ -228,7 +228,7 @@ public partial class MainWindow : Window
         Program.Integration?.ClaimProject(nextProject.Root); companionProfiles.Clear(); companionStamps.Clear();
         if (!Program.Arguments.Contains("--smoke")) SaveOpenFiles();
         watcher?.Dispose(); externalWatcher?.Dispose(); externalActive = false; findInFiles?.Close();
-        project = nextProject; WarmSearchCache(nextProject); terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
+        project = nextProject; ResetSearchCache(); terminal.SetProject(root); git.SetProject(root); previewTab = null; tabs.Clear(); recoveredRevision.Clear(); lastEdit.Clear(); Documents.ItemsSource = tabs; buildDiagnostics.Clear(); catalogIdWarnings.Clear(); catalogWarningTimer.Stop(); catalogWarningRevision++;
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         await RefreshCatalogIdWarningsAsync(nextProject);
@@ -244,10 +244,12 @@ public partial class MainWindow : Window
                 preferences.Remember(project.Root, StudioPreferences.DefaultFile);
                 await RestoreOpenFilesAsync();
                 await ApplyDetectedGameDefaultsAsync();
+                StartSearchIndexing(nextProject);
                 if (!preferences.HasIntroduced(project.Root)) await ShowSettingsAsync();
             }
             catch (Exception ex) { ShowError(ex); }
         }
+        StartSearchIndexing(nextProject);
         WatchExternalSession();
     }
     private void OnExternalChange(object? sender, FileSystemEventArgs e)

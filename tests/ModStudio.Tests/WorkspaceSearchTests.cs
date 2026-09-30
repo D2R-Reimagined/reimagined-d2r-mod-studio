@@ -68,6 +68,30 @@ internal static class WorkspaceSearchTests
         File.Delete(panel); File.SetLastWriteTimeUtc(weapons, DateTime.UtcNow.AddMinutes(-1)); cache.Warm(project);
         check(cache.Count == project.SourceEntries().Count(f => !f.FullName.EndsWith(".dds") && !f.FullName.EndsWith(".bin")), "Warming drops files that no longer exist");
 
+        var accented = Path.Combine(project.Root, "data/global/ui/accented.json"); File.WriteAllText(accented, "{ \"name\": \"Hache à deux mains\" }\n", Utf8);
+        var wide = Path.Combine(project.Root, "data/global/ui/wide.json"); File.WriteAllText(wide, "{\n  \"name\": \"Wide Axe à\"\n}\n", System.Text.Encoding.Unicode);
+        foreach (var file in new[] { accented, wide }) File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddMinutes(-3));
+        cache.Warm(project);
+        check(WorkspaceSearch.Run(project, new("à"), cache: cache).Hits.Select(h => (Path.GetFileName(h.File), h.Line, h.Text)).SequenceEqual([("accented.json", 1, "{ \"name\": \"Hache à deux mains\" }"), ("wide.json", 2, "  \"name\": \"Wide Axe à\"")]),
+            "Cached UTF-8 and UTF-16 text is searched with its characters intact");
+
+        var snapshot = SearchCache.SnapshotFile(project);
+        new SearchCache().Warm(project, snapshot: snapshot); var savedAt = File.GetLastWriteTimeUtc(snapshot);
+        var loaded = new SearchCache(); loaded.Warm(project, snapshot: snapshot);
+        check(loaded.Count == cache.Count && queries.Append(new("à")).All(q => Shape(WorkspaceSearch.Run(project, q, cache: loaded)) == Shape(WorkspaceSearch.Run(project, q))),
+            "A cache loaded from its snapshot answers every query as a fresh search does");
+        check(File.GetLastWriteTimeUtc(snapshot) == savedAt, "The snapshot is not rewritten when no file changed");
+        var stamp = File.GetLastWriteTimeUtc(accented); File.WriteAllText(accented, File.ReadAllText(accented, Utf8).Replace("Hache", "Tache"), Utf8); File.SetLastWriteTimeUtc(accented, stamp);
+        var trusted = new SearchCache(); trusted.Warm(project, snapshot: snapshot);
+        check(WorkspaceSearch.Run(project, new("hache"), cache: trusted).Hits.Count == 1, "Snapshot entries whose size and write time still match are used without rereading the file");
+        File.SetLastWriteTimeUtc(accented, stamp.AddMinutes(1));
+        var refreshed = new SearchCache(); refreshed.Warm(project, snapshot: snapshot);
+        check(WorkspaceSearch.Run(project, new("tache"), cache: refreshed).Hits.Count == 1 && File.GetLastWriteTimeUtc(snapshot) != savedAt, "A file changed since the snapshot is read again and the snapshot rewritten");
+        File.WriteAllBytes(snapshot, [1, 0, 0, 0, 9, 9, 9]);
+        var recovered = new SearchCache(); recovered.Warm(project, snapshot: snapshot);
+        check(recovered.Count == cache.Count && Shape(WorkspaceSearch.Run(project, new("axe"), cache: recovered)) == Shape(WorkspaceSearch.Run(project, new("axe"))) && new FileInfo(snapshot).Length > 7,
+            "A damaged snapshot is ignored and replaced");
+
         File.WriteAllText(armor, "{ not a table", Utf8);
         var broken = WorkspaceSearch.Run(project, new("table", Scope: "source/tables"));
         check(broken.Hits.Single() is { IsCell: false, Line: 1 } && broken.Hits[0].File == armor, "A table that fails to parse is searched as text");

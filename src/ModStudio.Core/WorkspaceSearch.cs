@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Text;
 using System.Text.RegularExpressions;
 using static ModStudio.Core.Storage;
 
@@ -31,7 +33,8 @@ public static class WorkspaceSearch
     {
         ".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".gif", ".webp", ".ico", ".ogg", ".wav", ".mp3", ".wem", ".bnk", ".flac",
         ".mpq", ".bin", ".dat", ".pak", ".zip", ".7z", ".exe", ".dll", ".pdb", ".model", ".anim", ".tex", ".fbx", ".gltf", ".glb",
-        ".ttf", ".otf", ".woff", ".woff2", ".mp4", ".webm", ".mov", ".avi", ".db", ".sqlite", ".pdf", ".psd", ".blend"
+        ".ttf", ".otf", ".woff", ".woff2", ".mp4", ".webm", ".mov", ".avi", ".db", ".sqlite", ".pdf", ".psd", ".blend",
+        ".sprite", ".texture", ".particles", ".ds1", ".dt1", ".dc6", ".dcc", ".cof", ".pl2", ".d2", ".tbl"
     };
     private static readonly Regex NoMatch = new("(?!)");
 
@@ -85,7 +88,7 @@ public static class WorkspaceSearch
                 else switch (cache.Get(entry, relative, table => parsed[file] = table))
                 {
                     case SearchCache.TableEntry cells: cells.Cells.Search(file, matcher, !query.Regex, hits); break;
-                    case SearchCache.TextEntry { Content: { } content }: SearchText(file, content, matcher, hits); break;
+                    case SearchCache.TextEntry { Utf8: { } utf8 }: SearchText(file, utf8, matcher, hits); break;
                 }
             }
             catch (RegexMatchTimeoutException) { issues.Add($"{relative}: the pattern took too long to match; simplify it."); }
@@ -122,12 +125,18 @@ public static class WorkspaceSearch
         catch (Exception e) when (e is InvalidDataException or System.Text.Json.JsonException or InvalidOperationException or FormatException or ArgumentException) { return null; }
     }
 
-    internal static string? ReadText(string file)
+    /// <summary>
+    /// A text file's content as UTF-8 (the file's own bytes when it already is UTF-8); null for binary content. The first 8 KB
+    /// decide that before the rest is read, so an unlisted binary format costs one small read rather than the whole file.
+    /// </summary>
+    internal static byte[]? ReadUtf8(string file)
     {
-        var bytes = File.ReadAllBytes(file);
-        if (!TextFileEncoding.LooksLikeText(bytes[..Math.Min(bytes.Length, 8192)])) return null;
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
+        var prefix = new byte[(int)Math.Min(stream.Length, 8192)]; stream.ReadExactly(prefix);
+        if (!TextFileEncoding.LooksLikeText(prefix, isPrefix: prefix.Length < stream.Length)) return null;
+        var bytes = new byte[stream.Length]; prefix.CopyTo(bytes, 0); stream.ReadExactly(bytes.AsSpan(prefix.Length));
         var (encoding, preamble) = TextFileEncoding.Detect(bytes);
-        return encoding.GetString(bytes, preamble, bytes.Length - preamble);
+        return encoding is UTF8Encoding ? bytes : Encoding.UTF8.GetBytes(encoding.GetString(bytes, preamble, bytes.Length - preamble));
     }
 
     public static void SearchTable(string file, TableData table, Regex matcher, List<SearchHit> hits)
@@ -143,20 +152,32 @@ public static class WorkspaceSearch
             }
     }
 
-    public static void SearchText(string file, string text, Regex matcher, List<SearchHit> hits)
+    public static void SearchText(string file, string text, Regex matcher, List<SearchHit> hits) => SearchText(file, text.AsSpan(), matcher, hits);
+
+    /// <summary>Searches cached UTF-8 text, decoded into a pooled buffer so a search allocates nothing per file.</summary>
+    internal static void SearchText(string file, byte[] utf8, Regex matcher, List<SearchHit> hits)
+    {
+        var buffer = ArrayPool<char>.Shared.Rent(Encoding.UTF8.GetMaxCharCount(utf8.Length));
+        try { SearchText(file, buffer.AsSpan(0, Encoding.UTF8.GetChars(utf8, buffer)), matcher, hits); }
+        finally { ArrayPool<char>.Shared.Return(buffer); }
+    }
+
+    private static void SearchText(string file, ReadOnlySpan<char> text, Regex matcher, List<SearchHit> hits)
     {
         int line = 1, start = 0;
         while (start <= text.Length)
         {
-            int end = text.IndexOf('\n', start); if (end < 0) end = text.Length;
+            int end = text[start..].IndexOf('\n'); end = end < 0 ? text.Length : start + end;
             int stop = end > start && text[end - 1] == '\r' ? end - 1 : end;
-            var match = matcher.Match(text, start, stop - start);
-            if (match.Success && match.Index < stop)
+            // Each line is matched as an input of its own, as Regex.Match(text, start, length) would.
+            foreach (var match in matcher.EnumerateMatches(text[start..stop]))
             {
+                int index = start + match.Index; if (index >= stop) break;
                 // Long lines (minified JSON) are trimmed around the first match so a result stays readable.
-                int from = Math.Max(start, match.Index - 120), to = Math.Min(stop, match.Index + match.Length + 200);
-                hits.Add(new(file, -1, "", line, (from > start ? "…" : "") + text[from..to] + (to < stop ? "…" : ""), match.Index - from + (from > start ? 1 : 0), Math.Min(match.Length, to - match.Index), Offset: match.Index - start));
+                int from = Math.Max(start, index - 120), to = Math.Min(stop, index + match.Length + 200);
+                hits.Add(new(file, -1, "", line, string.Concat(from > start ? "…" : "", text[from..to], to < stop ? "…" : ""), index - from + (from > start ? 1 : 0), Math.Min(match.Length, to - index), Offset: index - start));
                 if (hits.Count >= MaxHits) return;
+                break;
             }
             if (end >= text.Length) break;
             start = end + 1; line++;

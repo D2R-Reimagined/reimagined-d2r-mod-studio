@@ -17,7 +17,8 @@ public partial class MainWindow
 
     /// <summary>
     /// Fills the search cache on a low-priority background thread so the first search is already warm. Called once the project
-    /// and its restored tabs are up, so indexing (thousands of files read and parsed) never competes with loading.
+    /// and its restored tabs are up, so indexing never competes with loading. The previous session's snapshot is loaded first,
+    /// so only files changed since then are read and parsed (thousands on a first open, which churns the GC for a few seconds).
     /// </summary>
     private void StartSearchIndexing(ModProject opened)
     {
@@ -25,7 +26,7 @@ public partial class MainWindow
         var work = searchWarm = new();
         new Thread(() =>
         {
-            try { cache.Warm(opened, work.Token); }
+            try { cache.Warm(opened, work.Token, snapshot: SearchCache.SnapshotFile(opened)); }
             catch (OperationCanceledException) { }
             catch (Exception e) { Console.Error.WriteLine("Search cache warm-up failed: " + e.Message); }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "Search index" }.Start();

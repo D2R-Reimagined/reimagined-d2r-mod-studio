@@ -405,6 +405,7 @@ public sealed partial class EditorPane : Grid
             {
                 if (e.Key == Key.V) { await PasteAsync(); e.Handled = true; }
                 if (e.Key == Key.C) { await CopyAsync(); e.Handled = true; }
+                if (e.Key == Key.X) { await CutAsync(); e.Handled = true; }
                 if (e.Key == Key.Z) { Undo(); e.Handled = true; }
                 if (e.Key == Key.Y) { Redo(); e.Handled = true; }
             }
@@ -452,6 +453,8 @@ public sealed partial class EditorPane : Grid
             item.Click += (_, _) => { try { activeGrid = grid; action(); } catch (Exception ex) { error(ex); } };
             return item;
         }
+        var cut = new MenuItem { Header = rowHeaderPress ? $"Cut {noun}" : cellCount > 1 ? $"Cut {cellCount} cells" : "Cut cell", InputGesture = new KeyGesture(Key.X, KeyModifiers.Control), IsEnabled = (rowHeaderPress ? rows.Length : cellCount) > 0 && !Document.PendingSource };
+        cut.Click += async (_, _) => { try { activeGrid = grid; await CutAsync(); } catch (Exception ex) { error(ex); } };
         var copyCell = new MenuItem { Header = cellCount == 1 ? $"Copy cell: {SelectedColumn}" : $"Copy {cellCount} cells", IsEnabled = cellCount > 0 };
         copyCell.Click += async (_, _) => { try { activeGrid = grid; await CopyAsync(true); } catch (Exception ex) { error(ex); } };
         var copy = new MenuItem { Header = $"Copy {noun} (all columns)" };
@@ -478,7 +481,7 @@ public sealed partial class EditorPane : Grid
             Item($"{(rowsHighlighted ? "Remove highlight from" : "Highlight")} {noun}", ToggleRowHighlight, rows.Length > 0),
             Item($"{(columnHighlighted ? "Remove highlight from column" : "Highlight column")}: {SelectedColumn}", () => ToggleColumnHighlight(selectedColumnIndex), selectedColumnIndex >= 0),
             Item("Clear all highlights", ClearHighlights, HasHighlights),
-            new Separator(), copyCell, copy, paste, clear,
+            new Separator(), cut, copyCell, copy, paste, clear,
             new Separator(),
             Item($"{(frozenColumns.Contains(Array.IndexOf(Document.Table!.Columns, SelectedColumn)) ? "Unfreeze" : "Freeze")} column: {SelectedColumn}", () => ToggleFrozenColumn(SelectedColumn)),
             Item($"{(Document.LockedColumns.Contains(SelectedColumn) ? "Unlock" : "Lock")} column: {SelectedColumn} against edits", ToggleColumnLock)
@@ -799,6 +802,19 @@ public sealed partial class EditorPane : Grid
     {
         if (Document.Table == null) return;
         if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(SelectionText(!cellOnly));
+    }
+    /// <summary>Copies like <see cref="CopyAsync()"/>, then clears what was copied in one undo step. Locked cells keep their values; whole rows keep their identity columns, which row paste never writes either.</summary>
+    public async Task CutAsync()
+    {
+        if (Document.Table is not { } table || Document.PendingSource) return;
+        bool wholeRows = rowHeaderPress || selectedCells.Count == 0;
+        var cells = wholeRows
+            ? SelectedRowsForCommands().SelectMany(r => Enumerable.Range(0, table.Columns.Length).Where(c => !table.IsIdentityColumn(table.Columns[c])).Select(c => (r, c))).ToArray()
+            : selectedCells.ToArray();
+        if (cells.Length == 0) return;
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard; if (clipboard == null) return;
+        await clipboard.SetTextAsync(SelectionText(wholeRows));
+        ApplyToCells(cells, "", null);
     }
     /// <summary>Pastes at the current cell, or from the first column when row headers are selected. A block pastes across rows/columns, adding rows at the bottom when it runs past the last one.</summary>
     public async Task PasteAsync()

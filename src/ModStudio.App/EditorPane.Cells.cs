@@ -271,8 +271,8 @@ public sealed partial class EditorPane
         };
         grid.KeyDown += (_, e) =>
         {
-            // Copy/paste keeps the row-header selection. Navigation or editing returns to cell selection.
-            if (!(e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) || e.Key is not (Key.C or Key.V)) rowHeaderPress = false;
+            // Cut/copy/paste keeps the row-header selection. Navigation or editing returns to cell selection.
+            if (!(e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) || e.Key is not (Key.C or Key.V or Key.X)) rowHeaderPress = false;
             if (e.Key == Key.Escape && editingCell == null && selectedCells.Count > 1 && grid.SelectedItem is RowView current && grid.CurrentColumn != null && columnMap.TryGetValue(grid.CurrentColumn, out var currentCol))
             { selectedCells.Clear(); selectedCells.Add((current.Row, currentCol)); cellAnchor = (current.Row, currentCol); rowBlockSelection = false; PaintCells(); e.Handled = true; return; }
             if (editingCell != null || e.KeyModifiers != KeyModifiers.None || e.Key != Key.Delete || selectedCells.Count == 0 || Document.Table == null) return;

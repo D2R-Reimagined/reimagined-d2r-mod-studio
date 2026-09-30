@@ -52,6 +52,7 @@ public partial class MainWindow
         pane.Document.Undo(); pane.Refresh();
         Require(columns.Select(c => table.Cell(1, c)).SequenceEqual(destinationBefore) && columns.Select(c => table.Cell(2, c)).SequenceEqual(secondBefore), "One undo did not restore both pasted rows.");
         await SmokeFullRowIntoAddedCellAsync(pane);
+        await SmokeCutAsync(pane, clipboard);
         await SmokeRowSelectionEditAsync(pane);
         await SmokeHighlightsAsync(pane);
     }
@@ -111,6 +112,37 @@ public partial class MainWindow
         Require(pane.HighlightedRows.All(r => r >= 0 && r < pane.Document.Table!.Records.Count), "Undoing the insert left a highlight outside the table.");
         pane.ClearHighlights(); await Task.Delay(60);
         Require(!pane.HasHighlights && !clear.IsVisible, "Clearing highlights left them behind or kept the button on the toolbar.");
+    }
+
+    /// <summary>Ctrl+X copies the selection and clears it in one undo step; a header-picked row keeps its identity columns.</summary>
+    private async Task SmokeCutAsync(EditorPane pane, IClipboard clipboard)
+    {
+        var table = pane.Document.Table!; var columns = table.Columns;
+        int column = Enumerable.Range(1, columns.Length - 1).First(c => !table.IsIdentityColumn(columns[c]) && table.Cell(0, columns[c]) != "");
+        var before = columns.Select(c => table.Cell(0, c)).ToArray();
+        pane.Jump(0, columns[column]); pane.SelectCell(0, column); await Task.Delay(60);
+        await clipboard.SetTextAsync(""); pane.TableGrid.Focus();
+        this.KeyPress(Key.X, RawInputModifiers.Control, PhysicalKey.X, null);
+        string? cutCell = null; var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < TimeSpan.FromSeconds(3) && (cutCell = await clipboard.TryGetTextAsync()) == "") await Task.Delay(20);
+        Require(cutCell == before[column] && table.Cell(0, columns[column]) == "", $"Ctrl+X on a cell did not copy and clear it: clipboard '{cutCell}', cell '{table.Cell(0, columns[column])}'.");
+        Require(columns.Where((_, i) => i != column).All(c => table.Cell(0, c) == before[Array.IndexOf(columns, c)]), "Ctrl+X on a cell cleared other cells.");
+        pane.Document.Undo(); pane.Refresh();
+        Require(columns.Select(c => table.Cell(0, c)).SequenceEqual(before), "One undo did not restore the cut cell.");
+
+        pane.Jump(0, columns[30]); await Task.Delay(100); UpdateLayout();
+        var header = pane.TableGrid.GetVisualDescendants().OfType<DataGridRowHeader>().First(h => h.GetVisualAncestors().OfType<DataGridRow>().FirstOrDefault() is { IsVisible: true, DataContext: RowView view } && view.Row == 0);
+        var point = header.TranslatePoint(new Point(header.Bounds.Width / 2, header.Bounds.Height / 2), this)!.Value;
+        this.MouseDown(point, MouseButton.Left, RawInputModifiers.None); this.MouseUp(point, MouseButton.Left, RawInputModifiers.None); await Task.Delay(60);
+        Require(pane.RowSelectionMode, "Clicking a row number did not select the row for cutting.");
+        await clipboard.SetTextAsync(""); pane.TableGrid.Focus();
+        this.KeyPress(Key.X, RawInputModifiers.Control, PhysicalKey.X, null);
+        string? cutRow = null; timer.Restart();
+        while (timer.Elapsed < TimeSpan.FromSeconds(3) && (cutRow = await clipboard.TryGetTextAsync()) == "") await Task.Delay(20);
+        Require(cutRow == string.Join('\t', before), "Ctrl+X on a header-picked row did not copy every column.");
+        Require(columns.All(c => table.Cell(0, c) == (table.IsIdentityColumn(c) ? before[Array.IndexOf(columns, c)] : "")), "Ctrl+X on a row did not clear every editable column while keeping its identity.");
+        pane.Document.Undo(); pane.Refresh();
+        Require(columns.Select(c => table.Cell(0, c)).SequenceEqual(before), "One undo did not restore the cut row.");
     }
 
     private async Task SmokeFullRowIntoAddedCellAsync(EditorPane pane)

@@ -88,6 +88,9 @@ public sealed class LevelBuilderResolver
         (4, "109", "110", false), (4, "110", "111", false), (4, "111", "112", false)
     ];
 
+    /// <summary>Whether outdoor generation links this level to a neighbour, and so may move it from its offset.</summary>
+    public static bool InOutdoorChain(string id, int act) => OutdoorBorders.Any(b => b.Act == act && (b.A == id || b.B == id));
+
     private static bool MatchesOutdoorLevel(string id, string act, string drlgType, int expectedAct) =>
         int.TryParse(act, out var parsedAct) && parsedAct == expectedAct && int.TryParse(drlgType, out var parsedType)
         && parsedType == (id is "1" or "26" or "40" or "75" or "103" or "109" ? 2 : 3);

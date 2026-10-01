@@ -49,6 +49,14 @@ Any layout under `data/global/ui/layouts` opens with a **UI Designer** button be
 * Shortcuts: **F** whole screen, **P** the panel, **Z** the selection, **1** actual size, **Ctrl+D** duplicate, **Del** delete, **Esc** select the parent, wheel to zoom, middle-drag or Space+drag to pan. Right-click a widget to add a child, change its draw order or hide it.
 * Unresolved `$variables`, missing parent layouts and missing sprites are listed under the canvas. Legacy (SD) layouts are shown with outlines and text; their DC6 art is not drawn.
 
+## Level world map
+
+The `levels` Visual Builder has a **World** card: the act of the level you are editing, seen from above in tiles, laid out the way the game places it.
+
+* **Layout**: each level is a rectangle `SizeX × SizeY` (per difficulty; switch Normal / Nightmare / Hell) at `OffsetX, OffsetY`. A level with a `Depend` is placed from its parent's corner (Courtyard sits above the Monastery). Levels with offset `-1, -1` are placed by the game (the town and wilderness of Act 1, Act 4's Mesa…) and are listed under the map instead of guessed. Outdoor levels the generator chains together are dashed, and their overlaps with each other are not flagged. Any other overlap is outlined in red and listed.
+* **Hover** a level for its Id, size and position and every link in and out, with the `lvlwarp` row each `Vis#`/`Warp#` goes through ("via Act 1 Cave Up (warp 4)", "across the border", "one way"). **Click** opens it in the builder; **double-click** opens its map in Level Editor. Ctrl+wheel zooms, right-drag pans, *Fit* shows the whole act.
+* **Draw a new level**: drag across empty space. The rectangle turns red where it would overlap a level in any difficulty. Releasing opens a form with the offset and size from what you drew (editable), the name, preset or maze generation, and a level to copy settings from (monsters, tiles, sound, rules, lighting; not its names, waypoint, links or position). *Create level* adds the `levels` row at the bottom with the next Id, `SizeX`/`SizeY` in every difficulty and `OffsetX`/`OffsetY`. For a preset level it also adds a `lvlprest` row (next `Def`, `LevelId`, `File1`, and the template's room flags and `Dt1Mask`) and writes the map pair under `data/`: a blank v18 DS1 with one more cell than the level each way (levels' size is the DS1 header's width and height), and a minimal HD preset JSON lit by the template's biome. It can also copy the template's map instead. Existing files and game maps are never overwritten. Undo removes the rows (each table separately); the files stay. Link the level from another level's Connections, save, then build the map in Level Editor.
+
 ## Keep using your TXT editor
 
 Migration does not require using Studio's grid. **External editor** in the toolbar provides:

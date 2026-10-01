@@ -17,7 +17,7 @@ namespace ModStudio.App;
 /// levels it leads to and that lead to it. Editors cover its names, difficulty numbers, the monsters each difficulty
 /// spawns, critters, links and warps, object groups, generation, rules and lighting. Map nodes open their level.
 /// </summary>
-internal sealed class LevelBuilderView : TableBuilderView<LevelEntry, LevelBuilderCatalog>
+internal sealed partial class LevelBuilderView : TableBuilderView<LevelEntry, LevelBuilderCatalog>
 {
     private static readonly IBrush Gold = new SolidColorBrush(Color.Parse("#C7B377")), OneWay = new SolidColorBrush(Color.Parse("#D9924A")),
         Inward = new SolidColorBrush(Color.Parse("#8FB3FF")), Outdoor = new SolidColorBrush(Color.Parse("#69C6B3")), NodeBackground = new SolidColorBrush(Color.Parse("#17181A")), Good = new SolidColorBrush(Color.Parse("#8FCB7A"));
@@ -59,16 +59,7 @@ internal sealed class LevelBuilderView : TableBuilderView<LevelEntry, LevelBuild
     protected override string TitleText(TableData table, int row) => LastPreview is { Title.Length: > 0 } preview ? preview.Title : base.TitleText(table, row);
     protected override IEnumerable<string> HandledColumns(TableData table) => Pools.SelectMany(p => Enumerable.Range(1, 25).Select(i => p.Prefix + i));
 
-    protected override JsonObject NewRow(TableData table)
-    {
-        int id = Enumerable.Range(0, table.Records.Count).Select(i => int.TryParse(table.Cell(i, "Id"), out var value) ? value : 0).DefaultIfEmpty(0).Max() + 1;
-        var fields = new JsonObject();
-        var values = new List<(string, string)> { ("Name", "New Level"), ("Id", id.ToString(CultureInfo.InvariantCulture)), ("Act", "0"), ("Waypoint", "255"), ("Teleport", "1"), ("DrlgType", "1"),
-            ("BlankScreen", "1"), ("SaveMonsters", "1"), ("SubType", "-1"), ("SubTheme", "-1"), ("SubWaypoint", "-1"), ("SubShrine", "-1") };
-        values.AddRange(Enumerable.Range(0, 8).Select(i => ("Warp" + i, "-1")));
-        foreach (var (column, value) in values) if (table.ColumnIndex(column) >= 0) fields[column] = value;
-        return fields;
-    }
+    protected override JsonObject NewRow(TableData table) => LevelWorld.DefaultFields(table, LevelWorld.NextId(table));
 
     protected override IReadOnlyList<object> ListRows(TableData table) => LevelBuilderResolver.Rows(table);
     protected override LevelBuilderCatalog LoadCatalog(ModProject project, string profile, string locale, IReadOnlyList<object> rows, bool fresh, CancellationToken token)
@@ -100,9 +91,10 @@ internal sealed class LevelBuilderView : TableBuilderView<LevelEntry, LevelBuild
         pools.Clear(); labels.Clear();
         root.Children.Add(Hero());
         var openScene = new Button { Content = OperatingSystem.IsWindows() ? "Open in Level Editor" : "Level Editor requires Windows", IsEnabled = OperatingSystem.IsWindows() && host.OpenLevelEditor != null };
-        openScene.Click += async (_, _) => { if (host.OpenLevelEditor != null) await host.OpenLevelEditor(pane); };
+        openScene.Click += async (_, _) => { if (host.OpenLevelEditor != null) await host.OpenLevelEditor(pane, SelectedRow); };
         root.Children.Add(openScene);
         root.Children.Add(warnings = new ContentControl());
+        root.Children.Add(WorldCard());
 
         var identity = new WrapPanel { Orientation = Orientation.Horizontal, ItemSpacing = 12, LineSpacing = 10 };
         if (Field(table, "Name", "Name (pointer)", 200) is { } name) identity.Children.Add(name);
@@ -346,6 +338,7 @@ internal sealed class LevelBuilderView : TableBuilderView<LevelEntry, LevelBuild
     protected override void OnSynced(TableData table, int row)
     {
         EnsureSlots(table, row);
+        RefreshWorld(table, row);
         foreach (var (column, line) in labels)
         {
             var value = table.Cell(row, column);

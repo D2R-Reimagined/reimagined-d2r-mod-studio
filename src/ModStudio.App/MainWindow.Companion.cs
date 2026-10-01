@@ -126,7 +126,7 @@ public partial class MainWindow
         var panel = new DockPanel(); DockPanel.SetDock(open, Dock.Bottom); panel.Children.Add(open); panel.Children.Add(list); dialog.Content = panel;
         return await dialog.ShowDialog<T?>(this);
     }
-    private async Task OpenLevelEditorAsync(string? source = null, bool workspaceOnly = false, EditorPane? selectedPane = null)
+    private async Task OpenLevelEditorAsync(string? source = null, bool workspaceOnly = false, EditorPane? selectedPane = null, int? selectedRow = null)
     {
         if (companionBusy) return;
         try
@@ -161,11 +161,12 @@ public partial class MainWindow
                 var pane = selectedPane ?? Active;
                 source ??= pane?.Document.FilePath;
                 var maps = new List<string>();
-                if (pane?.Document.Table is { } table && pane.SelectedRow >= 0 && (source == pane.Document.FilePath))
+                // A Visual Builder names its own row; the grid's selection may be another one.
+                int row = selectedRow ?? pane?.SelectedRow ?? -1;
+                if (pane?.Document.Table is { } table && row >= 0 && (source == pane.Document.FilePath))
                 {
                     var effective = LevelEditorWorkspace.Table(snapshot, table.Name, baseData);
                     Require(effective != null, "The selected table is unavailable.");
-                    int row = pane.SelectedRow;
                     if (table.Name == "levels")
                     {
                         string id = effective!.Cell(row, "Id"); var presets = LevelEditorWorkspace.Table(snapshot, "lvlprest", baseData);

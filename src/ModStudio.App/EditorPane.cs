@@ -155,7 +155,11 @@ public sealed partial class EditorPane : Grid
     private double cellTipLayerWidth = -1;
     private readonly TextBlock columnsLabel = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new(8, 0, 4, 0) };
     private readonly ComboBox skillClassDropdown = new() { Width = 145, VerticalAlignment = VerticalAlignment.Center, Margin = new(5, 0, 0, 0) };
-    private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Enter)", Width = 180, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBox filter = new() { PlaceholderText = "Filter rows (Ctrl+F)", Width = 180, VerticalAlignment = VerticalAlignment.Center };
+    // Typing filters live; the short delay lets a burst of keystrokes cost one refresh instead of one per character.
+    private readonly DispatcherTimer filterDelay = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    /// <summary>The filter term the rows on screen were built with, so programmatic clears that already refreshed are not applied twice.</summary>
+    private string appliedFilter = "";
     private readonly TextBlock note = new() { TextWrapping = TextWrapping.Wrap };
     /// <summary>The status line under the table or source view (record counts, the cell being edited, source errors).</summary>
     public string StatusText => note.Text ?? "";
@@ -244,7 +248,19 @@ public sealed partial class EditorPane : Grid
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
         InitializeSkillClassDropdown(toolbar);
         InitializeItemCardToggle(toolbar);
-        filter.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } e.Handled = true; } };
+        filter.TextChanged += (_, _) => { filterDelay.Stop(); filterDelay.Start(); };
+        filterDelay.Tick += async (_, _) => { filterDelay.Stop(); if ((filter.Text ?? "") != appliedFilter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } } };
+        DetachedFromVisualTree += (_, _) => filterDelay.Stop();
+        filter.KeyDown += async (_, e) =>
+        {
+            if (e.Key == Key.Enter) { filterDelay.Stop(); try { await FilterAsync(); } catch (Exception ex) { error(ex); } e.Handled = true; }
+            else if (e.Key == Key.Escape)
+            {
+                e.Handled = true; filterDelay.Stop();
+                if (!string.IsNullOrEmpty(filter.Text)) { filter.Text = ""; try { await FilterAsync(); } catch (Exception ex) { error(ex); } }
+                activeGrid.Focus();
+            }
+        };
         Children.Add(toolbar);
         FrozenGrid.IsVisible = false; FrozenGrid.HeadersVisibility = DataGridHeadersVisibility.All;
         FrozenGrid.BorderBrush = new SolidColorBrush(Color.Parse("#D8BC86")); FrozenGrid.BorderThickness = new(0, 0, 0, 1);
@@ -612,7 +628,7 @@ public sealed partial class EditorPane : Grid
     }
     private void ApplyView(int selected, string column, bool scroll = false, bool keepScroll = true)
     {
-        var table = Document.Table!; var term = filter.Text ?? "";
+        var table = Document.Table!; var term = filter.Text ?? ""; appliedFilter = term;
         var top = keepScroll ? TopOfView() : null;
         var classFilter = SelectedSkillClassFilter();
         IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && SkillClassMatches(i, classFilter) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
@@ -708,7 +724,13 @@ public sealed partial class EditorPane : Grid
             (sortColumn == null ? " · source order" : $" · {sortColumn} {(descending ? "▼ descending" : "▲ ascending")}") +
             (Source.IsVisible && Document.HasEditLocks ? " · Unlock edits to change Source" : "");
     }
-    public Task FilterAsync() { Refresh(keepScroll: false); return Task.CompletedTask; }
+    public Task FilterAsync() { filterDelay.Stop(); Refresh(keepScroll: false); return Task.CompletedTask; }
+    /// <summary>Puts the keyboard in the row filter (Ctrl+F) when the table is on screen; false when this pane has no table view showing.</summary>
+    public bool FocusFilter()
+    {
+        if (Document.Table == null || !tableHost.IsVisible || !filter.IsEffectivelyVisible) return false;
+        filter.Focus(); filter.SelectAll(); return true;
+    }
     public void RefreshRowValues(int row) => RefreshRowValues([row]);
     public void RefreshRowValues(IEnumerable<int> rows)
     {

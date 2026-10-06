@@ -112,7 +112,7 @@ public partial class MainWindow
         source.Document.Undo(); source.Refresh();
         // The reference target starts offscreen, and may be hidden by an existing row filter.
         var misc = (await OpenDocumentAsync(Semantics.TableFile(project!, "misc")))!;
-        var rowFilter = misc.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Enter)");
+        var rowFilter = misc.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Ctrl+F)");
         rowFilter.Text = "Healing"; await misc.FilterAsync();
         await ShowSource(6);
         var amuletArrow = Arrow(6)!;
@@ -153,6 +153,7 @@ public partial class MainWindow
         { bitmap.Render(this); bitmap.Save(Path.Combine(output, "gamble-cell-references.png"), PngBitmapEncoderOptions.Default); }
         await SmokeEmptyCellSelectionAsync(source);
         await SmokeTabCellSelectionAsync(source);
+        await SmokeLiveFilterAsync(source);
         await SmokeCloneRowsAsync(source);
         await SmokeExpandedCellReferencesAsync(output);
         Require(!(Output.Text ?? "")[Math.Min(previousOutput, Output.Text?.Length ?? 0)..].Contains("There is no current row"),
@@ -162,9 +163,33 @@ public partial class MainWindow
         foreach (var name in new[] { "gamble", "armor", "misc", "weapons" }) File.Delete(Semantics.TableFile(project!, name));
     }
 
+    /// <summary>Ctrl+F reaches the row filter, typing filters without Enter, and Escape clears it and hands the keyboard back to the grid.</summary>
+    private async Task SmokeLiveFilterAsync(EditorPane pane)
+    {
+        async Task Until(Func<bool> condition, string failure)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!condition()) { Require(DateTime.UtcNow < deadline, failure); await Task.Delay(20); }
+        }
+        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Ctrl+F)");
+        RowView[] Shown() => ((IEnumerable<RowView>)pane.TableGrid.ItemsSource!).Where(r => !r.IsPlaceholder).ToArray();
+        Documents.SelectedItem = tabs.First(t => t.Content == pane); await Task.Delay(50);
+        int all = Shown().Length;
+        pane.TableGrid.Focus();
+        this.KeyPress(Key.F, RawInputModifiers.Control, PhysicalKey.F, null);
+        await Until(() => filter.IsFocused, "Ctrl+F did not focus the table's row filter.");
+        this.KeyTextInput("Amulet");
+        await Until(() => Shown().Length is > 0 and var n && n < all, "Typing in the row filter did not filter rows without Enter.");
+        var table = pane.Document.Table!;
+        Require(Shown().All(r => table.Columns.Any(c => table.Cell(r.Row, c).Contains("Amulet", StringComparison.OrdinalIgnoreCase))),
+            "Live row filter kept rows that do not match the typed term.");
+        this.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, null);
+        await Until(() => filter.Text == "" && Shown().Length == all && !filter.IsFocused, "Escape did not clear the row filter and leave the box.");
+    }
+
     private async Task SmokeCloneRowsAsync(EditorPane pane)
     {
-        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Enter)");
+        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Ctrl+F)");
         foreach (bool append in new[] { true, false })
         {
             filter.Text = "Cap"; await pane.FilterAsync(); pane.SelectCell(0, 1);
@@ -247,7 +272,7 @@ public partial class MainWindow
 
     private async Task SmokeEmptyCellSelectionAsync(EditorPane pane)
     {
-        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Enter)");
+        var filter = pane.GetVisualDescendants().OfType<TextBox>().Single(t => t.PlaceholderText == "Filter rows (Ctrl+F)");
         filter.Text = "Cap"; await pane.FilterAsync();
         async Task Settle()
         {

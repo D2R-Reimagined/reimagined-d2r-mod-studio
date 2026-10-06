@@ -37,7 +37,9 @@ public partial class MainWindow
         FindInFilesButton.Click += (_, _) => ShowFindInFiles();
         KeyDown += (_, e) =>
         {
-            if (e.Key == Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Shift) && (e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta))) { ShowFindInFiles(); e.Handled = true; }
+            if (e.Key != Key.F || !(e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta))) return;
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) { ShowFindInFiles(); e.Handled = true; }
+            else if (Active?.FocusFilter() == true) e.Handled = true;
         };
     }
 

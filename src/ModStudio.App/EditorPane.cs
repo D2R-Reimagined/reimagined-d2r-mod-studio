@@ -823,7 +823,14 @@ public sealed partial class EditorPane : Grid
     public async Task CopyAsync(bool cellOnly)
     {
         if (Document.Table == null) return;
-        if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(SelectionText(!cellOnly));
+        if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) await clipboard.SetTextAsync(RememberCopy(SelectionText(!cellOnly), !cellOnly));
+    }
+    /// <summary>The last cells copied from this pane and the table column they started at, so rows picked by their header can take them back in the same columns.</summary>
+    private (string Text, int Column)? copiedCells;
+    private string RememberCopy(string text, bool wholeRows)
+    {
+        copiedCells = wholeRows || selectedCells.Count == 0 ? null : (text, selectedCells.Min(c => c.Col));
+        return text;
     }
     /// <summary>Copies like <see cref="CopyAsync()"/>, then clears what was copied in one undo step. Locked cells keep their values; whole rows keep their identity columns, which row paste never writes either.</summary>
     public async Task CutAsync()
@@ -835,7 +842,7 @@ public sealed partial class EditorPane : Grid
             : selectedCells.ToArray();
         if (cells.Length == 0) return;
         var clipboard = TopLevel.GetTopLevel(this)?.Clipboard; if (clipboard == null) return;
-        await clipboard.SetTextAsync(SelectionText(wholeRows));
+        await clipboard.SetTextAsync(RememberCopy(SelectionText(wholeRows), wholeRows));
         ApplyToCells(cells, "", null);
     }
     /// <summary>Pastes at the current cell, or from the first column when row headers are selected. A block pastes across rows/columns, adding rows at the bottom when it runs past the last one.</summary>
@@ -848,6 +855,21 @@ public sealed partial class EditorPane : Grid
         var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList(); if (lines.Count > 1 && lines[^1] == "") lines.RemoveAt(lines.Count - 1);
         var block = lines.Select(l => l.Split('\t')).ToArray();
         if (block.Length == 1 && block[0].Length == 1 && selectedCells.Count > 1) { ApplyToSelection(block[0][0], null); return; }
+        // Part of one row copied, several rows selected: the cells repeat down every selected row, the way one value fills every selected cell.
+        if (block.Length == 1 && block[0].Length < Document.Table.Columns.Length)
+        {
+            if (rowHeaderPress && SelectedRowsForCommands() is { Length: > 0 } pickedRows && copiedCells is { } copy && copy.Text == string.Join('\t', block[0]))
+            {
+                FillRows(block[0], pickedRows, Enumerable.Range(copy.Column, block[0].Length).ToArray());
+                return;
+            }
+            if (!rowHeaderPress && selectedCells.Select(c => c.Row).Distinct().ToArray() is { Length: > 1 } cellRows)
+            {
+                var visible = VisibleColumns(); int first = selectedCells.Min(c => Array.IndexOf(visible, c.Col));
+                FillRows(block[0], cellRows, visible.Skip(first).Take(block[0].Length).ToArray());
+                return;
+            }
+        }
         if (rowHeaderPress && SelectedRowsForCommands().Length > 0)
         {
             PasteRows(block);
@@ -880,12 +902,40 @@ public sealed partial class EditorPane : Grid
         Refresh(); QueuePaint();
     }
 
+    /// <summary>
+    /// Writes one copied row of cells into the given table columns of every row, in one undo step. Locked cells are skipped like a
+    /// multi-cell edit skips them; rows picked by their header also keep their identity columns, as a whole-row paste does.
+    /// </summary>
+    private void FillRows(string[] values, int[] rows, int[] columns)
+    {
+        var table = Document.Table!;
+        Storage.Require(columns.Length == values.Length && columns.All(c => c >= 0 && c < table.Columns.Length),
+            $"Pasting {values.Length} cell(s) at {table.Columns[Math.Clamp(columns.FirstOrDefault(), 0, table.Columns.Length - 1)]} runs past the last column. Copy fewer cells, or paste further left.");
+        bool keepIdentity = rowHeaderPress;
+        var edits = new List<(int Row, string Column, string Value)>();
+        foreach (var row in rows)
+            for (int c = 0; c < columns.Length; c++)
+                if (IsEditableCell((row, columns[c])) && !(keepIdentity && table.IsIdentityColumn(table.Columns[columns[c]])))
+                    edits.Add((row, table.Columns[columns[c]], values[c]));
+        Storage.Require(edits.Count > 0, "Every selected cell is locked against edits.");
+        Document.SetCells(edits);
+        // Rows picked by their header stay picked; a cell selection grows to the cells that were filled.
+        if (!rowHeaderPress)
+        {
+            selectedCells.Clear(); foreach (var row in rows) foreach (var col in columns) selectedCells.Add((row, col));
+            rowBlockSelection = false;
+        }
+        Refresh(); QueuePaint();
+    }
+
     private void PasteRows(string[][] block, bool fromCell = false)
     {
         var table = Document.Table!;
         Storage.Require(block.All(r => r.Length <= table.Columns.Length), $"Clipboard rows have more than {table.Columns.Length} columns.");
         var displayed = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToArray();
-        var selected = (fromCell ? [SelectedRow] : SelectedRowsForCommands()).Where(displayed.Contains).OrderBy(r => Array.IndexOf(displayed, r)).ToArray();
+        // From a cell selection, one whole row fills every row with a selected cell; several rows paste downwards from the current one.
+        int[] fromCells = block.Length == 1 && selectedCells.Count > 0 ? selectedCells.Select(c => c.Row).Distinct().ToArray() : [SelectedRow];
+        var selected = (fromCell ? fromCells : SelectedRowsForCommands()).Where(displayed.Contains).OrderBy(r => Array.IndexOf(displayed, r)).ToArray();
         Storage.Require(selected.Length > 0, "Select a row to paste into.");
         int[] targets;
         if (block.Length == 1) targets = selected;

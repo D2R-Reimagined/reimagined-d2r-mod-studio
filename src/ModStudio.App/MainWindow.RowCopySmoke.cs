@@ -52,6 +52,7 @@ public partial class MainWindow
         pane.Document.Undo(); pane.Refresh();
         Require(columns.Select(c => table.Cell(1, c)).SequenceEqual(destinationBefore) && columns.Select(c => table.Cell(2, c)).SequenceEqual(secondBefore), "One undo did not restore both pasted rows.");
         await SmokeFullRowIntoAddedCellAsync(pane);
+        await SmokeRowFillAsync(pane, clipboard);
         await SmokeCutAsync(pane, clipboard);
         await SmokeRowSelectionEditAsync(pane);
         await SmokeHighlightsAsync(pane);
@@ -143,6 +144,63 @@ public partial class MainWindow
         Require(columns.All(c => table.Cell(0, c) == (table.IsIdentityColumn(c) ? before[Array.IndexOf(columns, c)] : "")), "Ctrl+X on a row did not clear every editable column while keeping its identity.");
         pane.Document.Undo(); pane.Refresh();
         Require(columns.Select(c => table.Cell(0, c)).SequenceEqual(before), "One undo did not restore the cut row.");
+    }
+
+    /// <summary>
+    /// Several cells copied from one row fill every selected row: cells picked down a column take them from that column,
+    /// rows picked by their header take them back in the columns they were copied from, and a whole row fills every row with a selected cell.
+    /// </summary>
+    private async Task SmokeRowFillAsync(EditorPane pane, IClipboard clipboard)
+    {
+        var table = pane.Document.Table!; var columns = table.Columns;
+        Require(table.Records.Count > 4, "Row-fill smoke needs a few rows.");
+        int first = Enumerable.Range(30, columns.Length - 32).First(i => Enumerable.Range(i, 3).All(c => !table.IsIdentityColumn(columns[c])));
+        int[] copied = [first, first + 1, first + 2];
+        pane.Document.SetCells(copied.Select(c => (0, columns[c], $"fill{c}")));
+        var before = Enumerable.Range(1, 3).ToDictionary(r => r, r => columns.Select(c => table.Cell(r, c)).ToArray());
+        bool Untouched(int row, Func<int, bool> filled) => columns.Select((c, i) => filled(i) || table.Cell(row, c) == before[row][i]).All(ok => ok);
+        bool Filled(int row) => copied.All(c => table.Cell(row, columns[c]) == $"fill{c}");
+        bool Restored() => Enumerable.Range(1, 3).All(r => columns.Select(c => table.Cell(r, c)).SequenceEqual(before[r]));
+
+        pane.Jump(0, columns[first]); await Task.Delay(100); UpdateLayout();
+        pane.SelectCell(0, first); pane.SelectCell(0, first + 2, shift: true); await pane.CopyAsync();
+        Require(await clipboard.TryGetTextAsync() == string.Join('\t', copied.Select(c => $"fill{c}")), "Copying three cells of a row did not produce one tab-separated line.");
+
+        // Cells picked down one column: the copied row starts at that column in every picked row.
+        pane.SelectCell(1, first); pane.SelectCell(3, first, shift: true);
+        Require(pane.SelectedCells.Count == 3, "Shift-click did not select a column of three cells.");
+        await pane.PasteAsync();
+        Require(new[] { 1, 2, 3 }.All(r => Filled(r) && Untouched(r, copied.Contains)), "Pasting one copied row into a column of selected cells did not fill every selected row.");
+        Require(pane.SelectedCells.Count == 9, $"The filled block is not selected after the paste: {pane.SelectedCells.Count} cells.");
+        pane.Document.Undo(); pane.Refresh();
+        Require(Restored(), "One undo did not restore every filled row.");
+
+        // Rows picked by their numbers: the cells go back into the columns they were copied from, not the first columns.
+        pane.Jump(1, columns[first]); await Task.Delay(100); UpdateLayout();
+        void ClickRowNumber(int row, RawInputModifiers modifiers = RawInputModifiers.None)
+        {
+            var header = pane.TableGrid.GetVisualDescendants().OfType<DataGridRowHeader>().First(h => h.GetVisualAncestors().OfType<DataGridRow>().FirstOrDefault() is { IsVisible: true, DataContext: RowView view } && view.Row == row);
+            var point = header.TranslatePoint(new Point(header.Bounds.Width / 2, header.Bounds.Height / 2), this)!.Value;
+            this.MouseDown(point, MouseButton.Left, modifiers); this.MouseUp(point, MouseButton.Left, modifiers);
+        }
+        ClickRowNumber(1); ClickRowNumber(3, RawInputModifiers.Shift); await Task.Delay(60);
+        Require(pane.RowSelectionMode && pane.SelectedCells.Select(c => c.Row).Distinct().Order().SequenceEqual([1, 2, 3]), "Shift-click row numbers did not select three rows.");
+        pane.TableGrid.Focus(); this.KeyPress(Key.V, RawInputModifiers.Control, PhysicalKey.V, null);
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < TimeSpan.FromSeconds(3) && !Filled(3)) await Task.Delay(20);
+        Require(new[] { 1, 2, 3 }.All(r => Filled(r) && Untouched(r, copied.Contains)), "Pasting copied cells into header-picked rows did not fill their original columns in every row.");
+        pane.Document.Undo(); pane.Refresh();
+        Require(Restored(), "One undo did not restore the header-picked rows.");
+
+        // A whole copied row fills every row with a selected cell, keeping each row's identity.
+        pane.Jump(0, columns[first]); await pane.CopyAsync(false);
+        pane.SelectCell(1, first); pane.SelectCell(2, first, shift: true);
+        await pane.PasteAsync();
+        Require(new[] { 1, 2 }.All(r => columns.All(c => table.Cell(r, c) == (table.IsIdentityColumn(c) ? before[r][Array.IndexOf(columns, c)] : table.Cell(0, c)))) && Untouched(3, _ => false),
+            "A whole copied row did not fill both rows with a selected cell.");
+        pane.Document.Undo(); pane.Refresh();
+        Require(Restored(), "One undo did not restore the whole-row fill.");
+        pane.Document.Undo(); pane.Refresh();
     }
 
     private async Task SmokeFullRowIntoAddedCellAsync(EditorPane pane)

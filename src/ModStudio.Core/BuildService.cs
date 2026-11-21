@@ -53,6 +53,16 @@ public static class BuildService
             Require(settings.S("stringMode") is "standard" or "full", "Invalid string mode.");
             var modInfoPath = Inside(snapshot, "modinfo.json");
             var modInfo = File.Exists(modInfoPath) ? Read(modInfoPath) : new JsonObject { ["name"] = project.Name, ["version"] = "1.0.0", ["savepath"] = project.Name + "/" };
+            // A profile can give its deployment its own name and save folder, so builds of one project for different runtimes never share saves.
+            bool modInfoOverridden = false;
+            if (settings["modInfo"] is JsonNode modInfoOverride)
+            {
+                var fields = modInfoOverride as JsonObject ?? throw new InvalidDataException("Profile modInfo must be an object.");
+                Require(fields.Count > 0 && fields.All(p => p.Key is "name" or "savepath" && p.Value is JsonValue v && v.TryGetValue<string>(out var text) && text.Length > 0), "Profile modInfo may only set non-empty name and savepath strings.");
+                if (fields.ContainsKey("savepath")) { var save = fields.S("savepath"); Require(save.EndsWith('/') && !save.StartsWith('/') && !save.Contains('\\') && !save.Split('/').Any(part => part is "." or ".."), "Profile savepath must be a relative folder ending in '/'."); }
+                foreach (var pair in fields) modInfo[pair.Key] = pair.Value!.DeepClone();
+                modInfoOverridden = true;
+            }
             var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>()))).ToArray();
             var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + modName + profile + Json(settings) + string.Join("", rules.Select(Json)));
             var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>();
@@ -149,7 +159,7 @@ public static class BuildService
                 }
                 if (BuildCache.WriteChanged(destination, bytes)) written++; generated.Add(relative);
             }
-            Emit(modName + ".mpq/modinfo.json", File.Exists(modInfoPath) ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
+            Emit(modName + ".mpq/modinfo.json", File.Exists(modInfoPath) && !modInfoOverridden ? File.ReadAllBytes(modInfoPath) : Utf8.GetBytes(Json(modInfo)));
             token.ThrowIfCancellationRequested();
             progress?.Invoke("Writing build manifest…");
             foreach (var old in Files(output)) if (!generated.Contains(Relative(output, old))) File.Delete(old);

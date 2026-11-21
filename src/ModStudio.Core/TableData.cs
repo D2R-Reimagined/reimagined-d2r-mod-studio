@@ -282,7 +282,8 @@ public sealed class TableData
             }
             rows.Add(output);
         }
-        var options = new System.Text.Json.JsonSerializerOptions(Pretty) { IndentSize = Schema.I("indent", 4) };
+        // NewLine is pinned: it defaults to Environment.NewLine, and on Windows the replace below would then turn "\r\n" into "\r\r\n".
+        var options = new System.Text.Json.JsonSerializerOptions(Pretty) { IndentSize = Schema.I("indent", 4), NewLine = "\n" };
         return Utf8.GetBytes((Schema.B("bom") ? "\uFEFF" : "") + rows.ToJsonString(options).Replace("\n", Schema.S("newline", "\n")) + (Schema.B("finalNewline") ? Schema.S("newline", "\n") : ""));
     }
     public static TableData FromTsv(byte[] bytes, string name, string target)

@@ -178,7 +178,7 @@ public static class BuildService
     {
     var applicable = rules.Where(r => r.S("table") == table.Name).ToArray();
     var resolved = applicable.Length == 0 ? table : new TableData(table.Schema, (JsonArray)table.Records.DeepClone());
-    var occupied = new HashSet<string>();
+    var occupied = new HashSet<string>(); var removed = new HashSet<int>();
     foreach (var rule in applicable)
     {
         Require(rule.S("reason").Length > 0, "Override needs a reason.");
@@ -189,6 +189,7 @@ public static class BuildService
         }
         var index = Enumerable.Range(0, resolved.Records.Count).FirstOrDefault(i => resolved.Records[i].S("sourceId") == rule.S("record"), -1);
         Require(index >= 0, $"Unknown override record {rule.S("record")}");
+        if (ProfileRules.Removes(rule)) { Require(removed.Add(index), "Competing overrides for the same row."); continue; }
         Require(rule["changes"] is JsonObject changes && changes.Count > 0, "Empty override.");
         foreach (var change in rule["changes"]!.AsObject())
         {
@@ -198,7 +199,14 @@ public static class BuildService
             resolved.SetCell(index, change.Key, change.Value.S("value"));
         }
     }
-        return resolved;
+    if (removed.Count == 0) return resolved;
+    Require(!occupied.Any(cell => removed.Contains(int.Parse(cell[..cell.IndexOf(':')]))), "A profile both changes and removes the same row.");
+    // Many tables are referenced by row position (skill, missile, level and MonProp ids), so a profile may only remove a table's
+    // last rows: every row it keeps stays at its position.
+    var keep = resolved.Records.Count - removed.Count;
+    Require(removed.All(i => i >= keep), $"{table.Name}: a profile can only remove rows at the end of a table; rows it keeps after a removed row would move.");
+    var kept = new JsonArray(); for (int i = 0; i < keep; i++) kept.Add(resolved.Records[i]!.DeepClone());
+        return new TableData(table.Schema, kept);
     }
     /// <summary>
     /// Runs the semantic check against the snapshot, unless the rules and every table they read are unchanged since the

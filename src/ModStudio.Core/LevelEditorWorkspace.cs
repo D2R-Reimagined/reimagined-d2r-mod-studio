@@ -49,7 +49,7 @@ public static class LevelEditorWorkspace
             foreach (var target in (JsonArray)table.Schema["targets"]!)
             {
                 var resolved = BuildService.ResolveTable(table, target!.GetValue<string>(), rules);
-                Emit(target.GetValue<string>(), resolved.EncodeTsv(), file, table.Records.Select(r => r.S("sourceId")).ToArray());
+                Emit(target.GetValue<string>(), resolved.EncodeTsv(), file, resolved.Records.Select(r => r.S("sourceId")).ToArray());
             }
         }
         foreach (var rule in rules) Require(names.Contains(rule.S("table")), "Unknown profile override table: " + rule.S("table"));

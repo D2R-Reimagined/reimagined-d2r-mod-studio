@@ -21,6 +21,8 @@ public static class ProfileEditing
             var root = JsonNode.Parse(Utf8.GetString(bytes).TrimStart('\uFEFF'))!;
             foreach (var rule in ProfileRules.Expand(root))
             {
+            if (ProfileRules.Removes(rule) && rule.S("table") == table.Name && rule.S("record") == table.Records[row].S("sourceId"))
+                throw new InvalidDataException($"This row is left out of the {profile} build ({reference.GetValue<string>()}).");
             if (rule.S("table") != table.Name || rule.S("record") != table.Records[row].S("sourceId") || rule["changes"]?[column] is not JsonNode change) continue;
             Require(!ProfileRules.IsSet(root), ProfileRules.Generated(root, reference.GetValue<string>()));
             Require(ruleFile == null, "Multiple bank-specific overrides exist. Edit their source files to choose the intended bank.");
@@ -68,6 +70,17 @@ public static class ProfileEditing
 public static class ProfileRules
 {
     public static bool IsSet(JsonNode file) => file is JsonObject o && o.ContainsKey("rules");
+
+    /// <summary>
+    /// A rule {"table", "record", "reason", "remove": true} leaves the record out of the profile's build. It carries no changes,
+    /// and the build accepts it only for a table's last rows, so no row the profile keeps changes position.
+    /// </summary>
+    public static bool Removes(JsonNode rule)
+    {
+        if (rule["remove"] is not JsonNode flag) return false;
+        Require(flag is JsonValue v && v.TryGetValue<bool>(out var on) && on && rule["changes"] == null, "A remove rule sets \"remove\": true and no changes.");
+        return true;
+    }
 
     public static JsonNode[] Expand(JsonNode file)
     {

@@ -78,6 +78,7 @@ public sealed class PreviewTables
             foreach (var rule in rules.Where(r => r.S("table") == name && r.S("record") == row.S("sourceId")))
             {
                 Require(rule["targets"] == null, $"{name}: bank-specific overrides need a bank selection; preview is unavailable.");
+                if (ProfileRules.Removes(rule)) continue;
                 foreach (var change in rule["changes"]!.AsObject())
                 {
                     Require(occupied.Add(change.Key), $"{name}/{change.Key}: competing overrides.");
@@ -98,6 +99,8 @@ public sealed class PreviewTables
             foreach (var row in owner.ReadCached(file, token)["records"]!.AsArray().OfType<JsonObject>())
             {
                 token.ThrowIfCancellationRequested();
+                // A row the profile leaves out of its build is not there for previews either.
+                if (rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId") && r["targets"] == null && ProfileRules.Removes(r))) continue;
                 var fields = rules.Any(r => r.S("table") == name && r.S("record") == row.S("sourceId")) ? Effective(name, row) : row["fields"]!.AsObject();
                 origins[fields] = (name, row.S("sourceId")); rows.Add(fields);
             }

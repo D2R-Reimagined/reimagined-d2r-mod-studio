@@ -187,5 +187,29 @@ internal static class BuildTests
         }
         WriteJson(Path.Combine(dir, "set.json"), Set(Rule("row-00001", "value", "2", "25")));
         throws(() => Built(), "A rule set and a one-rule file competing for a cell block the build");
+
+        // Remove rules leave a table's last rows out of one profile's build.
+        System.Text.Json.Nodes.JsonObject Remove(string record) => new() { ["table"] = "rows", ["record"] = record, ["reason"] = "fixture", ["remove"] = true };
+        var full = "name\tvalue\tenabled\r\nOne\t1\t1\r\nTwo\t2\t1\r\nThree\t3\t1\r\n";
+        WriteJson(Path.Combine(dir, "set.json"), Set(Remove("row-00002"), Rule("row-00000", "enabled", "1", "0")));
+        check(Built() == "name\tvalue\tenabled\r\nOne\t1\t0\r\nTwo\t20\t1\r\n", "A remove rule leaves the last row out of its profile's build, beside cell rules");
+        check(Built("d2rl") == full, "Other profiles keep a row one profile removes");
+        throws(() => ProfileEditing.ReadCell(project, table, 2, "value", "standard"), "Studio shows a removed row as left out of the build instead of editing it");
+        WriteJson(Path.Combine(dir, "set.json"), Set(Remove("row-00001"), Remove("row-00002")));
+        Profile("set.json");
+        check(Built() == "name\tvalue\tenabled\r\nOne\t1\t1\r\n", "A profile can remove several rows at the end of a table");
+        foreach (var (bad, name) in new (System.Text.Json.Nodes.JsonObject, string)[]
+        {
+            (Set(Remove("row-00001")), "a row that kept rows come after"),
+            (Set(Remove("row-00002"), Rule("row-00002", "value", "3", "4")), "removing and changing the same row"),
+            (Set(Remove("row-00002"), Remove("row-00002")), "removing the same row twice"),
+            (Set(new System.Text.Json.Nodes.JsonObject { ["table"] = "rows", ["record"] = "row-00002", ["reason"] = "fixture", ["remove"] = true, ["changes"] = new System.Text.Json.Nodes.JsonObject { ["value"] = new System.Text.Json.Nodes.JsonObject { ["expect"] = "3", ["value"] = "4" } } }), "a remove rule with changes"),
+            (Set(new System.Text.Json.Nodes.JsonObject { ["table"] = "rows", ["record"] = "row-00002", ["reason"] = "fixture", ["remove"] = false }), "remove set to false"),
+            (Set(new System.Text.Json.Nodes.JsonObject { ["table"] = "rows", ["record"] = "row-00002", ["reason"] = "", ["remove"] = true }), "a remove rule without a reason"),
+        })
+        {
+            WriteJson(Path.Combine(dir, "set.json"), bad);
+            throws(() => Built(), "A profile rejects " + name);
+        }
     }
 }

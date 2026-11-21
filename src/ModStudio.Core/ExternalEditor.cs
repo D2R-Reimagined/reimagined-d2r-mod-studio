@@ -242,6 +242,8 @@ public static class ExternalEditorSync
             foreach (var rule in rules.Select(r => r.Rule).Where(r => r.S("table") == table.Name && (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))))
             {
                 Require(indices.TryGetValue(rule.S("record"), out var row), "Unknown profile override row.");
+                // Rows line up with the source's rows here; a profile that leaves rows out has no such TXT to edit.
+                Require(!ProfileRules.Removes(rule), $"External editing is not available for {table.Name} in a profile that leaves its rows out.");
                 foreach (var change in rule["changes"]!.AsObject())
                 {
                     Require(occupied.Add(row + ":" + change.Key), "Competing profile overrides.");

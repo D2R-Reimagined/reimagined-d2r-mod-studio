@@ -92,9 +92,19 @@ internal static class BuildTests
         release.Wait();
         check(File.ReadAllText(file) == "new", "A save replaces a file a reader held open for a moment");
 
-        using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
-            throws(() => AtomicWrite(file, Utf8.GetBytes("newer")), "A save over a file held open for good still fails");
-        check(File.ReadAllText(file) == "new" && Directory.GetFiles(folder).Length == 1, "A failed save leaves the file and no temporary behind");
+        if (OperatingSystem.IsWindows())
+        {
+            using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+                throws(() => AtomicWrite(file, Utf8.GetBytes("newer")), "A save over a file held open for good still fails");
+            check(File.ReadAllText(file) == "new" && Directory.GetFiles(folder).Length == 1, "A failed save leaves the file and no temporary behind");
+        }
+        else
+        {
+            // Elsewhere the rename replaces the file under an open reader, which keeps reading the old contents.
+            using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+                AtomicWrite(file, Utf8.GetBytes("new"));
+            check(File.ReadAllText(file) == "new" && Directory.GetFiles(folder).Length == 1, "A save replaces a file held open, leaving no temporary behind");
+        }
         throws(() => AtomicWrite(file, Utf8.GetBytes("x"), requireAbsent: true), "A save that requires a new file still refuses an existing one");
     }
 

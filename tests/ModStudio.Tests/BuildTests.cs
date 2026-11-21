@@ -77,6 +77,25 @@ internal static class BuildTests
         throws(() => RunController.CreateStartInfo(project, settings), "Play refuses a missing selected loader");
         RunCatalogNewlinesAndProfileModInfo(root, check, throws, write);
         RunProfileRuleSets(root, check, throws, write);
+        RunAtomicWriteOverOpenReader(root, check, throws);
+    }
+
+    // Windows refuses to replace a file that another handle has open (a preview reading it, an indexer or virus scanner
+    // opening a file just written): a save must wait that out instead of failing with "Access to the path is denied".
+    private static void RunAtomicWriteOverOpenReader(string root, Action<bool, string> check, Action<Action, string> throws)
+    {
+        var folder = Path.Combine(root, "atomic-write-reader"); Directory.CreateDirectory(folder);
+        var file = Path.Combine(folder, "list.json"); File.WriteAllText(file, "old");
+        var reader = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var release = Task.Run(async () => { await Task.Delay(300); reader.Dispose(); });
+        AtomicWrite(file, Utf8.GetBytes("new"));
+        release.Wait();
+        check(File.ReadAllText(file) == "new", "A save replaces a file a reader held open for a moment");
+
+        using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+            throws(() => AtomicWrite(file, Utf8.GetBytes("newer")), "A save over a file held open for good still fails");
+        check(File.ReadAllText(file) == "new" && Directory.GetFiles(folder).Length == 1, "A failed save leaves the file and no temporary behind");
+        throws(() => AtomicWrite(file, Utf8.GetBytes("x"), requireAbsent: true), "A save that requires a new file still refuses an existing one");
     }
 
     private static void RunCatalogNewlinesAndProfileModInfo(string root, Action<bool, string> check, Action<Action, string> throws, Action<string, string> write)

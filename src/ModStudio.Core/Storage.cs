@@ -85,9 +85,28 @@ public static class Storage
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(bytes); stream.Flush(true); }
             if (expectedHash != null) Require(File.Exists(file) && Hash(File.ReadAllBytes(file)) == expectedHash, $"File changed externally: {file}. Reload or reconcile before saving.");
-            File.Move(temporary, file, !requireAbsent);
+            Replace(temporary, file, !requireAbsent);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+    /// <summary>
+    /// Windows refuses to replace a file while another handle has it open without delete sharing: a preview or catalog read
+    /// on a worker, or an indexer or virus scanner opening a file that was just written. It reports a sharing violation or
+    /// access denied, and both clear within moments, so the replace is retried for about a second and a half before failing.
+    /// Creating a file that must not exist yet is never retried.
+    /// </summary>
+    private static void Replace(string from, string to, bool overwrite)
+    {
+        const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
+        for (var attempt = 1; ; attempt++)
+        {
+            try { File.Move(from, to, overwrite); return; }
+            catch (Exception e) when (overwrite && OperatingSystem.IsWindows() && attempt < 12 &&
+                (e is UnauthorizedAccessException || e is IOException { HResult: SharingViolation or LockViolation }))
+            {
+                Thread.Sleep(25 * attempt);
+            }
+        }
     }
     public static void WriteJson(string file, JsonNode value) => AtomicWrite(file, Utf8.GetBytes(Json(value)));
 }

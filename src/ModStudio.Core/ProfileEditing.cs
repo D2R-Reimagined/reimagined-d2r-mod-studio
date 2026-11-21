@@ -18,12 +18,16 @@ public static class ProfileEditing
         foreach (var reference in (JsonArray?)settings["tableOverrides"] ?? [])
         {
             var file = Inside(Path.GetDirectoryName(profileFile)!, reference!.GetValue<string>()); bytes = File.ReadAllBytes(file); fingerprints[file] = Hash(bytes);
-            var rule = JsonNode.Parse(Utf8.GetString(bytes).TrimStart('\uFEFF'))!;
+            var root = JsonNode.Parse(Utf8.GetString(bytes).TrimStart('\uFEFF'))!;
+            foreach (var rule in ProfileRules.Expand(root))
+            {
             if (rule.S("table") != table.Name || rule.S("record") != table.Records[row].S("sourceId") || rule["changes"]?[column] is not JsonNode change) continue;
+            Require(!ProfileRules.IsSet(root), ProfileRules.Generated(root, reference.GetValue<string>()));
             Require(ruleFile == null, "Multiple bank-specific overrides exist. Edit their source files to choose the intended bank.");
             Require(rule["targets"] == null, "This cell has a bank-specific override. Edit its source file to preserve the bank scope.");
             Require(change.S("expect") == shared, "This profile override is stale. Reconcile its expected value in Source before editing.");
             ruleFile = file; effective = change.S("value"); reason = rule.S("reason");
+            }
         }
         return new(shared, effective, reason, ruleFile, profileFile, fingerprints);
     }
@@ -54,4 +58,26 @@ public static class ProfileEditing
         }
         return path;
     }
+}
+
+/// <summary>
+/// A tableOverrides entry names a rule file. It holds one rule, or a rule set written by a script:
+/// {"generator": "...", "rules": [rule, ...]}. A set applies exactly like its rules listed one per
+/// file, but Studio does not edit it, since its generator would overwrite the change.
+/// </summary>
+public static class ProfileRules
+{
+    public static bool IsSet(JsonNode file) => file is JsonObject o && o.ContainsKey("rules");
+
+    public static JsonNode[] Expand(JsonNode file)
+    {
+        if (!IsSet(file)) return [file];
+        var set = (JsonObject)file;
+        Require(set.All(p => p.Key is "rules" || p.Key is "generator" && p.Value is JsonValue v && v.TryGetValue<string>(out _)), "A rule set holds only \"rules\" and an optional \"generator\" string.");
+        Require(set["rules"] is JsonArray { Count: > 0 } list && list.All(r => r is JsonObject x && !x.ContainsKey("rules")), "A rule set's \"rules\" must be a non-empty array of rule objects.");
+        return [.. set["rules"]!.AsArray().Select(r => r!)];
+    }
+
+    public static string Generated(JsonNode file, string reference) =>
+        $"This cell is set by the generated rule set {reference}" + (file["generator"] is JsonNode g ? $" ({g.GetValue<string>()})" : "") + ". Change it at its source.";
 }

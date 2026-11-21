@@ -63,7 +63,7 @@ public static class BuildService
                 foreach (var pair in fields) modInfo[pair.Key] = pair.Value!.DeepClone();
                 modInfoOverridden = true;
             }
-            var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>()))).ToArray();
+            var rules = ((JsonArray?)settings["tableOverrides"] ?? []).SelectMany(p => ProfileRules.Expand(Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>())))).ToArray();
             var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + modName + profile + Json(settings) + string.Join("", rules.Select(Json)));
             var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>();
             void Emit(string relative, byte[] bytes)

@@ -76,6 +76,7 @@ internal static class BuildTests
         check(settings.PathIssues(project).Any(s => s.Contains("not found")), "Missing selected loader is reported without silently switching to vanilla");
         throws(() => RunController.CreateStartInfo(project, settings), "Play refuses a missing selected loader");
         RunCatalogNewlinesAndProfileModInfo(root, check, throws, write);
+        RunProfileRuleSets(root, check, throws, write);
     }
 
     private static void RunCatalogNewlinesAndProfileModInfo(string root, Action<bool, string> check, Action<Action, string> throws, Action<string, string> write)
@@ -114,5 +115,48 @@ internal static class BuildTests
             settings["modInfo"] = bad; WriteJson(standardProfile, settings);
             throws(() => BuildService.Build(project, "standard"), "Profile modInfo rejects " + name);
         }
+    }
+
+    private static void RunProfileRuleSets(string root, Action<bool, string> check, Action<Action, string> throws, Action<string, string> write)
+    {
+        var native = Path.Combine(root, "rule-set-native");
+        write(Path.Combine(native, "global/excel/rows.txt"), "name\tvalue\tenabled\r\nOne\t1\t1\r\nTwo\t2\t1\r\nThree\t3\t1\r\n");
+        var project = ProjectImporter.Import(native, Path.Combine(root, "rule-set-project"), "RuleSets").Project;
+        var dir = Inside(project.Root, "compatibility/standard"); var profilePath = Path.Combine(dir, "profile.json");
+        System.Text.Json.Nodes.JsonObject Rule(string record, string column, string expect, string value) => new()
+        {
+            ["table"] = "rows", ["record"] = record, ["reason"] = "fixture",
+            ["changes"] = new System.Text.Json.Nodes.JsonObject { [column] = new System.Text.Json.Nodes.JsonObject { ["expect"] = expect, ["value"] = value } },
+        };
+        System.Text.Json.Nodes.JsonObject Set(params System.Text.Json.Nodes.JsonObject[] rules) => new() { ["generator"] = "scripts/fixture.py", ["rules"] = new System.Text.Json.Nodes.JsonArray(rules) };
+        void Profile(params string[] files) { var settings = Read(profilePath); settings["tableOverrides"] = new System.Text.Json.Nodes.JsonArray(files.Select(f => (System.Text.Json.Nodes.JsonNode)f).ToArray()); WriteJson(profilePath, settings); }
+        string Built(string profile = "standard") => File.ReadAllText(Inside(BuildService.Build(project, profile).Output, "RuleSets.mpq/data/global/excel/rows.txt"));
+
+        WriteJson(Path.Combine(dir, "set.json"), Set(Rule("row-00000", "enabled", "1", "0"), Rule("row-00002", "value", "3", "30")));
+        WriteJson(Path.Combine(dir, "single.json"), Rule("row-00001", "value", "2", "20"));
+        Profile("set.json", "single.json");
+        check(Built() == "name\tvalue\tenabled\r\nOne\t1\t0\r\nTwo\t20\t1\r\nThree\t30\t1\r\n", "A rule set applies every rule in it, beside one-rule files");
+        check(Built("d2rl") == "name\tvalue\tenabled\r\nOne\t1\t1\r\nTwo\t2\t1\r\nThree\t3\t1\r\n", "A rule set only changes its own profile");
+
+        var table = TableData.Load(Inside(project.Root, "source/tables/rows.json"));
+        throws(() => ProfileEditing.ReadCell(project, table, 0, "enabled", "standard"), "Studio does not edit a cell owned by a generated rule set");
+        var single = ProfileEditing.ReadCell(project, table, 1, "value", "standard");
+        check(single.Effective == "20" && single.RuleFile!.EndsWith("single.json"), "One-rule files stay editable beside a rule set");
+        check(ProfileEditing.ReadCell(project, table, 0, "value", "standard").Effective == "1", "Cells a rule set does not change stay plain");
+
+        foreach (var (bad, name) in new (System.Text.Json.Nodes.JsonObject, string)[]
+        {
+            (Set(Rule("row-00000", "enabled", "1", "0"), Rule("row-00000", "enabled", "1", "1")), "two rules for the same cell"),
+            (Set(Rule("row-00000", "enabled", "9", "0")), "a stale rule"),
+            (new() { ["rules"] = new System.Text.Json.Nodes.JsonArray() }, "an empty set"),
+            (new() { ["rules"] = new System.Text.Json.Nodes.JsonArray(Rule("row-00000", "enabled", "1", "0")), ["reason"] = "x" }, "a set with other keys"),
+            (new() { ["rules"] = new System.Text.Json.Nodes.JsonArray(Set(Rule("row-00000", "enabled", "1", "0"))) }, "a nested set"),
+        })
+        {
+            WriteJson(Path.Combine(dir, "set.json"), bad);
+            throws(() => Built(), "A rule set rejects " + name);
+        }
+        WriteJson(Path.Combine(dir, "set.json"), Set(Rule("row-00001", "value", "2", "25")));
+        throws(() => Built(), "A rule set and a one-rule file competing for a cell block the build");
     }
 }

@@ -191,15 +191,17 @@ public static class ExternalEditorSync
         byte[] Capture(string path) { if (!before.TryGetValue(path, out var value)) before[path] = value = File.ReadAllBytes(path); return value; }
         var statePath = StateFile(project); Capture(statePath);
         var profilePath = Inside(project.Root, $"compatibility/{session.Profile}/profile.json");
-        var rules = new Dictionary<string, JsonNode>();
+        // Rule files by path, and every rule in them with its file (a rule set holds several).
+        var ruleFiles = new Dictionary<string, JsonNode>(); var rules = new List<(string File, JsonNode Rule)>();
         if (File.Exists(profilePath))
         {
             var settings = JsonNode.Parse(Capture(profilePath))!;
             foreach (var reference in (JsonArray?)settings["tableOverrides"] ?? [])
             {
                 var rulePath = Inside(Path.GetDirectoryName(profilePath)!, reference!.GetValue<string>());
-                Require(!rules.ContainsKey(rulePath), "Duplicate profile override reference.");
-                rules.Add(rulePath, JsonNode.Parse(Capture(rulePath))!);
+                Require(!ruleFiles.ContainsKey(rulePath), "Duplicate profile override reference.");
+                var root = JsonNode.Parse(Capture(rulePath))!; ruleFiles.Add(rulePath, root);
+                foreach (var rule in ProfileRules.Expand(root)) rules.Add((rulePath, rule));
             }
         }
         var currentTables = new Dictionary<string, TableData>();
@@ -216,7 +218,7 @@ public static class ExternalEditorSync
             Require(dirtyFiles?.Contains(path) != true, "Save the open document before external synchronization: " + tracked.Source);
             currentTables.Add(tracked.Source, ParseSource(Utf8.GetString(bytes)));
         }
-        foreach (var path in rules.Keys) Require(dirtyFiles?.Contains(path) != true, "Save the open profile override before synchronizing.");
+        foreach (var path in ruleFiles.Keys) Require(dirtyFiles?.Contains(path) != true, "Save the open profile override before synchronizing.");
         Require(dirtyFiles?.Contains(profilePath) != true, "Save the open profile before synchronizing.");
         var stamp = Hash(string.Join("\n", before.OrderBy(p => p.Key).Select(p => p.Key + "=" + Hash(p.Value))));
         Require(choice == ExternalConflictChoice.Review || reviewedStamp == stamp, "Files changed since conflict review. Synchronize again to review the current versions.");
@@ -224,7 +226,7 @@ public static class ExternalEditorSync
         JsonNode? Rule(TableData table, int row, string column, string output)
         {
             var bank = output[(DeploymentService.ModName(session.Target) + ".mpq/data/").Length..];
-            var matches = rules.Values.Where(r => r.S("table") == table.Name && r.S("record") == table.Records[row].S("sourceId") && r["changes"]?[column] != null &&
+            var matches = rules.Select(r => r.Rule).Where(r => r.S("table") == table.Name && r.S("record") == table.Records[row].S("sourceId") && r["changes"]?[column] != null &&
                 (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))).ToArray();
             Require(matches.Length <= 1, "Competing profile overrides.");
             var rule = matches.FirstOrDefault();
@@ -237,7 +239,7 @@ public static class ExternalEditorSync
             var bank = output[(DeploymentService.ModName(session.Target) + ".mpq/data/").Length..];
             var indices = table.Records.Select((r, i) => (Id: r.S("sourceId"), Index: i)).ToDictionary(r => r.Id, r => r.Index);
             var occupied = new HashSet<string>();
-            foreach (var rule in rules.Values.Where(r => r.S("table") == table.Name && (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))))
+            foreach (var rule in rules.Select(r => r.Rule).Where(r => r.S("table") == table.Name && (r["targets"] is not JsonArray targets || targets.Any(t => t!.GetValue<string>() == bank))))
             {
                 Require(indices.TryGetValue(rule.S("record"), out var row), "Unknown profile override row.");
                 foreach (var change in rule["changes"]!.AsObject())
@@ -280,7 +282,9 @@ public static class ExternalEditorSync
                     }
                     int r = row; var c = column;
                     var rule = Rule(current, row, column, output.Key);
-                    var key = rule == null ? tracked.Source + ":" + row + ":" + column : rules.First(p => ReferenceEquals(p.Value, rule)).Key + ":" + column;
+                    var ruleFile = rule == null ? null : rules.First(p => ReferenceEquals(p.Rule, rule)).File;
+                    if (ruleFile != null) Require(!ProfileRules.IsSet(ruleFiles[ruleFile]), ProfileRules.Generated(ruleFiles[ruleFile], Relative(project.Root, ruleFile)) + $" External edit: {tracked.Source} row {row + 1} {column}.");
+                    var key = rule == null ? tracked.Source + ":" + row + ":" + column : ruleFile + ":" + column;
                     Propose(key, value, () => actions.Add(() => { if (rule == null) current.SetCell(r, c, value); else rule["changes"]![c]!["value"] = value; }));
                 }
                 if (external.Records.Count > baseline.Records.Count)
@@ -296,7 +300,7 @@ public static class ExternalEditorSync
         }
         if (conflicts.Count > 0 && choice == ExternalConflictChoice.Review) throw new ExternalSyncConflict(string.Join("\n", conflicts.Take(20)), stamp);
         foreach (var action in actions) action();
-        foreach (var rule in rules) after[rule.Key] = JsonNode.DeepEquals(JsonNode.Parse(before[rule.Key]), rule.Value) ? before[rule.Key] : Utf8.GetBytes(Json(rule.Value));
+        foreach (var rule in ruleFiles) after[rule.Key] = JsonNode.DeepEquals(JsonNode.Parse(before[rule.Key]), rule.Value) ? before[rule.Key] : Utf8.GetBytes(Json(rule.Value));
         var nextTables = new List<ExternalTable>();
         foreach (var tracked in session.Tables)
         {
@@ -319,7 +323,7 @@ public static class ExternalEditorSync
         }
         var inputs = nextTables.ToDictionary(t => t.Source, t => Hash(after.GetValueOrDefault(Inside(project.Root, t.Source)) ?? before[Inside(project.Root, t.Source)]));
         inputs[Relative(project.Root, profilePath)] = before.TryGetValue(profilePath, out var profileBytes) ? Hash(profileBytes) : "missing";
-        foreach (var rule in rules) inputs[Relative(project.Root, rule.Key)] = Hash(after[rule.Key]);
+        foreach (var rule in ruleFiles) inputs[Relative(project.Root, rule.Key)] = Hash(after[rule.Key]);
         after[statePath] = JsonSerializer.SerializeToUtf8Bytes(session with { Tables = nextTables, Inputs = inputs }, Pretty);
         var ownerPath = Inside(session.Target, ".studio-owner.json");
         var owner = JsonSerializer.Deserialize<DeploymentManifest>(Capture(ownerPath), Pretty)!;

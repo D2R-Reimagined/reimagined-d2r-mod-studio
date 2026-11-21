@@ -49,7 +49,7 @@ public sealed class PreviewTables
             bool standard = File.Exists(profilePath) ? owner.ReadCached(profilePath, token).S("stringMode", "standard") == "standard" : profile == "standard";
             if (File.Exists(profilePath))
                 foreach (var path in (JsonArray?)owner.ReadCached(profilePath, token)["tableOverrides"] ?? [])
-                    rules.Add(owner.ReadCached(Inside(Path.GetDirectoryName(profilePath)!, path!.GetValue<string>()), token));
+                    rules.AddRange(ProfileRules.Expand(owner.ReadCached(Inside(Path.GetDirectoryName(profilePath)!, path!.GetValue<string>()), token)));
             foreach (var file in Files(Inside(project.Root, "source/strings")).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal))
             {
                 var data = owner.ReadCached(file, token)["records"]!; var cached = owner.cache[file];

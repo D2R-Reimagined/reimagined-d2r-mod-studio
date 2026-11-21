@@ -33,7 +33,7 @@ public static class LevelEditorWorkspace
         var root = Inside(project.Cache, "integration/" + profile + "/" + revision);
         var settingsFile = Inside(project.Root, "compatibility/" + profile + "/profile.json");
         var settings = File.Exists(settingsFile) ? Read(settingsFile) : new JsonObject();
-        var rules = ((JsonArray?)settings["tableOverrides"] ?? []).Select(p => Read(Inside(Path.GetDirectoryName(settingsFile)!, p!.GetValue<string>()))).ToArray();
+        var rules = ((JsonArray?)settings["tableOverrides"] ?? []).SelectMany(p => ProfileRules.Expand(Read(Inside(Path.GetDirectoryName(settingsFile)!, p!.GetValue<string>())))).ToArray();
         var tables = new Dictionary<string, IntegrationTable>(StringComparer.OrdinalIgnoreCase);
         var names = new HashSet<string>();
         void Emit(string target, byte[] bytes, string source, string[] ids)

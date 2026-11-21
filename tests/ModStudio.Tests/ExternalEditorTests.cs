@@ -130,6 +130,17 @@ internal static class ExternalEditorTests
         check(TableData.Load(source).Cell(0, "value") == "16" && Read(rulePath)["changes"]!["value"].S("value") == "101" && Read(rulePath)["targets"]![0]!.GetValue<string>().Contains("bank/"), "External override edits preserve shared source and bank scope");
         External(1, "note", "shared across banks"); ExternalEditorSync.Synchronize(project);
         check(TableData.FromTsv(File.ReadAllBytes(bankFile), "example", "global/excel/bank/example.txt").Cell(1, "note") == "shared across banks", "Shared edits propagate to sibling banks");
+        // A generated rule set applies during sync, but an external edit to a cell it owns is refused rather than written into it.
+        var singleRule = File.ReadAllBytes(rulePath);
+        WriteJson(rulePath, new JsonObject { ["generator"] = "fixture", ["rules"] = new JsonArray(Read(rulePath)) });
+        ExternalEditorSync.Synchronize(project);
+        check(TableData.FromTsv(File.ReadAllBytes(bankFile), "example", "global/excel/bank/example.txt").Cell(0, "value") == "101", "A rule set applies to the synchronized bank");
+        bank = TableData.FromTsv(File.ReadAllBytes(bankFile), "example", "global/excel/bank/example.txt"); bank.SetCell(0, "value", "102"); AtomicWrite(bankFile, bank.EncodeTsv());
+        var setBytes = File.ReadAllBytes(rulePath);
+        throws(() => ExternalEditorSync.Synchronize(project), "External edits to a cell owned by a rule set are refused");
+        check(File.ReadAllBytes(rulePath).SequenceEqual(setBytes) && TableData.Load(source).Cell(0, "value") == "16", "A refused sync leaves the rule set and the source alone");
+        bank.SetCell(0, "value", "101"); AtomicWrite(bankFile, bank.EncodeTsv()); AtomicWrite(rulePath, singleRule);
+        ExternalEditorSync.Synchronize(project);
         External(1, "note", "first proposal"); bank = TableData.FromTsv(File.ReadAllBytes(bankFile), "example", "global/excel/bank/example.txt"); bank.SetCell(1, "note", "different proposal"); AtomicWrite(bankFile, bank.EncodeTsv());
         throws(() => ExternalEditorSync.Synchronize(project), "Divergent edits in shared TXT banks do not silently choose a winner");
 

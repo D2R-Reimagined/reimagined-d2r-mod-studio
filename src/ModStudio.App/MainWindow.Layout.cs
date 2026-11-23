@@ -214,7 +214,7 @@ public partial class MainWindow
     {
         var file = TableData.FileFor(project!, "strings", "smoke-strings");
         TableData.Write(file, new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "smoke-strings", ["locales"] = new JsonArray("enUS"), ["target"] = "local/lng/strings/smoke-strings.json" },
-            new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 7, ["Key"] = "existing", ["translations"] = new JsonObject { ["enUS"] = "Existing" } })));
+            new JsonArray(new JsonObject { ["id"] = 7, ["Key"] = "existing", ["translations"] = new JsonObject { ["enUS"] = "Existing" } })));
         try
         {
             var pane = (await OpenDocumentAsync(file))!; await Task.Delay(100);

@@ -56,11 +56,11 @@ public sealed class TableData
             // A new string entry gets the next free ID and an empty key/translations; Studio-added entries carry a sourceId so their id and Key stay editable.
             var translations = new JsonObject(); foreach (var locale in Columns.Skip(2)) translations[locale] = fields?[locale] is JsonValue t && t.TryGetValue<string>(out var text) ? text : "";
             int nextId = Records.Count == 0 ? 0 : Records.Max(r => r.I("id", -1)) + 1;
-            return new JsonObject { ["sourceId"] = "str-" + Guid.NewGuid().ToString("N")[..8], ["order"] = 0, ["id"] = nextId, ["Key"] = fields.S("Key"), ["translations"] = translations };
+            return new JsonObject { ["sourceId"] = "str-" + Guid.NewGuid().ToString("N")[..8], ["id"] = nextId, ["Key"] = fields.S("Key"), ["translations"] = translations };
         }
         var ordered = new JsonObject();
         foreach (var key in Columns) if (fields?[key] is JsonValue v && v.TryGetValue<string>(out var text) && text.Length > 0) ordered[key] = text;
-        return new JsonObject { ["sourceId"] = "row-" + Guid.NewGuid().ToString("N")[..8], ["order"] = 0, ["columnCount"] = Columns.Length, ["fields"] = ordered };
+        return new JsonObject { ["sourceId"] = "row-" + Guid.NewGuid().ToString("N")[..8], ["columnCount"] = Columns.Length, ["fields"] = ordered };
     }
     public string Cell(int row, string column)
     {
@@ -304,7 +304,7 @@ public sealed class TableData
         {
             var cells = line.Split('\t'); Require(cells.Length <= cols.Count, $"Row {records.Count}: more cells than headers."); var fields = new JsonObject();
             for (int i = 0; i < cells.Length; i++) if (cells[i].Length > 0) fields[cols[i].S("key")] = cells[i];
-            records.Add(new JsonObject { ["sourceId"] = $"row-{records.Count:D5}", ["order"] = records.Count, ["columnCount"] = cells.Length, ["fields"] = fields });
+            records.Add(new JsonObject { ["sourceId"] = $"row-{records.Count:D5}", ["columnCount"] = cells.Length, ["fields"] = fields });
         }
         schema["protectedRows"] = records.Count;
         return new(schema, records);
@@ -332,17 +332,23 @@ public sealed class TableData
     public JsonObject ToFile() => new() { ["schema"] = Schema.DeepClone(), ["records"] = Records.DeepClone() };
     public static void Write(string file, TableData table) => WriteJson(file, table.ToFile());
     /// <summary>
-    /// Loads a table file. Array position is the physical slot; "order" is only a convenience for readers and is rewritten to
-    /// match, so entries inserted or removed by hand in Source view (or an external editor) load cleanly. Returns whether any
-    /// slot number was corrected, so the caller can treat the model as changed.
+    /// Loads a table file. Array position is the physical slot, so records carry no slot number and entries inserted or removed
+    /// by hand in Source view (or an external editor) load cleanly. Older files wrote a redundant "order" on every record; it is
+    /// dropped here, and the return flag says so, so the caller can treat the model as changed and the next save removes it.
     /// </summary>
-    public static TableData FromFile(JsonNode node, string file, out bool renumbered)
+    public static TableData FromFile(JsonNode node, string file, out bool migrated)
     {
         Require(IsTableFile(node), "Not a table file: " + file);
-        var records = (JsonArray)node["records"]!; renumbered = false;
-        for (int i = 0; i < records.Count; i++)
-            if (records[i] is JsonObject r && r.I("order", -1) != i) { r["order"] = i; renumbered = true; }
+        var records = (JsonArray)node["records"]!;
+        migrated = DropSlotNumbers(records);
         return new((JsonObject)node["schema"]!, records);
+    }
+    /// <summary>Removes the legacy per-record "order" slot number. Returns whether any record had one.</summary>
+    public static bool DropSlotNumbers(JsonArray records)
+    {
+        bool any = false;
+        foreach (var record in records.OfType<JsonObject>()) any |= record.Remove("order");
+        return any;
     }
     public static TableData FromFile(JsonNode node, string file) => FromFile(node, file, out _);
     public static TableData Load(string file) => FromFile(Read(file), file);

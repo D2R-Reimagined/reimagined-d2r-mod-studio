@@ -296,7 +296,7 @@ public static class ExternalEditorSync
                     var appended = external.Records.Skip(baseline.Records.Count).Select(r => r!["fields"]!.DeepClone()).ToArray();
                     var signature = string.Join("\n", appended.Select(Json));
                     bool first = !proposals.ContainsKey(appendKey);
-                    Propose(appendKey, signature, () => { if (first) actions.Add(() => { foreach (var fields in appended) { var record = current.NewRecord((JsonObject)fields); record["order"] = current.Records.Count; current.Records.Add(record); } }); });
+                    Propose(appendKey, signature, () => { if (first) actions.Add(() => { foreach (var fields in appended) { current.Records.Add(current.NewRecord((JsonObject)fields)); } }); });
                 }
             }
         }

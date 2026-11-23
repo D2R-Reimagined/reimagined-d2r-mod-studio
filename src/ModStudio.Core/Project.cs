@@ -143,7 +143,7 @@ public static class ProjectImporter
                         translations[locale] = obj[locale]!.GetValue<string>();
                     }
                 }
-            var record = new JsonObject { ["order"] = records.Count, ["id"] = row!["id"]!.GetValue<int>(), ["Key"] = row["Key"]!.GetValue<string>(), ["translations"] = translations };
+            var record = new JsonObject { ["id"] = row!["id"]!.GetValue<int>(), ["Key"] = row["Key"]!.GetValue<string>(), ["translations"] = translations };
             if (nullTranslations.Count > 0) record["nullTranslations"] = nullTranslations;
             records.Add(record);
         }

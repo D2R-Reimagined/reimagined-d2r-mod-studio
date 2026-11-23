@@ -17,7 +17,7 @@ internal static class LayoutTests
         }
         Folder("tables", example); Folder("tables", other); File.WriteAllText(Path.Combine(v1, "source/tables/other/notes.txt"), "keep me");
         var catalog = new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS"), ["target"] = "local/lng/strings/ui.json" },
-            new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }));
+            new JsonArray(new JsonObject { ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }));
         var catalogDir = Path.Combine(v1, "source/strings/ui"); Directory.CreateDirectory(catalogDir);
         WriteJson(Path.Combine(catalogDir, "schema.json"), catalog.Schema); WriteJson(Path.Combine(catalogDir, "records.json"), catalog.Records);
         WriteJson(Path.Combine(v1, "mod-project.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = "layout", ["name"] = "Layout" });

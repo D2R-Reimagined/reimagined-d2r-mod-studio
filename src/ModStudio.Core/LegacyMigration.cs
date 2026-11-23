@@ -180,7 +180,8 @@ public static class LegacyMigration
                             Require(model.Validate(recordFile).Count == 0, "Legacy records need review before consolidation: " + dir);
                             WriteJson(recordFile, model.Records); Directory.Delete(rowsDirectory, true);
                         }
-                        var table = new TableData((JsonObject)Read(Path.Combine(dir, "schema.json")), (JsonArray)Read(recordFile)); Require(table.Validate(recordFile).Count == 0, "Invalid legacy table: " + dir);
+                        var legacyRecords = (JsonArray)Read(recordFile); TableData.DropSlotNumbers(legacyRecords);
+                        var table = new TableData((JsonObject)Read(Path.Combine(dir, "schema.json")), legacyRecords); Require(table.Validate(recordFile).Count == 0, "Invalid legacy table: " + dir);
                         // Legacy folders become single-file tables; the folder only survives if it held something else.
                         TableData.Write(dir + ".json", table); File.Delete(recordFile); File.Delete(Path.Combine(dir, "schema.json"));
                         if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);

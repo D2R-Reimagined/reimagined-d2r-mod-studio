@@ -69,7 +69,7 @@ public sealed class Document
             else if (FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
             {
                 var node = JsonNode.Parse(raw.TrimStart('\uFEFF'), documentOptions: SourceJsonOptions);
-                if (TableData.IsTableFile(node)) { tableRoot = (JsonObject)node!; Table = TableData.FromFile(node!, FilePath, out var renumbered); modelChanged |= renumbered; }
+                if (TableData.IsTableFile(node)) { tableRoot = (JsonObject)node!; Table = TableData.FromFile(node!, FilePath, out var migrated); modelChanged |= migrated; }
             }
             if (Table != null) Diagnostics.AddRange(Validated());
             PendingSource = false;
@@ -188,13 +188,12 @@ public sealed class Document
     {
         var removed = descendingRows.Select(r => (Row: r, Node: Table!.Records[r]!.DeepClone())).ToArray();
         foreach (var r in descendingRows) Table!.Records.RemoveAt(r);
-        Renumber(); LockedRows.Clear();
+        LockedRows.Clear();
         Record(() => Reinsert(removed)); Finish();
     }
     private void Reinsert((int Row, JsonNode Node)[] removed)
     {
         foreach (var (row, node) in removed.Reverse()) Table!.Records.Insert(row, node.DeepClone());
-        Renumber();
         Record(() => RemoveRows(removed.Select(x => x.Row).ToArray())); Finish();
     }
     private void Splice(int index, int remove, JsonNode[] insert)
@@ -202,7 +201,6 @@ public sealed class Document
         var removed = Enumerable.Range(index, remove).Select(i => Table!.Records[i]!.DeepClone()).ToArray();
         for (int i = 0; i < remove; i++) Table!.Records.RemoveAt(index);
         for (int i = 0; i < insert.Length; i++) Table!.Records.Insert(index + i, insert[i]);
-        Renumber();
         var shifted = LockedRows.Where(r => r >= index).ToArray(); LockedRows.ExceptWith(shifted); LockedRows.UnionWith(shifted.Select(r => r + insert.Length - remove).Where(r => r >= index + insert.Length));
         Record(() => Splice(index, insert.Length, removed));
         if (remove == 0) RowsInserted(index, insert.Length); else Finish();
@@ -249,7 +247,7 @@ public sealed class Document
         Table!.Records.Clear(); foreach (var record in records) Table.Records.Add(record);
         var inverse = new int[order.Length]; for (int i = 0; i < order.Length; i++) inverse[order[i]] = i;
         var locked = LockedRows.Select(r => inverse[r]).ToArray(); LockedRows.Clear(); LockedRows.UnionWith(locked);
-        Renumber(); Record(() => Permute(inverse)); Finish();
+        Record(() => Permute(inverse)); Finish();
     }
     /// <summary>
     /// Moves a column to another position. Column order is part of the schema (and of the emitted TSV), so the schema file is
@@ -281,7 +279,6 @@ public sealed class Document
         }
         Record(() => MoveColumn(to, from, widths)); Finish();
     }
-    private void Renumber() { for (int i = 0; i < Table!.Records.Count; i++) Table.Records[i]!["order"] = i; }
     private void Finish() { modelChanged = true; Diagnostics = Validated(); LastChangedRows = null; LastChangedColumns = null; Notify(); }
     private void RestoreRows(Dictionary<int, JsonNode> rows)
     {

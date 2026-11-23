@@ -11,7 +11,7 @@ internal static class RowEditingTests
         TableData.Write(Path.Combine(dir, "example.json"), table);
         var doc = new Document(Path.Combine(dir, "example.json"));
         bool Clean() => doc.Diagnostics.All(d => d.Severity != "Error");
-        int[] Orders() => doc.Table!.Records.Select(r => r!["order"]!.GetValue<int>()).ToArray();
+        bool Unnumbered() => doc.Table!.Records.All(r => r is JsonObject o && !o.ContainsKey("order"));
 
         var clone = new Document(doc.FilePath);
         var originalRows = Json(clone.Table!.Records);
@@ -32,7 +32,7 @@ internal static class RowEditingTests
         check(Json(clone.Table.Records) == originalRows, "Rejected clones leave the table unchanged");
 
         doc.InsertRows(1);
-        check(doc.Table!.Records.Count == 4 && Orders().SequenceEqual([0, 1, 2, 3]) && doc.Table.Records[2].S("sourceId") == "row-00001", "Inserting a row keeps later identities and renumbers slots");
+        check(doc.Table!.Records.Count == 4 && Unnumbered() && doc.Table.Records[2].S("sourceId") == "row-00001", "Inserting a row keeps later identities and writes no slot numbers");
         check(!doc.Table.IsOriginalRow(1) && doc.Table.IsOriginalRow(2) && doc.Table.Cell(1, "name") == "" && Clean(), "New rows are blank, non-original and valid");
         check(doc.Diagnostics.Any(d => d.Severity == "Warning" && d.Message == TableData.RowOrderAdvice), "Inserting before original rows is advised, not blocked");
         doc.SetCells([(1, "name", "Inserted"), (1, "value", "9")]);
@@ -43,17 +43,17 @@ internal static class RowEditingTests
         doc.Redo(); check(doc.Table.Records.Count == 4 && doc.Table.Cell(1, "name") == "", "Redo restores the inserted row"); doc.Redo(); check(doc.Table.Cell(1, "name") == "Inserted", "Redo restores the cell edit after the insert");
 
         doc.InsertRows(doc.Table.Records.Count, 2, [new JsonObject { ["name"] = "Tail", ["value"] = "" }, null]);
-        check(doc.Table.Records.Count == 6 && doc.Table.Cell(4, "name") == "Tail" && doc.Table.Cell(5, "name") == "" && Orders().SequenceEqual([0, 1, 2, 3, 4, 5]), "Appending pre-filled rows fills only non-empty cells");
+        check(doc.Table.Records.Count == 6 && doc.Table.Cell(4, "name") == "Tail" && doc.Table.Cell(5, "name") == "" && Unnumbered(), "Appending pre-filled rows fills only non-empty cells");
         check(doc.Table.Records.Select(r => r.S("sourceId")).Distinct().Count() == 6, "Every row has a unique identity");
 
         var beforeDelete = Json(doc.Table.Records);
         doc.DeleteRows([0, 2]);
-        check(doc.Table.Records.Count == 4 && doc.Table.Cell(0, "name") == "Inserted" && doc.Table.Cell(1, "name") == "C" && Orders().SequenceEqual([0, 1, 2, 3]) && Clean(),
+        check(doc.Table.Records.Count == 4 && doc.Table.Cell(0, "name") == "Inserted" && doc.Table.Cell(1, "name") == "C" && Unnumbered() && Clean(),
             "Original rows can be deleted and later rows shift up");
         check(doc.Diagnostics.Any(d => d.Severity == "Warning" && d.Message == TableData.RowOrderAdvice), "Deleting original rows before others raises the order advisory");
         doc.Undo(); check(Json(doc.Table.Records) == beforeDelete, "Undo restores deleted original rows at their slots");
         doc.DeleteRows([1, 5]);
-        check(doc.Table.Records.Count == 4 && doc.Table.Cell(1, "name") == "B" && doc.Table.Cell(3, "name") == "Tail" && Orders().SequenceEqual([0, 1, 2, 3]) && Clean(), "Deleting non-contiguous added rows renumbers the rest");
+        check(doc.Table.Records.Count == 4 && doc.Table.Cell(1, "name") == "B" && doc.Table.Cell(3, "name") == "Tail" && Unnumbered() && Clean(), "Deleting non-contiguous added rows shifts the rest up");
         doc.Undo(); check(doc.Table.Records.Count == 6 && doc.Table.Cell(1, "name") == "Inserted" && doc.Table.Cell(5, "name") == "", "Undo restores deleted rows at their slots");
         doc.Redo(); check(doc.Table.Records.Count == 4, "Redo deletes them again");
 
@@ -73,11 +73,11 @@ internal static class RowEditingTests
         check(doc.Table.Cell(0, "value") == "outside", "Edits outside a session still undo individually"); doc.Undo();
         doc.LockedRows.Add(1); throws(() => doc.InsertRows(1), "Inserting above a locked row is refused"); doc.LockedRows.Clear();
         doc.InsertRows(doc.Table.Records.Count); check(!doc.Diagnostics.Any(d => d.Severity == "Warning"), "Appending at the bottom never triggers the order advisory");
-        var edited = Json(doc.Table.Records); var broken = JsonNode.Parse(edited)!.AsArray(); broken.RemoveAt(0); for (int i = 0; i < broken.Count; i++) broken[i]!["order"] = i;
+        var edited = Json(doc.Table.Records); var broken = JsonNode.Parse(edited)!.AsArray(); broken.RemoveAt(0);
         var trimmed = new TableData((JsonObject)doc.Table.Schema.DeepClone(), broken);
         check(trimmed.Validate("x").Count == 0 && trimmed.RowOrderChanged, "Tables with removed original rows validate, with the order advisory");
         var catalogDir = Path.Combine(root, "row-editing/source/strings"); Directory.CreateDirectory(catalogDir);
-        TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } })));
+        TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } })));
         var strings = new Document(Path.Combine(catalogDir, "ui.json"));
         strings.InsertRows(1);
         check(strings.Table!.Records.Count == 2 && strings.Table.Cell(1, "id") == "2" && strings.Table.Cell(1, "Key") == "" && strings.Table.Cell(1, "enUS") == "" && !strings.Table.IsOriginalRow(1) && strings.Table.IsOriginalRow(0), "New string entries get the next free ID, empty key and translations, and are not original");
@@ -107,10 +107,11 @@ internal static class RowEditingTests
         tracked.SetRaw(tracked.Text.Replace("\"value\": \"1\"", "\"value\": \"11\"")); tracked.ApplySource();
         check(tracked.LastChangedRows == null && tracked.Table!.Cell(0, "value") == "11", "Source edits report a structural change");
         // A table with an existing error keeps validating fully, so its diagnostics never go stale after a cell edit.
-        // Hand-edited source may insert or drop entries without renumbering "order": array position wins and the numbers are repaired on load.
-        var renumber = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); renumber["records"]![1]!["order"] = 7;
-        File.WriteAllText(tracked.FilePath, Json(renumber)); var repaired = new Document(tracked.FilePath);
-        check(repaired.Diagnostics.All(d => d.Severity != "Error") && repaired.Table!.Records[1]!["order"]!.GetValue<int>() == 1 && repaired.Text.Contains("\"order\": 1"), "Stale slot numbers are corrected on open instead of reported");
+        // Files from older Studio versions carry a redundant "order" slot number on every record: array position wins and the numbers are dropped on load.
+        var legacy = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); var legacyRecords = legacy["records"]!.AsArray();
+        for (int i = 0; i < legacyRecords.Count; i++) legacyRecords[i]!["order"] = i == 1 ? 7 : i;
+        File.WriteAllText(tracked.FilePath, Json(legacy)); var repaired = new Document(tracked.FilePath);
+        check(repaired.Diagnostics.All(d => d.Severity != "Error") && repaired.Table!.Records.All(r => r is JsonObject o && !o.ContainsKey("order")) && !repaired.Text.Contains("\"order\"") && repaired.Table.Cell(1, "value") == tracked.Table.Cell(1, "value"), "Legacy slot numbers, even stale ones, are dropped on open instead of reported");
         var invalid = JsonNode.Parse(Json(tracked.Table!.ToFile()))!.AsObject(); invalid["records"]![1]!["sourceId"] = invalid["records"]![0]!["sourceId"]!.GetValue<string>();
         File.WriteAllText(tracked.FilePath, Json(invalid)); var erroneous = new Document(tracked.FilePath);
         check(erroneous.Diagnostics.Any(d => d.Severity == "Error" && d.Row == 1), "Duplicate source IDs are reported on open");

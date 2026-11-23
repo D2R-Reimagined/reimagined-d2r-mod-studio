@@ -12,14 +12,14 @@ internal static class ReorderTests
         var doc = new Document(Path.Combine(dir, "example.json"));
         bool Clean() => doc.Diagnostics.All(d => d.Severity != "Error");
         string Names() => string.Concat(Enumerable.Range(0, doc.Table!.Records.Count).Select(i => doc.Table.Cell(i, "name")));
-        bool Ordered() => doc.Table!.Records.Select((r, i) => r!["order"]!.GetValue<int>() == i).All(x => x);
+        bool Unnumbered() => doc.Table!.Records.All(r => r is JsonObject o && !o.ContainsKey("order"));
 
         doc.MoveRows([0], 3);
-        check(Names() == "BCAD" && Ordered() && doc.Table!.Records[2].S("sourceId") == "row-00000" && Clean(), "Moving a row down places it before the targeted slot and keeps its identity");
+        check(Names() == "BCAD" && Unnumbered() && doc.Table!.Records[2].S("sourceId") == "row-00000" && Clean(), "Moving a row down places it before the targeted slot and keeps its identity");
         check(doc.Diagnostics.Any(d => d.Severity == "Warning" && d.Message == TableData.RowOrderAdvice), "Moving original rows raises the order advisory");
-        doc.Undo(); check(Names() == "ABCD" && Ordered() && !doc.Diagnostics.Any(d => d.Severity == "Warning"), "Undo restores the previous row order");
+        doc.Undo(); check(Names() == "ABCD" && Unnumbered() && !doc.Diagnostics.Any(d => d.Severity == "Warning"), "Undo restores the previous row order");
         doc.Redo(); check(Names() == "BCAD", "Redo re-applies the move"); doc.Undo();
-        doc.MoveRows([1, 3], 0); check(Names() == "BDAC" && Ordered() && Clean(), "Non-contiguous rows move together to the top in their original order");
+        doc.MoveRows([1, 3], 0); check(Names() == "BDAC" && Unnumbered() && Clean(), "Non-contiguous rows move together to the top in their original order");
         doc.Undo(); check(Names() == "ABCD", "Undo restores a multi-row move");
         doc.MoveRows([3], 0); check(Names() == "DABC", "Moving a row up inserts before the target"); doc.Undo();
         doc.LockedRows.Add(2); doc.MoveRows([0], 4);
@@ -44,7 +44,7 @@ internal static class ReorderTests
         throws(() => doc.MoveColumn(0, 3), "Column targets are bounded");
 
         var catalogDir = Path.Combine(root, "reorder/source/strings"); Directory.CreateDirectory(catalogDir);
-        TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["order"] = 0, ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }, new JsonObject { ["order"] = 1, ["id"] = 2, ["Key"] = "j", ["translations"] = new JsonObject { ["enUS"] = "w" } })));
+        TableData.Write(Path.Combine(catalogDir, "ui.json"), new TableData(new JsonObject { ["schemaVersion"] = 1, ["category"] = "ui", ["locales"] = new JsonArray("enUS") }, new JsonArray(new JsonObject { ["id"] = 1, ["Key"] = "k", ["translations"] = new JsonObject { ["enUS"] = "v" } }, new JsonObject { ["id"] = 2, ["Key"] = "j", ["translations"] = new JsonObject { ["enUS"] = "w" } })));
         var catalog = new Document(Path.Combine(catalogDir, "ui.json"));
         catalog.MoveRows([0], 2); check(catalog.Table!.Cell(0, "Key") == "j" && catalog.Diagnostics.Count == 0, "String entries can be reordered");
         throws(() => catalog.MoveColumn(0, 1), "String catalogs refuse column moves");

@@ -110,6 +110,9 @@ public static class ExternalEditorSync
     {
         using var gate = BuildCache.Lock(project);
         RequireClean(project, build.Profile, target);
+        // Synchronizing writes external TXT edits back into the profile's own overrides, which only line up with the TXT
+        // when no parent profile changes the table underneath them.
+        Require(ProfileChain.Load(project.Root, build.Profile).Layers.Count == 1, $"External editing is not available for {build.Profile}, which is based on another profile. Edit it in Studio.");
         return CaptureBuild(project, build, target);
     }
     internal static void Deployed(ModProject project, BuildResult build, string target)
@@ -196,6 +199,7 @@ public static class ExternalEditorSync
         if (File.Exists(profilePath))
         {
             var settings = JsonNode.Parse(Capture(profilePath))!;
+            Require(settings["basedOn"] == null, $"{session.Profile} is now based on another profile. End external editing and edit it in Studio.");
             foreach (var reference in (JsonArray?)settings["tableOverrides"] ?? [])
             {
                 var rulePath = Inside(Path.GetDirectoryName(profilePath)!, reference!.GetValue<string>());
@@ -285,7 +289,7 @@ public static class ExternalEditorSync
                     int r = row; var c = column;
                     var rule = Rule(current, row, column, output.Key);
                     var ruleFile = rule == null ? null : rules.First(p => ReferenceEquals(p.Rule, rule)).File;
-                    if (ruleFile != null) Require(!ProfileRules.IsSet(ruleFiles[ruleFile]), ProfileRules.Generated(ruleFiles[ruleFile], Relative(project.Root, ruleFile)) + $" External edit: {tracked.Source} row {row + 1} {column}.");
+                    if (ruleFile != null) Require(!ProfileRules.IsGenerated(ruleFiles[ruleFile]), ProfileRules.Generated(ruleFiles[ruleFile], Relative(project.Root, ruleFile)) + $" External edit: {tracked.Source} row {row + 1} {column}.");
                     var key = rule == null ? tracked.Source + ":" + row + ":" + column : ruleFile + ":" + column;
                     Propose(key, value, () => actions.Add(() => { if (rule == null) current.SetCell(r, c, value); else rule["changes"]![c]!["value"] = value; }));
                 }

@@ -223,7 +223,7 @@ public static class LegacyMigration
             foreach (var profile in new[] { "standard", "d2rl" })
             {
                 var path = Inside(stage, $"compatibility/{profile}/profile.json");
-                if (!File.Exists(path)) WriteJson(path, new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full", ["tableOverrides"] = new JsonArray(), ["assetOverrides"] = new JsonArray() });
+                if (!File.Exists(path)) WriteJson(path, ProfileChain.DefaultSettings(profile));
             }
             WriteJson(Inside(stage, "migration-report.json"), new JsonObject { ["schemaVersion"] = 1, ["tables"] = tables, ["catalogs"] = catalogs, ["verifiedTxtFiles"] = verified, ["retainedLegacyFiles"] = retained, ["note"] = "Original project unchanged. Files under legacy/ are preserved for review and are not deployed automatically. Git history and local build/cache folders are excluded.", ["files"] = new JsonArray(inputs.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(legacy.Root, p.Key), ["sha256"] = p.Value }).ToArray()) });
             var stagedProject = ModProject.Open(stage);

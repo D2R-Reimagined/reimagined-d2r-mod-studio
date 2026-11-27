@@ -60,7 +60,7 @@ public partial class MainWindow : Window
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://ModStudio.App/Assets/ReimaginedModStudio.ico")));
         var welcome = (TabItem)Documents.Items[0]!; Documents.Items.Clear(); tabs.Add(welcome); Documents.ItemsSource = tabs;
         ProfilePicker.Items.Clear(); ProfilePicker.ItemsSource = new[] { "standard", "d2rl" }; ProfilePicker.SelectedIndex = 0;
-        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); RefreshVisualBuilders(); };
+        ProfilePicker.SelectionChanged += (_, _) => { _ = RefreshSemanticInspectorAsync(); RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshLaunchTargets(); RefreshVisualBuilders(); RememberProfile(); };
         recoveryTimer.Tick += (_, _) => SaveRecovery(idleOnly: true); recoveryTimer.Start();
         runStateTimer.Tick += (_, _) => RefreshRunControls(); runStateTimer.Start(); InitializeExternalEditor(); InitializeCompanion();
         KeyDown += async (_, e) =>
@@ -218,6 +218,28 @@ public partial class MainWindow : Window
         await new QuickStartWindow().ShowDialog(this);
     }
     private async void TutorialClicked(object? sender, RoutedEventArgs e) => await new QuickStartWindow().ShowDialog(this);
+    private bool restoringProfile;
+    /// <summary>The profile a project opens with: the one last chosen in it, else "standard", else its first.</summary>
+    private static string? InitialProfile(ModProject opened)
+    {
+        string? remembered = null;
+        if (!Program.Arguments.Contains("--smoke"))
+            try { remembered = StudioPreferences.Load(StudioPreferences.DefaultFile).ProfileFor(opened.Root); } catch (Exception) { }
+        if (remembered != null && opened.Profiles.Contains(remembered)) return remembered;
+        return opened.Profiles.Contains("standard") ? "standard" : opened.Profiles.FirstOrDefault();
+    }
+    /// <summary>Stores the profile the user picked for the open project, so the next launch reselects it.</summary>
+    private void RememberProfile()
+    {
+        if (restoringProfile || project == null || Program.Arguments.Contains("--smoke") || ProfilePicker.SelectedItem is not string selected) return;
+        try
+        {
+            var preferences = StudioPreferences.Load(StudioPreferences.DefaultFile);
+            if (preferences.ProfileFor(project.Root) == selected) return;
+            preferences.RememberProfile(project.Root, selected); preferences.Save(StudioPreferences.DefaultFile);
+        }
+        catch (Exception ex) { Status.Text = "Could not save the selected profile: " + ex.Message; }
+    }
     public async Task LoadProjectAsync(string root)
     {
         Require(operation == null && !externalBusy, "Wait for the current operation before switching projects.");
@@ -232,7 +254,10 @@ public partial class MainWindow : Window
         Title = $"{project.Name} | Reimagined D2R Mod Studio"; ProjectLabel.Text = project.Name; ToolTip.SetTip(ProjectLabel, project.Root);
         var entries = await Task.Run(() => ProjectEntry.Read(project.Root));
         await RefreshCatalogIdWarningsAsync(nextProject);
-        explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; SetExplorerEntries(entries); ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = project.Profiles.Contains("standard") ? "standard" : project.Profiles.FirstOrDefault();
+        explorerSearchTimer.Stop(); ExplorerSearch.Text = ""; SetExplorerEntries(entries); restoringProfile = true;
+        try { ProfilePicker.ItemsSource = project.Profiles.ToArray(); ProfilePicker.SelectedItem = InitialProfile(project); }
+        finally { restoringProfile = false; }
+        RefreshProfileColors();
         watcher = new(project.Root) { IncludeSubdirectories = true, NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName, EnableRaisingEvents = true };
         watcher.Changed += OnExternalChange; watcher.Created += OnExternalChange; watcher.Deleted += OnExternalChange; watcher.Renamed += OnExternalChange;
         RefreshLaunchTargets(); RefreshStatus(); Status.Text = "Project ready. Single-click to preview; double-click to keep a file open.";
@@ -267,6 +292,7 @@ public partial class MainWindow : Window
             { catalogWarningTimer.Stop(); catalogWarningTimer.Start(); }
             RefreshItemPreview(); RefreshSkillPreview(); RefreshMissilePreview(); RefreshStatPreview(); RefreshDropPreview(); RefreshMonsterPreview(); RefreshAffixPreview(); RefreshRecipePreview(); RefreshVisualBuilders();
             _ = RefreshSemanticInspectorAsync();
+            if (project is { } changedProject && Contains(Path.Combine(changedProject.Root, "compatibility"), e.FullPath)) QueueProfileFilesChanged();
             if (runningBuild != null && controller.Running) RunState.Text = $"Game: {runningBuild} · source changed";
             foreach (var tab in tabs)
             {
@@ -467,6 +493,7 @@ public partial class MainWindow : Window
         RememberEditorView(pane, file);
         pane.ReferenceRequested += async (sender, row, column, anchor) => await NavigateCellReferenceAsync(sender, row, column, anchor);
         pane.ColumnGuideRequested += OpenColumnGuide;
+        AttachProfiles(pane);
         pane.ItemHovered += (sender, row, anchor) => { if (row >= 0) { if (EditorPane.ItemHoverCards) RequestItemPreview(sender, row, anchor, sender.HoverPosition); } else if (itemRequestPane == sender && itemHoverRequest) ScheduleItemTooltipClose(); };
         var tab = loadingTab ?? new TabItem(); tab.Content = pane;
         if (loadingTab == null) AddDocumentTab(tab, preview, activate); else { UpdateTabHeader(tab); if (Documents.SelectedItem == tab) UpdateInspector(pane); }
@@ -568,7 +595,17 @@ public partial class MainWindow : Window
         InspectorInfo.Text = insight.Count > 0 ? string.Join("\n", insight) : inspectorInfoText;
         InspectorInfo.Classes.Set("muted", insight.Count == 0);
     }
-    private void ApplyCellClicked(object? sender, RoutedEventArgs e) { try { if (Active is { } pane && FieldPicker.SelectedItem is string field) { pane.Document.SetCells([(pane.SelectedRow, field, CellValue.Text ?? "")]); pane.Refresh(); } } catch (Exception ex) { ShowError(ex); } }
+    private void ApplyCellClicked(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Active is not { } pane || FieldPicker.SelectedItem is not string field) return;
+            // In a profile's view the inspector writes that profile's override, like typing in the grid.
+            if (pane.ProfileLens != null) pane.WriteProfile([new SetProfileCell(pane.SelectedRow, field, CellValue.Text ?? "")]);
+            else { pane.Document.SetCells([(pane.SelectedRow, field, CellValue.Text ?? "")]); pane.Refresh(); }
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
     private async void ProblemDoubleTapped(object? sender, TappedEventArgs e) { try { if (Problems.SelectedItem is Diagnostic d && File.Exists(d.File)) { var pane = await OpenDocumentAsync(d.File); if (d.Row >= 0) pane?.Jump(d.Row, d.Field); } } catch (Exception ex) { ShowError(ex); } }
     private async void SaveAllClicked(object? sender, RoutedEventArgs e) => await SaveAllAsync();
     private void SavePane(EditorPane pane)
@@ -876,6 +913,12 @@ public partial class MainWindow : Window
                 File.WriteAllText(System.IO.Path.Combine(output, "visual-builder-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
+            if (Program.Arguments.Contains("--profiles-only"))
+            {
+                await SmokeProfilesAsync(root, output);
+                File.WriteAllText(System.IO.Path.Combine(output, "profiles-passed.json"), "{\"passed\":true}");
+                closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
+            }
             if (Program.Arguments.Contains("--row-insert-only"))
             {
                 var pane = await OpenDocumentAsync(System.IO.Path.Combine(root, "source/tables/sounds.json"));
@@ -884,6 +927,7 @@ public partial class MainWindow : Window
                 File.WriteAllText(System.IO.Path.Combine(output, "row-insert-passed.json"), "{\"passed\":true}");
                 closingApproved = true; (Application.Current!.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)!.Shutdown(0); return;
             }
+            await SmokeProfilesAsync(root, output);
             await SmokePreviewsAsync(output, Program.Arguments.Skip(index + 3));
             await SmokeParticleInspectorAsync(output);
             await SmokeItemPreviewsAsync(output);

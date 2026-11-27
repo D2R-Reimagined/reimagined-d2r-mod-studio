@@ -117,6 +117,7 @@ public partial class EditorPane
     public void MoveRows(int[] rows, int target)
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before moving rows.");
+        RequireSharedView("move rows");
         int revision = Document.Revision; Document.MoveRows(rows, target);
         if (Document.Revision == revision) return;
         var order = ModStudio.Core.Document.MoveOrder(Document.Table!.Records.Count, rows, target);
@@ -154,6 +155,7 @@ public partial class EditorPane
     public void MoveColumn(int from, int to)
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before moving columns.");
+        RequireSharedView("move columns");
         int revision = Document.Revision; Document.MoveColumn(from, to);
         if (Document.Revision == revision) { RefreshColumns(); return; }
         int Map(int index) => index == from ? to : from < to ? (index > from && index <= to ? index - 1 : index) : (index >= to && index < from ? index + 1 : index);

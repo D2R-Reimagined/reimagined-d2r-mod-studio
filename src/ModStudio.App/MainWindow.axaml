@@ -14,7 +14,8 @@
     </StackPanel>
     </ScrollViewer>
     <StackPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Horizontal" Margin="8,0,0,0">
-     <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
+     <ComboBox x:Name="ProfilePicker" Width="130" VerticalAlignment="Center" SelectedIndex="0" ToolTip.Tip="The profile Build, Deploy and Play use, and that previews show"><ComboBoxItem Content="standard" /><ComboBoxItem Content="d2rl" /></ComboBox>
+     <Button x:Name="ProfilesButton" Content="Profiles…" Click="ManageProfilesClicked" ToolTip.Tip="Add, rename, delete and configure profiles (compatibility/&lt;name&gt;/): parent, runtime, strings, mod folder, color" />
      <ComboBox x:Name="LaunchTargetPicker" Width="135" PlaceholderText="Game target" IsEnabled="False" VerticalAlignment="Center" ToolTip.Tip="Launch using D2R.exe (vanilla) or D2RLoader.exe. Configure the game folder in Run settings." />
      <Button Content="Build" Click="BuildClicked" /><Button Content="Deploy" Click="DeployClicked" /><Button Content="▶ Play" Classes="accent" Click="PlayClicked" /><Button x:Name="StopButton" Content="■ Stop / Cancel" Click="StopClicked" IsVisible="False" />
     </StackPanel>

@@ -37,6 +37,8 @@ public sealed class PreviewTables
         private readonly List<string> issues;
         private readonly CancellationToken token;
         private readonly List<JsonNode> rules = [];
+        /// <summary>The same rules by profile layer, root first: a child's change applies to its parent's value.</summary>
+        private readonly List<JsonNode[]> layers = [];
         private readonly Dictionary<(string Table, string Column), ILookup<string, JsonObject>> lookups = [];
         private readonly Dictionary<string, IReadOnlyList<JsonObject>> tableRows = [];
         private readonly List<Dictionary<string, string>> catalogs = [];
@@ -45,11 +47,13 @@ public sealed class PreviewTables
         internal Session(PreviewTables owner, ModProject project, string profile, string locale, List<string> issues, CancellationToken token)
         {
             this.owner = owner; this.project = project; this.locale = locale; this.issues = issues; this.token = token;
-            var profilePath = Inside(project.Root, $"compatibility/{profile}/profile.json");
-            bool standard = File.Exists(profilePath) ? owner.ReadCached(profilePath, token).S("stringMode", "standard") == "standard" : profile == "standard";
-            if (File.Exists(profilePath))
-                foreach (var path in (JsonArray?)owner.ReadCached(profilePath, token)["tableOverrides"] ?? [])
-                    rules.AddRange(ProfileRules.Expand(owner.ReadCached(Inside(Path.GetDirectoryName(profilePath)!, path!.GetValue<string>()), token)));
+            bool standard = profile == "standard";
+            if (Directory.Exists(Inside(project.Root, "compatibility/" + profile)))
+            {
+                var chain = ProfileChain.Load(project.Root, profile, file => owner.ReadCached(file, token));
+                standard = chain.StringMode == "standard"; layers.AddRange(chain.RuleLayers);
+                rules.AddRange(chain.AllRules);
+            }
             foreach (var file in Files(Inside(project.Root, "source/strings")).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal))
             {
                 var data = owner.ReadCached(file, token)["records"]!; var cached = owner.cache[file];
@@ -74,16 +78,20 @@ public sealed class PreviewTables
         /// <summary>A row's fields with the selected profile's overrides applied. The authored record is never changed.</summary>
         public JsonObject Effective(string name, JsonObject row)
         {
-            var fields = (JsonObject)row["fields"]!.DeepClone(); var occupied = new HashSet<string>();
-            foreach (var rule in rules.Where(r => r.S("table") == name && r.S("record") == row.S("sourceId")))
+            var fields = (JsonObject)row["fields"]!.DeepClone();
+            foreach (var layer in layers)
             {
-                Require(rule["targets"] == null, $"{name}: bank-specific overrides need a bank selection; preview is unavailable.");
-                if (ProfileRules.Removes(rule)) continue;
-                foreach (var change in rule["changes"]!.AsObject())
+                var occupied = new HashSet<string>();
+                foreach (var rule in layer.Where(r => r.S("table") == name && r.S("record") == row.S("sourceId")))
                 {
-                    Require(occupied.Add(change.Key), $"{name}/{change.Key}: competing overrides.");
-                    Require(fields.S(change.Key) == change.Value.S("expect"), $"{name}/{change.Key}: stale override. Save or reconcile the shared value.");
-                    fields[change.Key] = change.Value.S("value");
+                    Require(rule["targets"] == null, $"{name}: bank-specific overrides need a bank selection; preview is unavailable.");
+                    if (ProfileRules.Removes(rule)) continue;
+                    foreach (var change in rule["changes"]!.AsObject())
+                    {
+                        Require(occupied.Add(change.Key), $"{name}/{change.Key}: competing overrides.");
+                        Require(fields.S(change.Key) == change.Value.S("expect"), $"{name}/{change.Key}: stale override. Save or reconcile the shared value.");
+                        fields[change.Key] = change.Value.S("value");
+                    }
                 }
             }
             origins[fields] = (name, row.S("sourceId"));

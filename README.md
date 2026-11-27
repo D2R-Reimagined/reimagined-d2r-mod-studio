@@ -35,6 +35,22 @@ Well, there are a few reasons. First off I can't stand the amount of merge concl
 * Build, Deploy and Play report warnings such as an item name with no string-catalog key; the details are in the Problems tab and the **Log** tab keeps every status-bar message (click the status bar to open it).
 * The **deployment folder's name is the mod's name**: Studio lays the build out as `<folder>.mpq` and launches the game with `-mod <folder>`. Deploying to `mods/MyMod-test` therefore runs the same project as a separate mod beside `mods/MyMod`; the folder no longer has to be named after the project.
 
+## Profiles
+
+A profile is one build of the project: `compatibility/<name>/profile.json` plus the override files it lists. The toolbar picker chooses the profile Build, Deploy, Play and the previews use; **Profiles…** beside it manages them.
+
+* **Add, rename, delete** profiles in the Profiles window. A new profile starts empty, as a one-time copy of another, or **based on** another (`"basedOn": "d2rl"`). A child builds everything its parent builds and then applies its own overrides on top, so a change's `expect` is the parent's value. Settings it leaves at *(inherit)* (runtime, strings, mod folder name, save path) come from the parent. Asset overrides add up, and a child's replaces its parent's for the same target. Rename updates the profiles based on it and moves its run settings. Delete moves the folder to `.studio/deleted-profiles/` and is refused while other profiles are based on it.
+* **Runtime** (`"runtime": "loader"` or `"plain"`) decides whether a profile may ship `d2rloader/` assets. Profiles without one keep the old rule (only `d2rl` is a loader profile), and renaming a profile writes its runtime and string mode explicitly. **Color** (`"color": "#RRGGBB"`) is how Studio shows the profile and does not affect builds.
+* **Profile view**: a table's *Shared source* picker switches it to *View as &lt;profile&gt;*. The grid then shows what that profile builds:
+  * its own changes are tinted in its colour, and changes it inherits are tinted fainter in the parent's colour;
+  * stale changes, whose expected value no longer matches, are red;
+  * rows it leaves out are struck through;
+  * hovering a cell lists each layer's value, reason and file.
+
+  Typing, pasting, clearing and the inspector's *Apply cell* write that profile's overrides and leave shared source unchanged. Each new override records the text in the *Reason* box. Typing the value the profile would get anyway removes its override. Ctrl+Z / Ctrl+Y undo and redo profile edits. The row menu has *Revert to parent*, *Accept current value* (for stale changes), *Leave row out* (last rows only) and *Restore row*. Rows and columns are added, moved and deleted in Shared source. Studio writes its overrides to one rule set per table, `compatibility/<profile>/studio-overrides/<table>.json`. It edits changes that live in other editable files where they are, and generated rule sets (`"generator"`) and bank-specific rules stay locked.
+* **Shared view marks**: a cell a profile changes gets a corner mark in that profile's colour, and a row it leaves out gets a line through it. *Profile marks* in the table toolbar chooses which profiles show marks.
+* External editing (TXT round trip) is not available for profiles based on another profile.
+
 ## UI Designer
 
 Any layout under `data/global/ui/layouts` opens with a **UI Designer** button beside Source: the layout drawn the way the game draws it, on the 3840 × 2160 reference screen, next to a tree of its widgets and an inspector.

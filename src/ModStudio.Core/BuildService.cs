@@ -48,23 +48,19 @@ public static class BuildService
             Require(recounted == hashes.Count, "Source changed while capturing build. Retry.");
             progress?.Invoke($"Captured {hashes.Count} source files.");
             var profilePath = Inside(snapshot, $"compatibility/{profile}/profile.json");
-            var settings = File.Exists(profilePath) ? Read(profilePath) : new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full" };
-            Require(settings.I("schemaVersion") == 1 && settings.S("id") == profile, "Invalid profile schema or identity.");
-            Require(settings.S("stringMode") is "standard" or "full", "Invalid string mode.");
+            // The profile with every profile it is based on; each layer's rules apply to what the layers below it build.
+            var chain = ProfileChain.Load(snapshot, profile);
             var modInfoPath = Inside(snapshot, "modinfo.json");
             var modInfo = File.Exists(modInfoPath) ? Read(modInfoPath) : new JsonObject { ["name"] = project.Name, ["version"] = "1.0.0", ["savepath"] = project.Name + "/" };
             // A profile can give its deployment its own name and save folder, so builds of one project for different runtimes never share saves.
             bool modInfoOverridden = false;
-            if (settings["modInfo"] is JsonNode modInfoOverride)
+            if (chain.ModInfo is { } fields)
             {
-                var fields = modInfoOverride as JsonObject ?? throw new InvalidDataException("Profile modInfo must be an object.");
-                Require(fields.Count > 0 && fields.All(p => p.Key is "name" or "savepath" && p.Value is JsonValue v && v.TryGetValue<string>(out var text) && text.Length > 0), "Profile modInfo may only set non-empty name and savepath strings.");
-                if (fields.ContainsKey("savepath")) { var save = fields.S("savepath"); Require(save.EndsWith('/') && !save.StartsWith('/') && !save.Contains('\\') && !save.Split('/').Any(part => part is "." or ".."), "Profile savepath must be a relative folder ending in '/'."); }
                 foreach (var pair in fields) modInfo[pair.Key] = pair.Value!.DeepClone();
                 modInfoOverridden = true;
             }
-            var rules = ((JsonArray?)settings["tableOverrides"] ?? []).SelectMany(p => ProfileRules.Expand(Read(Inside(Path.GetDirectoryName(profilePath)!, p!.GetValue<string>())))).ToArray();
-            var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + modName + profile + Json(settings) + string.Join("", rules.Select(Json)));
+            var rules = chain.RuleLayers;
+            var contextKey = Hash(typeof(BuildService).Module.ModuleVersionId + modName + profile + chain.ContentKey());
             var generated = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var diagnostics = new List<Diagnostic>(); var tableNames = new HashSet<string>();
             void Emit(string relative, byte[] bytes)
             {
@@ -95,7 +91,7 @@ public static class BuildService
                         {
                             // String IDs are not unique across catalogs in the shipped game: chinese-overlay.json repeats IDs from item-names, skills and others, and skills/ui share 27956.
                             var target = table.Schema.S("target"); Require(target.StartsWith("local/lng/strings/", StringComparison.OrdinalIgnoreCase) && target.EndsWith(".json", StringComparison.OrdinalIgnoreCase), "Invalid string output target.");
-                            Emit(dataPrefix + target, table.EncodeCatalog(settings.S("stringMode") == "standard"));
+                            Emit(dataPrefix + target, table.EncodeCatalog(chain.StringMode == "standard"));
                         }
                         else
                         {
@@ -113,7 +109,8 @@ public static class BuildService
                     catch (Exception e) when (e is not OperationCanceledException) { diagnostics.Add(new(original, e.Message)); }
                 }
             }
-            foreach (var rule in rules) if (!tableNames.Contains(rule.S("table"))) diagnostics.Add(new(Inside(project.Root, Relative(snapshot, profilePath)), "Unknown override table: " + rule.S("table")));
+            foreach (var layer in chain.Layers)
+                foreach (var rule in layer.Rules) if (!tableNames.Contains(rule.S("table"))) diagnostics.Add(new(Inside(project.Root, Relative(snapshot, layer.SettingsFile)), "Unknown override table: " + rule.S("table")));
             if (diagnostics.Count > 0) throw new BuildFailure(diagnostics);
             var catalogWarnings = new List<Diagnostic>();
             var catalogRoot = Path.Combine(snapshot, "source/strings");
@@ -139,18 +136,18 @@ public static class BuildService
                 if (BuildCache.CopyChanged(file.FullName, Inside(output, relative), BuildCache.FileHash(file), emitted.GetValueOrDefault(relative))) written++;
             }
             var assetTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var asset in (JsonArray?)settings["assetOverrides"] ?? [])
+            foreach (var (asset, assetFolder) in chain.AssetOverrides())
             {
                 token.ThrowIfCancellationRequested(); Require(asset.S("reason").Length > 0, "Asset override needs a reason.");
                 var scope = asset.S("scope", "data"); Require(scope is "data" or "mod", "Unknown asset scope."); var target = asset.S("target");
-                if (scope == "mod") Require(profile == "d2rl" && target.StartsWith("d2rloader/") && !target.StartsWith("d2rloader/config/") && !target.StartsWith("d2rloader/logs/"), "Invalid loader asset scope.");
+                if (scope == "mod") Require(chain.Runtime == ProfileChain.LoaderRuntime && target.StartsWith("d2rloader/") && !target.StartsWith("d2rloader/config/") && !target.StartsWith("d2rloader/logs/"), "Invalid loader asset scope.");
                 var relative = scope == "data" ? dataPrefix + target : target;
                 Require(assetTargets.Add(relative), "Competing asset overrides.");
                 // Existing native data assets may be overridden; generated source may not.
                 Require(scope != "data" || !generated.Contains(relative) || File.Exists(Inside(snapshot, "data/" + target)), "Asset override cannot replace generated source.");
                 var destination = Inside(output, relative); var expected = asset?["expectSha256"]?.GetValue<string>();
                 Require((generated.Contains(relative) && File.Exists(destination) ? BuildCache.FileHash(destination) : null) == expected, "Stale asset override: " + target);
-                var bytes = File.ReadAllBytes(Inside(Path.GetDirectoryName(profilePath)!, asset.S("source")));
+                var bytes = File.ReadAllBytes(Inside(assetFolder, asset.S("source")));
                 if (asset?["transform"] != null)
                 {
                     Require(asset.S("transform") == "json-template", "Unsupported asset transform.");
@@ -172,6 +169,12 @@ public static class BuildService
             progress?.Invoke($"Built {entries.Count} files · {profile} · {id[..8]} · {compiled} tables converted, {reused} reused, {written} output files written"); return result;
         }
         catch { if (File.Exists(manifest)) File.Delete(manifest); throw; }
+    }
+    /// <summary>A profile chain's rule layers (<see cref="ProfileChain.RuleLayers"/>), root first, each applied to what the ones before it built.</summary>
+    public static TableData ResolveTable(TableData table, string target, IReadOnlyList<JsonNode[]> layers)
+    {
+        foreach (var rules in layers) table = ResolveTable(table, target, rules);
+        return table;
     }
     /// <summary>Shared by builds and companion table snapshots; applies the exact same profile rules.</summary>
     public static TableData ResolveTable(TableData table, string target, JsonNode[] rules)

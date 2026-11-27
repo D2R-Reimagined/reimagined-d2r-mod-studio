@@ -145,9 +145,9 @@ internal static class FeatureTests
         var build = BuildService.Build(project, "d2rl");
         check(File.ReadAllText(Path.Combine(build.Output, "AdoptedMod.mpq/data/global/excel/uniqueitems.txt")).Contains("\t12"), "Edited profile compiles to expected runtime value");
         reviewed = ProfileEditing.ReadCell(project, table, 0, "lvl", "d2rl");
-        var changed = Read(overrideFile); changed["reason"] = "External change"; WriteJson(overrideFile, changed);
+        var changed = Read(overrideFile); var changedRule = changed["rules"]![0]!; changedRule["reason"] = "External change"; WriteJson(overrideFile, changed);
         throws(() => ProfileEditing.WriteCell(project, table, 0, "lvl", "d2rl", "13", "Stale review", reviewed), "Profile editor rejects stale file fingerprints");
-        changed["targets"] = new JsonArray("global/excel/uniqueitems.txt"); WriteJson(overrideFile, changed);
+        changedRule["targets"] = new JsonArray("global/excel/uniqueitems.txt"); WriteJson(overrideFile, changed);
         throws(() => ProfileEditing.ReadCell(project, table, 0, "lvl", "d2rl"), "Bank-specific profile rules require explicit source editing");
 
         var splitRoot = Path.Combine(root, "split-project"); Directory.CreateDirectory(splitRoot);

@@ -103,5 +103,10 @@ internal static class VisualBuilderTests
         var saved = Path.Combine(root, "views", "preferences.json"); Directory.CreateDirectory(Path.GetDirectoryName(saved)!);
         prefs.RememberView(tableFile, "visual"); prefs.Save(saved);
         check(StudioPreferences.Load(saved).ViewFor(tableFile) == "visual", "Remembered views survive saving and loading the preferences");
+
+        // The build profile last picked in a project is remembered by its root, whatever way the path is written.
+        prefs.RememberProfile(root, "d2rl"); prefs.Save(saved);
+        var reloaded = StudioPreferences.Load(saved);
+        check(reloaded.ProfileFor(Path.Combine(root, ".") + Path.DirectorySeparatorChar) == "d2rl" && reloaded.ProfileFor(Path.Combine(root, "other")) == null, "A project's profile survives saving and loading the preferences");
     }
 }

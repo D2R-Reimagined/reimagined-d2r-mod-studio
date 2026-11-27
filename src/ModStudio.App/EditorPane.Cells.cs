@@ -194,7 +194,7 @@ public sealed partial class EditorPane
                     selectedCells.Clear(); selectedCells.Add((row.Row, col)); cellAnchor = (row.Row, col); QueuePaint();
                 }
                 editingCell = (row.Row, col); editTargets = selectedCells.Contains((row.Row, col)) ? selectedCells.ToArray() : [(row.Row, col)];
-                editingOriginal = row.IsPlaceholder || row.Row >= Document.Table!.Records.Count ? null : Document.Table.Cell(row.Row, Document.Table.Columns[col]);
+                editingOriginal = row.IsPlaceholder || row.Row >= Document.Table!.Records.Count ? null : CellText(row.Row, Document.Table.Columns[col]);
             }
         };
         grid.CellEditEnding += (_, e) =>
@@ -210,13 +210,15 @@ public sealed partial class EditorPane
         void OnCellEditEnded(DataGridCellEditEndedEventArgs e)
         {
             var cell = editingCell; var value = editedValue; var targets = editTargets; var original = editingOriginal;
+            // A profile view held the editor's value; a commit writes it as one override, anything else drops it.
+            FlushLensEdit(e.EditAction == DataGridEditAction.Commit && targets.Length <= 1);
             if (liveEditor != null) liveEditor.PropertyChanged -= LiveEditorChanged;
             liveEditor = null; liveValue = null; editingCell = null; editedValue = null; editTargets = []; editingOriginal = null;
             RefreshLiveCells(targets); UpdateNote();
             if (e.EditAction != DataGridEditAction.Commit || cell == null || value == null)
             {
                 // A single cell's editor writes through to the document as it is typed; Escape means "as it was", so put the value back.
-                if (e.EditAction == DataGridEditAction.Cancel && cell is { } canceled && original != null && targets.Length == 1 && IsEditableCell(canceled) && Document.Table!.Cell(canceled.Row, Document.Table.Columns[canceled.Col]) != original)
+                if (lens == null && e.EditAction == DataGridEditAction.Cancel && cell is { } canceled && original != null && targets.Length == 1 && IsEditableCell(canceled) && Document.Table!.Cell(canceled.Row, Document.Table.Columns[canceled.Col]) != original)
                     try { Document.SetCells([(canceled.Row, Document.Table.Columns[canceled.Col], original)]); } catch (Exception ex) { error(ex); }
                 foreach (var row in targets.Select(c => c.Row).Distinct()) RefreshRowValues(row); return;
             }
@@ -418,6 +420,7 @@ public sealed partial class EditorPane
         var edits = cells.Where(c => c != except && c.Row >= 0 && c.Row < table.Records.Count && !Document.LockedRows.Contains(c.Row) && !Document.LockedColumns.Contains(table.Columns[c.Col]))
             .Where(c => !(table.IsCatalog && c.Col < 2 && table.IsOriginalRow(c.Row))).Select(c => (c.Row, table.Columns[c.Col], value)).ToArray();
         if (edits.Length == 0) return;
+        if (RouteToProfile(edits)) { selection(this); return; }
         Document.SetCells(edits);
         foreach (var row in edits.Select(e => e.Row).Distinct()) RefreshRowValues(row);
         selection(this);
@@ -438,10 +441,12 @@ public sealed partial class EditorPane
     public void InsertRows(int index, int count = 1)
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before adding rows.");
+        RequireSharedView("add rows");
         Document.InsertRows(index, count); SelectInsertedRows(index, count);
     }
     public void CloneSelectedRows(bool append)
     {
+        RequireSharedView("clone rows");
         var rows = SelectedRowsForCommands();
         int index = Document.CloneRows(rows, append);
         SelectInsertedRows(index, rows.Length);
@@ -458,6 +463,7 @@ public sealed partial class EditorPane
     }
     public void DeleteSelectedRows()
     {
+        RequireSharedView("delete rows");
         var rows = SelectedRowsForCommands(); Storage.Require(rows.Length > 0, "Select rows to delete.");
         Document.DeleteRows(rows); selectedCells.Clear(); frozenRows.Clear(); Refresh();
     }
@@ -471,6 +477,7 @@ public sealed partial class EditorPane
     private int MaterializePlaceholder()
     {
         Storage.Require(Document.Table != null && !Document.PendingSource, "Apply valid source before adding rows.");
+        RequireSharedView("add rows");
         int index = Document.Table!.Records.Count; Document.InsertRows(index); return index;
     }
     /// <summary>Tab-separated text for the selection: a single cell, the bounding rectangle of selected cells, or whole rows.</summary>
@@ -478,10 +485,10 @@ public sealed partial class EditorPane
     {
         var table = Document.Table!;
         if (wholeRows || selectedCells.Count == 0)
-            return string.Join('\n', SelectedRowsForCommands().Select(r => string.Join('\t', table.Columns.Select(c => table.Cell(r, c)))));
+            return string.Join('\n', SelectedRowsForCommands().Select(r => string.Join('\t', table.Columns.Select(c => CellText(r, c)))));
         var rows = (activeGrid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => !r.IsPlaceholder).Select(r => r.Row).ToList();
         var cols = selectedCells.Select(c => c.Col).Distinct().Order().ToList();
         var rowOrder = selectedCells.Select(c => c.Row).Distinct().OrderBy(r => rows.IndexOf(r)).ToList();
-        return string.Join('\n', rowOrder.Select(r => string.Join('\t', cols.Select(c => selectedCells.Contains((r, c)) ? table.Cell(r, table.Columns[c]) : ""))));
+        return string.Join('\n', rowOrder.Select(r => string.Join('\t', cols.Select(c => selectedCells.Contains((r, c)) ? CellText(r, table.Columns[c]) : ""))));
     }
 }

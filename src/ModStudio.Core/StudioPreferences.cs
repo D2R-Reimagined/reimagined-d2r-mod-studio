@@ -22,6 +22,12 @@ public sealed class StudioPreferences
     public string TableFontFamily { get; set; } = "";
     public double TableFontSize { get; set; } = 15;
     public List<string> SettingsIntroduced { get; set; } = [];
+    /// <summary>The build profile last selected in each project, by normalized project root, so it is reselected on open.</summary>
+    public Dictionary<string, string> ProjectProfiles { get; set; } = [];
+    /// <summary>The profile remembered for a project; null when none was chosen.</summary>
+    public string? ProfileFor(string root) => ProjectProfiles.GetValueOrDefault(ProfileKey(root));
+    public void RememberProfile(string root, string profile) => ProjectProfiles[ProfileKey(root)] = profile;
+    private static string ProfileKey(string root) { var full = Normalize(root); return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full; }
     /// <summary>The editor view last chosen for each file ("table", "source", "visual" or "preview"), by normalized full path.</summary>
     public Dictionary<string, string> EditorViews { get; set; } = [];
     /// <summary>The view remembered for a file; null when none was chosen (the file opens in its default view).</summary>

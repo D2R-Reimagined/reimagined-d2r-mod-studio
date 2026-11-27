@@ -112,6 +112,11 @@ public sealed partial class EditorPane
         private TextBox? mirror;
         private static readonly IBrush MirrorBorder = new SolidColorBrush(Color.Parse("#D8BC86")), MirrorBackground = new SolidColorBrush(Color.Parse("#4A4123"));
         private TextBox Mirror => mirror ??= CreateMirror();
+        // Created on first use, like the mirror: most cells never carry a profile mark.
+        private ProfileMarks? marks;
+        private bool struck;
+        /// <summary>The table cell this display shows, when it shows a real row.</summary>
+        public (int Row, int Col)? CellPosition => Row is { IsPlaceholder: false } row ? (row.Row, column.Index) : null;
         private TextBox CreateMirror()
         {
             var box = new TextBox
@@ -181,8 +186,16 @@ public sealed partial class EditorPane
             var row = Row; int index = column.Index;
             var text = row == null ? "" : row[index];
             if (display.Text != text) display.Text = text;
-            var tint = owner.frozenColumns.Contains(index) ? FrozenTint : null;
+            var look = row is { IsPlaceholder: false } ? owner.ProfileLook(row.Row, index) : default;
+            var tint = look.Tint ?? (owner.frozenColumns.Contains(index) ? FrozenTint : null);
             if (!ReferenceEquals(Background, tint)) Background = tint;
+            if (look.Struck != struck)
+            {
+                struck = look.Struck;
+                display.TextDecorations = struck ? TextDecorations.Strikethrough : null; display.Opacity = struck ? 0.55 : 1;
+            }
+            if (look.Marks != null || look.Strikes != null) { if (marks == null) { marks = new ProfileMarks(); Children.Add(marks); } marks.Show(look.Marks, look.Strikes); }
+            else marks?.Show(null, null);
             var value = row != null ? owner.PreviewCellValue(row.Row, index) : null;
             if (value != null) { Mirror.Text = value; Mirror.IsVisible = true; } else if (mirror != null) mirror.IsVisible = false;
             display.IsVisible = value == null;

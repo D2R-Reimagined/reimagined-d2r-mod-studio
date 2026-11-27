@@ -51,6 +51,7 @@ try
     ReorderTests.Run(root, Check, Throws);
     LayoutTests.Run(root, Check, Throws);
     BuildTests.Run(root, Check, Throws, Write);
+    ProfileTests.Run(root, Check, Throws, Write);
     await DeploymentOverwriteTests.RunAsync(root, Check, Throws, Write);
     await GitTests.RunAsync(root, Check, Throws, Write);
     UnifiedDiffTests.Run(Check);

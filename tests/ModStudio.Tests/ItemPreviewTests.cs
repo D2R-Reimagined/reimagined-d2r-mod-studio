@@ -32,7 +32,7 @@ internal static class ItemPreviewTests
             && Links(result, "Axe").Any(c => c is { Table: "weapons", Column: "namestr" }) && result.Text.Single(t => t.Text.Contains("One-hand")).Links.Length == 4,
             "Item preview values link to the item and base cells they were read from");
         var warm = Preview(); check(warm == result || warm.Lines.SequenceEqual(result.Lines), "Cached item resolution preserves preview output");
-        Write("compatibility/test/profile.json", new JsonObject { ["tableOverrides"] = new JsonArray("item.json") });
+        Write("compatibility/test/profile.json", new JsonObject { ["schemaVersion"] = 1, ["id"] = "test", ["tableOverrides"] = new JsonArray("item.json") });
         var rule = new JsonObject { ["table"] = "uniqueitems", ["record"] = "item", ["changes"] = new JsonObject { ["min1"] = new JsonObject { ["expect"] = "2", ["value"] = "3" } } }; Write("compatibility/test/item.json", rule);
         check(Preview(profile: "test").Lines.Contains("+(3–4) to Strength"), "Item preview applies selected profile overrides without changing shared rows");
         check(item["fields"].S("min1") == "2", "Preview leaves selected source unchanged");

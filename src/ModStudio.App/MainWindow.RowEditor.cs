@@ -148,7 +148,7 @@ public partial class MainWindow
         rowEditorPane = pane; rowEditorRow = row; rowEditorRevision = document.Revision;
         rowEditorTable = table; rowEditorLocks = locks; rowEditorRefreshCount++;
         RowEditorLabel.Text = $"{table.Name} · row {row} · {table.Columns.Length} fields";
-        RowEditorStatus.Text = "Edits apply immediately to the shared source. Save to write to disk.";
+        RowEditorStatus.Text = pane.ProfileLens is { } lensProfile ? $"Showing what {lensProfile} builds (read-only here). Edit its overrides in the table." : "Edits apply immediately to the shared source. Save to write to disk.";
         var identities = (table.Schema["identityColumns"] as JsonArray)?.Select(x => x!.GetValue<string>()).ToHashSet() ?? [];
         // Fields that can carry a hint: function columns, and any column a documented function of this table can read.
         var hinted = table.IsCatalog ? new HashSet<string>() : FunctionGuide.PossibleHints(table.Name, table.Columns);
@@ -157,7 +157,7 @@ public partial class MainWindow
             bool identity = table.IsCatalog ? column is "id" or "Key" && table.IsOriginalRow(row) : identities.Contains(column);
             bool locked = document.LockedRows.Contains(row) || document.LockedColumns.Contains(column);
             return new RowEditorField(column, EditorPane.ColumnLabel(index, column) + (identity ? " · identity (read-only)" : locked ? " · locked" : ""), hinted.Contains(column),
-                table.Cell(row, column), identity || locked, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>
+                pane.CellText(row, column), identity || locked || pane.ProfileLens != null, table.IsCatalog, table.Name, table.IsCatalog ? null : ColumnGuide.Find(table.Name, column), field =>
                 {
                     // Detached controls and queued binding updates must never edit a newly selected row/document.
                     if (Active != pane || pane.SelectedRow != row || document.PendingSource || field.ReadOnly ||

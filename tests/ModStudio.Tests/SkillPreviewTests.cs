@@ -89,7 +89,7 @@ internal static class SkillPreviewTests
         check(Preview(strayElement).Issues.Any(i => i.Contains("without an EType")), "Elemental damage the game would ignore is reported");
 
         var warm = Preview(); check(warm.Levels.Select(l => l.Elemental).SequenceEqual(result.Levels.Select(l => l.Elemental)), "Cached skill resolution preserves preview output");
-        Write("compatibility/test/profile.json", new JsonObject { ["tableOverrides"] = new JsonArray("skill.json") });
+        Write("compatibility/test/profile.json", new JsonObject { ["schemaVersion"] = 1, ["id"] = "test", ["tableOverrides"] = new JsonArray("skill.json") });
         Write("compatibility/test/skill.json", new JsonObject { ["table"] = "skills", ["record"] = "firebolt", ["changes"] = new JsonObject { ["mana"] = new JsonObject { ["expect"] = "5", ["value"] = "10" } } });
         check(Preview(profile: "test").Levels[0].Mana == "5", "Skill preview applies selected profile overrides");
         check(bolt["fields"].S("mana") == "5", "Preview leaves selected source unchanged");

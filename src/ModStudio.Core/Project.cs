@@ -107,7 +107,7 @@ public static class ProjectImporter
             }
             WriteJson(Inside(stage, "mod-project.json"), new JsonObject { ["schemaVersion"] = ProjectLayout.Version, ["id"] = Guid.NewGuid().ToString(), ["name"] = name });
             WriteJson(Inside(stage, "modinfo.json"), new JsonObject { ["name"] = name, ["version"] = "1.0.0", ["savepath"] = name + "/" });
-            foreach (var profile in new[] { "standard", "d2rl" }) WriteJson(Inside(stage, $"compatibility/{profile}/profile.json"), new JsonObject { ["schemaVersion"] = 1, ["id"] = profile, ["stringMode"] = profile == "standard" ? "standard" : "full", ["tableOverrides"] = new JsonArray(), ["assetOverrides"] = new JsonArray() });
+            foreach (var profile in new[] { "standard", "d2rl" }) WriteJson(Inside(stage, $"compatibility/{profile}/profile.json"), ProfileChain.DefaultSettings(profile));
             WriteJson(Inside(stage, "import-report.json"), new JsonObject { ["schemaVersion"] = 1, ["verifiedTables"] = verified, ["assets"] = assets, ["files"] = new JsonArray(sourceHashes.Select(p => (JsonNode?)new JsonObject { ["path"] = Relative(dataFolder, p.Key), ["sha256"] = p.Value }).ToArray()) });
             File.WriteAllText(Inside(stage, ".gitignore"), ".studio/\nbuild/\n*.bak\n");
             File.WriteAllText(Inside(stage, ".gitattributes"), "source/**/*.json text eol=lf\n");

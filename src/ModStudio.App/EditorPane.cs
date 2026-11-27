@@ -16,7 +16,10 @@ using ModStudio.Core;
 
 namespace ModStudio.App;
 
-public sealed class RowView(Document document, int row, Action<Exception> error, Func<int>? materialize = null, Func<int, int, string?>? preview = null, Func<int, int, bool>? deferEdit = null) : INotifyPropertyChanged
+/// <param name="lensValue">The active profile view's value of a cell (null: shared source).</param>
+/// <param name="lensWrite">Takes a written value for the active profile view; true when it did, so shared source is left alone.</param>
+public sealed class RowView(Document document, int row, Action<Exception> error, Func<int>? materialize = null, Func<int, int, string?>? preview = null, Func<int, int, bool>? deferEdit = null,
+    Func<int, int, string?>? lensValue = null, Func<int, int, string, bool>? lensWrite = null) : INotifyPropertyChanged
 {
     /// <summary>Table row index; -1 while this is the blank "type here to add a row" line at the bottom.</summary>
     public int Row { get; private set; } = row;
@@ -33,10 +36,11 @@ public sealed class RowView(Document document, int row, Action<Exception> error,
     }
     public string this[int column]
     {
-        get => preview?.Invoke(Row, column) ?? document.Table!.Cell(Row, document.Table.Columns[column]);
+        get => preview?.Invoke(Row, column) ?? lensValue?.Invoke(Row, column) ?? document.Table!.Cell(Row, document.Table.Columns[column]);
         set
         {
             if (deferEdit?.Invoke(Row, column) == true) return;
+            if (!IsPlaceholder && lensWrite?.Invoke(Row, column, value) == true) { RefreshValues(); return; }
             try
             {
                 // The first value typed into the placeholder line creates the row it stands for.
@@ -248,6 +252,7 @@ public sealed partial class EditorPane : Grid
         toolbar.Children.Add(filter); toolbar.Children.Add(columnsLabel);
         InitializeSkillClassDropdown(toolbar);
         InitializeItemCardToggle(toolbar);
+        InitializeProfileLens(toolbar);
         filter.TextChanged += (_, _) => { filterDelay.Stop(); filterDelay.Start(); };
         filterDelay.Tick += async (_, _) => { filterDelay.Stop(); if ((filter.Text ?? "") != appliedFilter) { try { await FilterAsync(); } catch (Exception ex) { error(ex); } } };
         DetachedFromVisualTree += (_, _) => filterDelay.Stop();
@@ -427,7 +432,12 @@ public sealed partial class EditorPane : Grid
             }
             catch (Exception ex) { error(ex); }
         };
-        grid.BeginningEdit += (_, e) => { if (e.Row.DataContext is RowView row && columnMap.TryGetValue(e.Column, out var col)) e.Cancel = Document.LockedRows.Contains(row.Row) || Document.LockedColumns.Contains(Document.Table!.Columns[col]); };
+        grid.BeginningEdit += (_, e) =>
+        {
+            if (e.Row.DataContext is not RowView row || !columnMap.TryGetValue(e.Column, out var col)) return;
+            e.Cancel = Document.LockedRows.Contains(row.Row) || Document.LockedColumns.Contains(Document.Table!.Columns[col]);
+            if (!e.Cancel && LensEditBlock(row.Row, col) is { } blocked) { e.Cancel = true; error(new InvalidDataException(blocked)); }
+        };
         WireCellSelection(grid);
     }
     private void HideCellTip() => cellTip.IsVisible = false;
@@ -436,7 +446,11 @@ public sealed partial class EditorPane : Grid
         if (!tableHost.IsVisible || e.Source is not Visual source || IsReferenceButton(source)) { HideCellTip(); return; }
         var cell = source.GetSelfAndVisualAncestors().OfType<DataGridCell>().FirstOrDefault();
         var live = cell?.GetVisualDescendants().OfType<LiveCellDisplay>().FirstOrDefault();
-        if (live == null || !live.TryGetClippedText(out var fullText)) { HideCellTip(); return; }
+        if (live == null) { HideCellTip(); return; }
+        bool clipped = live.TryGetClippedText(out var clippedText);
+        var profileTip = live.CellPosition is { } at ? ProfileTip(at.Row, at.Col) : null;
+        if (!clipped && profileTip == null) { HideCellTip(); return; }
+        var fullText = profileTip == null ? clippedText : clipped ? clippedText + "\n\n" + profileTip : profileTip;
         var needsMeasure = !cellTip.IsVisible || cellTipText.Text != fullText || Math.Abs(cellTipLayerWidth - cellTipLayer.Bounds.Width) > 0.5;
         if (needsMeasure)
         {
@@ -484,6 +498,7 @@ public sealed partial class EditorPane : Grid
         var transform = SelectedCellIsColorTransform ? new Control[] { Item($"Pick colour transform for {SelectedColumn}…", () => ShowColorTransformPicker(grid), !Document.PendingSource), new Separator() } : [];
         return new ContextMenu { ItemsSource = (Control[])[
             .. transform,
+            .. ProfileMenuItems(grid),
             Item($"Add {added} above", () => InsertRows(above, rowsToAdd), addable && rows.Length > 0),
             Item($"Add {added} below", () => InsertRows(below, rowsToAdd), addable),
             Item("Clone and Append", () => CloneSelectedRows(append: true), addable && rows.Length > 0),
@@ -631,9 +646,11 @@ public sealed partial class EditorPane : Grid
         var table = Document.Table!; var term = filter.Text ?? ""; appliedFilter = term;
         var top = keepScroll ? TopOfView() : null;
         var classFilter = SelectedSkillClassFilter();
-        IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && SkillClassMatches(i, classFilter) && (term.Length == 0 || table.Columns.Any(c => table.Cell(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
-        if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => table.Cell(i, sortColumn), StringComparer.OrdinalIgnoreCase);
-        RowView View(int i) => new(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit);
+        // A profile view filters and sorts on the values it shows.
+        Func<int, string, string> text = lens != null ? CellText : table.Cell;
+        IEnumerable<int> rows = Enumerable.Range(0, table.Records.Count).Where(i => !frozenRows.Contains(i) && SkillClassMatches(i, classFilter) && (term.Length == 0 || table.Columns.Any(c => text(i, c).Contains(term, StringComparison.OrdinalIgnoreCase))));
+        if (sortColumn != null && table.Columns.Contains(sortColumn)) rows = descending ? rows.OrderByDescending(i => text(i, sortColumn), StringComparer.OrdinalIgnoreCase) : rows.OrderBy(i => text(i, sortColumn), StringComparer.OrdinalIgnoreCase);
+        RowView View(int i) => new(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit, lensValue: LensValue, lensWrite: LensWrite);
         var desired = rows.ToList();
         // Rows are updated in place whenever their order survived: the grid then keeps every realized row and its scroll
         // position, and an insertion or deletion costs one row instead of re-creating every cell of every visible row.
@@ -645,7 +662,7 @@ public sealed partial class EditorPane : Grid
             if (top != null) RestoreTopOfView(top.Value);
         }
         var visibleFrozenRows = frozenRows.Where(i => SkillClassMatches(i, classFilter)).ToArray();
-        FrozenGrid.ItemsSource = visibleFrozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit)).ToArray();
+        FrozenGrid.ItemsSource = visibleFrozenRows.Select(i => new RowView(Document, i, error, preview: PreviewCellValue, deferEdit: DeferCellEdit, lensValue: LensValue, lensWrite: LensWrite)).ToArray();
         FrozenGrid.IsVisible = visibleFrozenRows.Length > 0; FrozenGrid.Height = visibleFrozenRows.Length * 30 + 34;
         TableGrid.HeadersVisibility = FrozenGrid.IsVisible ? DataGridHeadersVisibility.Row : DataGridHeadersVisibility.All;
         activeGrid = visibleFrozenRows.Contains(selected) ? FrozenGrid : TableGrid;
@@ -738,8 +755,8 @@ public sealed partial class EditorPane : Grid
         foreach (var grid in new[] { TableGrid, FrozenGrid })
             foreach (var item in (grid.ItemsSource as IEnumerable<RowView> ?? []).Where(r => wanted.Contains(r.Row))) item.RefreshValues();
     }
-    public void Undo() => Replay(Document.Undo);
-    public void Redo() => Replay(Document.Redo);
+    public void Undo() { if (!UndoProfile()) Replay(Document.Undo); }
+    public void Redo() { if (!RedoProfile()) Replay(Document.Redo); }
     /// <summary>
     /// Runs a history step and refreshes as little as it needs: a step that only put cell values back updates those rows in
     /// place, so undoing an edit in a large table feels immediate. Anything that changed the row set, re-parsed the source, or
@@ -890,12 +907,13 @@ public sealed partial class EditorPane : Grid
         int missing = start + block.Length - displayed.Count;
         if (missing > 0)
         {
+            RequireSharedView("paste past the last row");
             int first = Document.Table.Records.Count; Document.InsertRows(first, missing); ShiftSelection(first, missing);
             displayed.AddRange(Enumerable.Range(first, missing));
         }
         var edits = new List<(int, string, string)>();
         for (int r = 0; r < block.Length; r++) for (int c = 0; c < block[r].Length; c++) edits.Add((displayed[start + r], Document.Table.Columns[columns[firstColumn + c]], block[r][c]));
-        Document.SetCells(edits);
+        if (!RouteToProfile(edits)) Document.SetCells(edits);
         selectedCells.Clear(); foreach (var (row, column, _) in edits) selectedCells.Add((row, Array.IndexOf(Document.Table.Columns, column)));
         rowBlockSelection = false;
         cellAnchor = (displayed[start], columns[firstColumn]);
@@ -918,7 +936,7 @@ public sealed partial class EditorPane : Grid
                 if (IsEditableCell((row, columns[c])) && !(keepIdentity && table.IsIdentityColumn(table.Columns[columns[c]])))
                     edits.Add((row, table.Columns[columns[c]], values[c]));
         Storage.Require(edits.Count > 0, "Every selected cell is locked against edits.");
-        Document.SetCells(edits);
+        if (!RouteToProfile(edits)) Document.SetCells(edits);
         // Rows picked by their header stay picked; a cell selection grows to the cells that were filled.
         if (!rowHeaderPress)
         {
@@ -955,7 +973,7 @@ public sealed partial class EditorPane : Grid
                 if (table.IsIdentityColumn(column)) continue;
                 edits.Add((targets[r], column, block[block.Length == 1 ? 0 : r][c]));
             }
-        Document.SetCells(edits);
+        if (!RouteToProfile(edits)) Document.SetCells(edits);
         selectedCells.Clear();
         foreach (var row in targets) for (int col = 0; col < table.Columns.Length; col++) selectedCells.Add((row, col));
         // Whole rows again, so a following edit inside them means that one cell.

@@ -31,9 +31,8 @@ public static class LevelEditorWorkspace
             if (previous.Revision == revision && previous.Tables.All(t => File.Exists(Inside(previous.Root, t.Key)))) return previous;
         }
         var root = Inside(project.Cache, "integration/" + profile + "/" + revision);
-        var settingsFile = Inside(project.Root, "compatibility/" + profile + "/profile.json");
-        var settings = File.Exists(settingsFile) ? Read(settingsFile) : new JsonObject();
-        var rules = ((JsonArray?)settings["tableOverrides"] ?? []).SelectMany(p => ProfileRules.Expand(Read(Inside(Path.GetDirectoryName(settingsFile)!, p!.GetValue<string>())))).ToArray();
+        var chain = Directory.Exists(Inside(project.Root, "compatibility/" + profile)) ? ProfileChain.Load(project.Root, profile) : null;
+        IReadOnlyList<JsonNode[]> rules = chain?.RuleLayers ?? [];
         var tables = new Dictionary<string, IntegrationTable>(StringComparer.OrdinalIgnoreCase);
         var names = new HashSet<string>();
         void Emit(string target, byte[] bytes, string source, string[] ids)
@@ -52,31 +51,32 @@ public static class LevelEditorWorkspace
                 Emit(target.GetValue<string>(), resolved.EncodeTsv(), file, resolved.Records.Select(r => r.S("sourceId")).ToArray());
             }
         }
-        foreach (var rule in rules) Require(names.Contains(rule.S("table")), "Unknown profile override table: " + rule.S("table"));
+        foreach (var rule in rules.SelectMany(r => r)) Require(names.Contains(rule.S("table")), "Unknown profile override table: " + rule.S("table"));
         foreach (var file in Files(Path.Combine(project.Root, "data/global/excel")).Where(f => f.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)))
         {
             var bytes = File.ReadAllBytes(file); var target = Relative(Path.Combine(project.Root, "data"), file);
             var table = TableData.FromTsv(bytes, Path.GetFileNameWithoutExtension(file), target);
             Emit(target, bytes, file, table.Records.Select(r => r.S("sourceId")).ToArray());
         }
-        foreach (var asset in (JsonArray?)settings["assetOverrides"] ?? [])
+        var assetOverrides = chain?.AssetOverrides() ?? [];
+        foreach (var (asset, assetFolder) in assetOverrides)
         {
             var target = asset.S("target");
             if (asset.S("scope", "data") != "data" || !target.StartsWith("global/excel/", StringComparison.OrdinalIgnoreCase)) continue;
             Require(asset?["transform"] == null, "Transformed table overrides cannot be used by Level Editor.");
             Require(!tables.TryGetValue(target, out var existing) || existing.Source.StartsWith("data/", StringComparison.Ordinal), "Asset override cannot replace authored table source.");
             Require((tables.GetValueOrDefault(target)?.Sha256) == asset?["expectSha256"]?.GetValue<string>(), "Stale asset override: " + target);
-            var file = Inside(Path.GetDirectoryName(settingsFile)!, asset.S("source")); var bytes = File.ReadAllBytes(file);
+            var file = Inside(assetFolder, asset.S("source")); var bytes = File.ReadAllBytes(file);
             var table = TableData.FromTsv(bytes, Path.GetFileNameWithoutExtension(target), target); tables.Remove(target);
             Emit(target, bytes, file, table.Records.Select(r => r.S("sourceId")).ToArray());
         }
         Require(revision == Fingerprint(project, profile), "Tables changed during snapshot creation. Retry.");
         var assets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var asset in (JsonArray?)settings["assetOverrides"] ?? [])
+        foreach (var (asset, assetFolder) in assetOverrides)
         {
             if (asset.S("scope", "data") != "data") continue;
             string target = asset.S("target"); Inside(project.Root, "data/" + target);
-            Require(assets.TryAdd(target, asset?["transform"] == null ? Relative(project.Root, Inside(Path.GetDirectoryName(settingsFile)!, asset.S("source"))) : ""), "Competing asset overrides: " + target);
+            Require(assets.TryAdd(target, asset?["transform"] == null ? Relative(project.Root, Inside(assetFolder, asset.S("source"))) : ""), "Competing asset overrides: " + target);
         }
         var result = new IntegrationSnapshot(project.Id, profile, root, revision, tables, assets);
         IntegrationFiles.Write(pointer, result); return result;

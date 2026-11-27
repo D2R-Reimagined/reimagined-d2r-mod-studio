@@ -85,7 +85,7 @@ internal static class MissilePreviewTests
         check(orphan.Issues.Any(i => i.Contains("Nothing references this missile")) && orphan.Issues.Any(i => i.Contains("Unresolved missiles/Missile: ghost")),
             "Unreferenced missiles and missing spawn targets are reported: " + string.Join(" ", orphan.Issues));
 
-        Write("compatibility/test/profile.json", new JsonObject { ["tableOverrides"] = new JsonArray("missile.json") });
+        Write("compatibility/test/profile.json", new JsonObject { ["schemaVersion"] = 1, ["id"] = "test", ["tableOverrides"] = new JsonArray("missile.json") });
         Write("compatibility/test/missile.json", new JsonObject { ["table"] = "missiles", ["record"] = "fireball", ["changes"] = new JsonObject { ["Vel"] = new JsonObject { ["expect"] = "18", ["value"] = "8" } } });
         check(Preview(profile: "test").Levels[0].Velocity == "8", "Missile preview applies selected profile overrides");
         // Skill = Fire Ball means the game ignores this missile's own 5–9 and uses the skill's 10–20 / 30–50 fire.

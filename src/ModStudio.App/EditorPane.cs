@@ -274,7 +274,12 @@ public sealed partial class EditorPane : Grid
         cellTip.Child = cellTipText; cellTipLayer.Children.Add(cellTip); SetRowSpan(cellTipLayer, 2); tableHost.Children.Add(cellTipLayer);
         tableHost.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty && !tableHost.IsVisible) HideCellTip(); };
         SetRow(tableHost, 1); Children.Add(tableHost); SetRow(Source, 1); Children.Add(Source); SetRow(visualHost, 1); Children.Add(visualHost);
-        SetRow(note, 2); note.Margin = new(10, 5); Children.Add(note);
+        // The status line carries the profile summary on its right, out of the wrapping toolbar: a toolbar that changed height
+        // as the summary came and went would move the grid under the pointer.
+        var statusLine = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new(10, 5) };
+        statusLine.Children.Add(note);
+        if (lensSummary != null) { Grid.SetColumn(lensSummary, 1); statusLine.Children.Add(lensSummary); }
+        SetRow(statusLine, 2); Children.Add(statusLine);
         Source.TextChanged += (_, _) => { if (!syncing) { try { document.SetRaw((document.Text.StartsWith('\uFEFF') ? "\uFEFF" : "") + Source.Text); } catch (Exception ex) { error(ex); Refresh(); } } };
         foreach (var grid in new[] { TableGrid, FrozenGrid }) WireGrid(grid);
         WireReordering();

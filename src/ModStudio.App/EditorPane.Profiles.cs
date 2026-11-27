@@ -78,8 +78,9 @@ public sealed partial class EditorPane
         ToolTip.SetTip(lensReason, "Recorded with every new override this view writes (profile rules need a reason). Changing an existing override keeps its reason unless you type a new one.");
         marksButton = EditorToolbarIcons.Create("Profile marks");
         marksButton.Click += (_, _) => ShowMarksMenu();
-        lensSummary = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new(8, 0, 0, 0), FontSize = 12, Foreground = MutedText };
-        toolbar.Children.Add(lensPicker); toolbar.Children.Add(lensReason); toolbar.Children.Add(marksButton); toolbar.Children.Add(lensSummary);
+        // Shown on the right of the status line under the table (the constructor places it), one line, trimmed.
+        lensSummary = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new(12, 0, 0, 0), MaxWidth = 560, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = MutedText };
+        toolbar.Children.Add(lensPicker); toolbar.Children.Add(lensReason); toolbar.Children.Add(marksButton);
         overlayTimer.Tick += (_, _) => { overlayTimer.Stop(); RecomputeProfileOverlays(); };
         Document.Changed += QueueProfileOverlays;
         void Follow() => QueueProfileOverlays();
